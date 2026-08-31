@@ -12,7 +12,7 @@ from prism.domain import Claim, EvolutionCase, EvolutionNode, Material, Temporal
 from prism.events import Event
 from prism.graph import GraphTimeline, GraphWriteResult
 from prism.ingestion import IngestionResult
-from prism.store import IndexOutcome
+from prism.store import IndexOutcome, SearchFilter
 
 
 _Dependency = TypeVar("_Dependency")
@@ -26,6 +26,8 @@ class _IngestionService(Protocol):
 
 class _EvidenceStore(Protocol):
     def index_file(self, path: str | Path) -> IndexOutcome: ...
+
+    def search(self, criteria: SearchFilter, *, limit: int, offset: int) -> object: ...
 
 
 class _GraphService(Protocol):
@@ -76,11 +78,35 @@ class PrismAPI:
         self._store = _required_dependency(
             "evidence_store", evidence_store, "index_file"
         )
+        _required_dependency("evidence_store", evidence_store, "search")
         self._graph = _required_dependency(
             "graph_service", graph_service, "timeline"
         )
         _required_dependency("graph_service", graph_service, "add_case")
         self._events = _required_dependency("event_bus", event_bus, "publish")
+
+    async def search(
+        self,
+        query: str | None = None,
+        *,
+        case_tag: str | None = None,
+        source: str | None = None,
+        type: str | None = None,
+        published_after: datetime | None = None,
+        published_before: datetime | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> object:
+        """Search evidence through the configured SQLite/FTS store."""
+        criteria = SearchFilter(
+            query=query,
+            case_tag=case_tag,
+            source=source,
+            type=type,
+            published_after=published_after,
+            published_before=published_before,
+        )
+        return self._store.search(criteria, limit=limit, offset=offset)
 
     async def ingest_material(
         self,

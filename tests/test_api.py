@@ -73,10 +73,16 @@ class FakeEvidenceStore:
     def __init__(self, outcome: IndexOutcome):
         self.outcome = outcome
         self.calls: list[object] = []
+        self.search_calls: list[object] = []
+        self.search_result: list[object] = []
 
     def index_file(self, path):
         self.calls.append(path)
         return self.outcome
+
+    def search(self, criteria, *, limit=50, offset=0):
+        self.search_calls.append((criteria, limit, offset))
+        return self.search_result
 
 
 class FakeGraphService:
@@ -133,6 +139,35 @@ def test_facade_rejects_missing_required_dependencies(
 
     with pytest.raises(ValueError, match=message):
         PrismAPI(*dependencies)
+
+
+def test_search_delegates_to_store_with_explicit_filters(tmp_path):
+    api, _, store, _, _ = facade(tmp_path)
+    expected = ["hit"]
+    store.search_result = expected
+
+    result = run(
+        api.search(
+            "housing",
+            case_tag="case-1",
+            source="example.gov",
+            type="policy",
+            published_after=NOW,
+            published_before=NOW,
+            limit=7,
+            offset=2,
+        )
+    )
+
+    assert result is expected
+    criteria, limit, offset = store.search_calls[0]
+    assert criteria.query == "housing"
+    assert criteria.case_tag == "case-1"
+    assert criteria.source == "example.gov"
+    assert criteria.type == "policy"
+    assert criteria.published_after == NOW
+    assert criteria.published_before == NOW
+    assert (limit, offset) == (7, 2)
 
 
 def test_ingest_material_normalizes_indexes_publishes_and_preserves_result(tmp_path):
