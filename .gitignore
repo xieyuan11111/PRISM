@@ -27,6 +27,8 @@ __pycache__/
 .compile-report-wire-final/
 .report-integration/
 .report-wire-audit/
+.compile-research-*/
+.research-*/
 .*-full/
 .mypy_cache/
 .ruff_cache/
