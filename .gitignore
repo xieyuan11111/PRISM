@@ -22,6 +22,7 @@ __pycache__/
 .extraction-final/
 .compile-pipeline-review/
 .analyzer-final/
+.sources-focused/
 .compile-report-wire-final/
 .report-integration/
 .report-wire-audit/
