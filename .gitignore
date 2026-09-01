@@ -29,6 +29,7 @@ __pycache__/
 .report-wire-audit/
 .compile-research-*/
 .research-*/
+.firecrawl-*/
 .*-full/
 .mypy_cache/
 .ruff_cache/
