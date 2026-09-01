@@ -94,6 +94,8 @@ class LLMProviderConfig:
     model: str
     api_key_env: str | None = None
     base_url: str | None = None
+    timeout: float = 30.0
+    concurrency_limit: int = 4
 
     def __post_init__(self) -> None:
         _require_text("model", self.model)
@@ -101,6 +103,15 @@ class LLMProviderConfig:
             _require_text("api_key_env", self.api_key_env)
         if self.base_url is not None:
             _require_text("base_url", self.base_url)
+        if isinstance(self.timeout, bool) or not isinstance(self.timeout, (int, float)):
+            raise TypeError("timeout must be a number")
+        if self.timeout <= 0:
+            raise ValueError("timeout must be greater than zero")
+        object.__setattr__(self, "timeout", float(self.timeout))
+        if isinstance(self.concurrency_limit, bool) or not isinstance(self.concurrency_limit, int):
+            raise TypeError("concurrency_limit must be an integer")
+        if self.concurrency_limit <= 0:
+            raise ValueError("concurrency_limit must be greater than zero")
 
 
 @dataclass(frozen=True, slots=True)
@@ -193,6 +204,8 @@ class PrismConfig:
                         "model": provider.model,
                         "api_key_env": provider.api_key_env,
                         "base_url": provider.base_url,
+                        "timeout": provider.timeout,
+                        "concurrency_limit": provider.concurrency_limit,
                     }
                     for name, provider in self.llm.providers.items()
                 },
@@ -221,7 +234,7 @@ class PrismConfig:
         for name, raw_provider in providers_data.items():
             provider_data = _require_mapping(f"provider {name!r}", raw_provider)
             _reject_unknown(
-                provider_data, {"model", "api_key_env", "base_url"}, "provider"
+                provider_data, {"model", "api_key_env", "base_url", "timeout", "concurrency_limit"}, "provider"
             )
             providers[name] = LLMProviderConfig(**provider_data)
         task_roles = _require_mapping(

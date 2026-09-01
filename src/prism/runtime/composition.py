@@ -11,6 +11,13 @@ from prism.config import PathConfig, PrismConfig
 from prism.events import EventBus
 from prism.graph import GraphBackend, GraphEpisode, GraphService
 from prism.ingestion import IngestionService
+from prism.llm import (
+    LLMRouter,
+    LLMTransport,
+    OpenAICompatibleTransport,
+    Provider,
+    TaskRoute,
+)
 from prism.store import EvidenceStore
 
 
@@ -47,6 +54,52 @@ def load_config(
     return PrismConfig.load(source)
 
 
+def _compose_llm_router(
+    config: PrismConfig,
+    transport: LLMTransport | None,
+) -> LLMRouter | None:
+    """Build configured LLM routing without resolving credentials or doing I/O."""
+
+    provider_configs = config.llm.providers
+    task_roles = config.llm.task_roles
+    if not provider_configs and not task_roles:
+        return None
+    if not provider_configs:
+        raise ValueError("configured LLM task routes require at least one provider")
+    if not task_roles:
+        raise ValueError("configured LLM providers require task routes")
+
+    providers: list[Provider] = []
+    for name, provider_config in provider_configs.items():
+        if provider_config.base_url is None:
+            raise ValueError(f"LLM provider {name!r} requires base_url")
+        if provider_config.api_key_env is None:
+            raise ValueError(f"LLM provider {name!r} requires api_key_env")
+        providers.append(
+            Provider(
+                name=name,
+                base_url=provider_config.base_url,
+                api_key_env=provider_config.api_key_env,
+                default_model=provider_config.model,
+                timeout=provider_config.timeout,
+                concurrency_limit=provider_config.concurrency_limit,
+            )
+        )
+
+    routes = [
+        TaskRoute(role=role, providers=(provider_name,))
+        for role, provider_name in task_roles.items()
+    ]
+    selected_transport = (
+        transport if transport is not None else OpenAICompatibleTransport()
+    )
+    return LLMRouter(
+        providers=providers,
+        routes=routes,
+        transport=selected_transport,
+    )
+
+
 @dataclass(slots=True)
 class PrismRuntime:
     """Owned, initialized services behind one :class:`PrismAPI` facade."""
@@ -59,6 +112,7 @@ class PrismRuntime:
     graph_backend: GraphBackend
     graph_service: GraphService
     api: PrismAPI
+    llm_router: LLMRouter | None = None
     _closed: bool = field(default=False, init=False, repr=False)
 
     @property
@@ -99,10 +153,12 @@ async def create_runtime(
     config_path: str | os.PathLike[str] | None = None,
     *,
     graph_backend: GraphBackend | None = None,
+    llm_transport: LLMTransport | None = None,
 ) -> PrismRuntime:
     """Construct and start a local runtime without implicit external clients."""
 
     config = load_config(config_path)
+    llm_router = _compose_llm_router(config, llm_transport)
     paths = config.resolved_paths()
     for directory in (
         paths.data_dir,
@@ -140,6 +196,7 @@ async def create_runtime(
         event_bus=events,
         graph_backend=backend,
         graph_service=graph,
+        llm_router=llm_router,
         api=api,
     )
 
