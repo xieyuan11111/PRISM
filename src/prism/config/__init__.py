@@ -1,6 +1,7 @@
 """Typed configuration models for PRISM."""
 
 from .models import (
+    FirecrawlConfig,
     LLMConfig,
     LLMProviderConfig,
     PathConfig,
@@ -9,6 +10,7 @@ from .models import (
 )
 
 __all__ = [
+    "FirecrawlConfig",
     "LLMConfig",
     "LLMProviderConfig",
     "PathConfig",

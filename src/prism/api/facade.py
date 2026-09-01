@@ -6,19 +6,21 @@ import os
 from collections.abc import Iterable
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Protocol, TypeVar
+from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 from uuid import uuid4
 
 from prism.analyzer import EvolutionAnalysis
 from prism.domain import Claim, EvolutionCase, EvolutionNode, Material, TemporalFact
 from prism.events import Event
 from prism.graph import GraphTimeline, GraphWriteResult
-from prism.extraction import ExtractionResult
 from prism.ingestion import IngestionResult
 from prism.report import ReportDocument, ReportService
-from prism.research import ResearchExecutionReport, ResearchPlan, ResearchPlanner, ResearchExecutor, SearchProvider
 from prism.sources import SourceFetchError, SourceItem
 from prism.store import IndexEntry, IndexOutcome, SearchFilter
+
+if TYPE_CHECKING:
+    from prism.extraction import ExtractionResult
+    from prism.research import ResearchExecutionReport, ResearchPlan
 
 from .fetching import (
     SPOOL_DIRNAME,
@@ -422,6 +424,8 @@ class PrismAPI:
         self, plan: ResearchPlan, *, process: bool = True
     ) -> ResearchExecutionReport:
         """Execute a plan through the injected provider and authoritative intake."""
+        from prism.research import ResearchExecutor
+
         executor = self._research_executor
         if executor is None:
             if self._search_provider is None:

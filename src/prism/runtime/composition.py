@@ -23,8 +23,14 @@ from prism.llm import (
 )
 from prism.pipeline import PipelineService
 from prism.report import ReportService
-from prism.research import ResearchPlanner, SearchProvider
-from prism.sources import HttpGetter, SourceService
+from prism.research import (
+    FirecrawlJsonHttpClient,
+    FirecrawlSearchProvider,
+    ResearchExecutor,
+    ResearchPlanner,
+    SearchProvider,
+)
+from prism.sources import HttpGetter, SourceService, UrllibHttpGetter
 from prism.store import EvidenceStore
 
 
@@ -142,6 +148,7 @@ class PrismRuntime:
     extraction_service: ExtractionService | OfflineExtractor
     pipeline_service: PipelineService
     research_planner: ResearchPlanner
+    research_executor: ResearchExecutor | None = None
     search_provider: SearchProvider | None = None
     source_service: SourceService | None = None
     llm_router: LLMRouter | None = None
@@ -200,12 +207,16 @@ async def create_runtime(
     llm_transport: LLMTransport | None = None,
     http_getter: HttpGetter | None = None,
     search_provider: SearchProvider | None = None,
+    firecrawl_client: object | None = None,
 ) -> PrismRuntime:
     """Construct and start a local runtime without implicit external clients.
 
-    ``http_getter`` is the only way to arm source collection: without an
-    explicitly injected getter no ``SourceService`` is created at all, so the
-    default runtime can never issue a real network request.
+    The default configuration is fully offline.  A caller may inject a
+    ``http_getter`` and/or ``search_provider`` for controlled integrations;
+    setting ``firecrawl.enabled`` is the explicit opt-in that creates the
+    standard-library Firecrawl client and public GET transport.  Credentials
+    are resolved from the configured environment variable and never stored in
+    :class:`~prism.config.PrismConfig`.
     """
 
     config = load_config(config_path)
@@ -239,11 +250,42 @@ async def create_runtime(
         indexer=store, extraction_service=extraction, graph_service=graph
     )
     research_planner = ResearchPlanner(config, router=llm_router)
+
+    effective_provider = search_provider
+    effective_http_getter = http_getter
+    research_timeout = 10.0
+    if firecrawl_client is not None and search_provider is not None:
+        raise ValueError(
+            "firecrawl_client cannot be combined with search_provider"
+        )
+    if config.firecrawl.enabled:
+        effective_http_getter = effective_http_getter or UrllibHttpGetter()
+        research_timeout = config.firecrawl.timeout
+        if effective_provider is None:
+            client = firecrawl_client if firecrawl_client is not None else FirecrawlJsonHttpClient()
+            api_key = os.environ.get(config.firecrawl.api_key_env, "")
+            effective_provider = FirecrawlSearchProvider(
+                config,
+                client=client,
+                api_key=api_key,
+                base_url=config.firecrawl.base_url,
+                limit=config.firecrawl.limit,
+            )
+    elif firecrawl_client is not None:
+        raise ValueError("firecrawl_client requires firecrawl.enabled=true")
+
     source_service = (
-        SourceService(config, getter=http_getter)
-        if http_getter is not None
+        SourceService(config, getter=effective_http_getter)
+        if effective_http_getter is not None
         else None
     )
+    research_executor = None
+    if effective_provider is not None:
+        if source_service is None:
+            raise ValueError(
+                "search_provider requires http_getter or firecrawl.enabled=true"
+            )
+
     try:
         store.initialize()
         await events.start()
@@ -263,8 +305,13 @@ async def create_runtime(
         pipeline_service=pipeline,
         source_raw_dir=paths.raw_dir,
         research_planner=research_planner,
-        search_provider=search_provider,
+        search_provider=effective_provider,
     )
+    if effective_provider is not None:
+        research_executor = ResearchExecutor(
+            effective_provider, api, search_timeout=research_timeout
+        )
+        api._research_executor = research_executor
     return PrismRuntime(
         config=config,
         paths=paths,
@@ -279,7 +326,8 @@ async def create_runtime(
         extraction_service=extraction,
         pipeline_service=pipeline,
         research_planner=research_planner,
-        search_provider=search_provider,
+        research_executor=research_executor,
+        search_provider=effective_provider,
         source_service=source_service,
         llm_router=llm_router,
     )

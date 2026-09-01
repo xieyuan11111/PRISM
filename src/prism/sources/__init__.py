@@ -8,7 +8,14 @@ layer never writes the corpus and never calls the network on its own.
 """
 
 from .feeds import FeedFetcher, parse_feed
-from .http import HttpGetter, HttpResponse
+from .http import (
+    HttpGetter,
+    HttpGetterError,
+    HttpGetterNoRedirectHandler,
+    HttpGetterResponseTooLargeError,
+    HttpResponse,
+    UrllibHttpGetter,
+)
 from .models import (
     FailureKind,
     FetchFailure,
@@ -33,6 +40,9 @@ __all__ = [
     "FetchResult",
     "FeedFetcher",
     "HttpGetter",
+    "HttpGetterError",
+    "HttpGetterNoRedirectHandler",
+    "HttpGetterResponseTooLargeError",
     "HttpResponse",
     "KIND_AUTO",
     "PageFetcher",
@@ -45,4 +55,5 @@ __all__ = [
     "normalize_url",
     "parse_feed",
     "validate_public_url",
+    "UrllibHttpGetter",
 ]

@@ -9,11 +9,22 @@ from io import StringIO
 import pytest
 
 from prism.cli import main as cli_main
-from prism.config import PathConfig, PrismConfig
+from prism.config import FirecrawlConfig, PathConfig, PrismConfig, SourceConfig
+from prism.research import FirecrawlSearchProvider, ResearchExecutor
 from prism.events import Event
 from prism.graph import GraphEpisode
 from prism.runtime import OfflineGraphBackend, PrismRuntime, create_runtime
 
+
+class FakeFirecrawlClient:
+    async def post(self, url, *, headers, json_body, timeout):
+        raise AssertionError("network client must not be called during composition")
+
+class FakeSearchProvider:
+    name = "fake"
+
+    async def search(self, query, *, timeout=10.0):
+        return ()
 
 class FakeGraphBackend:
     """Small injected backend that cannot access a network or an LLM."""
@@ -37,6 +48,76 @@ def run(coro):
     return asyncio.run(coro)
 
 
+def test_enabled_firecrawl_is_composed_only_with_explicit_client(tmp_path, monkeypatch):
+    home = tmp_path / "firecrawl-home"
+    monkeypatch.setenv("PRISM_HOME", str(home))
+    monkeypatch.setenv("LOCAL_FIRECRAWL_KEY", "test-only-key")
+    config = PrismConfig(
+        sources=SourceConfig(("example.gov",)),
+        firecrawl=FirecrawlConfig(
+            enabled=True,
+            api_key_env="LOCAL_FIRECRAWL_KEY",
+            base_url="https://firecrawl.example.test",
+        ),
+    )
+    config_path = tmp_path / "config.json"
+    config.save(config_path)
+
+    async def exercise():
+        runtime = await create_runtime(
+            config_path,
+            graph_backend=FakeGraphBackend(),
+            firecrawl_client=FakeFirecrawlClient(),
+        )
+        try:
+            assert isinstance(runtime.search_provider, FirecrawlSearchProvider)
+            assert isinstance(runtime.research_executor, ResearchExecutor)
+            assert runtime.source_service is not None
+            assert runtime.api._search_provider is runtime.search_provider
+        finally:
+            await runtime.close()
+
+    run(exercise())
+
+
+def test_disabled_firecrawl_does_not_create_provider_or_source_network_client(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("PRISM_HOME", str(tmp_path / "offline-home"))
+
+    async def exercise():
+        runtime = await create_runtime(graph_backend=FakeGraphBackend())
+        try:
+            assert runtime.search_provider is None
+            assert runtime.source_service is None
+        finally:
+            await runtime.close()
+
+    run(exercise())
+def test_firecrawl_client_and_custom_provider_conflict_is_rejected(
+    tmp_path, monkeypatch
+):
+    home = tmp_path / "conflict-home"
+    monkeypatch.setenv("PRISM_HOME", str(home))
+    monkeypatch.setenv("LOCAL_FIRECRAWL_KEY", "test-only-key")
+    config = PrismConfig(
+        firecrawl=FirecrawlConfig(
+            enabled=True,
+            api_key_env="LOCAL_FIRECRAWL_KEY",
+        )
+    )
+    config_path = tmp_path / "config.json"
+    config.save(config_path)
+
+    with pytest.raises(ValueError, match="cannot be combined"):
+        run(
+            create_runtime(
+                config_path,
+                graph_backend=FakeGraphBackend(),
+                search_provider=FakeSearchProvider(),
+                firecrawl_client=FakeFirecrawlClient(),
+            )
+        )
 def test_explicit_config_is_loaded_and_paths_resolve_under_prism_home(
     tmp_path, monkeypatch
 ):

@@ -171,12 +171,39 @@ class SourceConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class FirecrawlConfig:
+    """Explicit opt-in settings for the Firecrawl discovery backend."""
+
+    enabled: bool = False
+    api_key_env: str = "FIRECRAWL_API_KEY"
+    base_url: str = "https://api.firecrawl.dev"
+    limit: int = 10
+    timeout: float = 10.0
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.enabled, bool):
+            raise TypeError("firecrawl.enabled must be a bool")
+        _require_text("firecrawl.api_key_env", self.api_key_env)
+        _require_text("firecrawl.base_url", self.base_url)
+        if isinstance(self.limit, bool) or not isinstance(self.limit, int):
+            raise TypeError("firecrawl.limit must be an integer")
+        if not 1 <= self.limit <= 100:
+            raise ValueError("firecrawl.limit must be between 1 and 100")
+        if isinstance(self.timeout, bool) or not isinstance(self.timeout, (int, float)):
+            raise TypeError("firecrawl.timeout must be a number")
+        if self.timeout <= 0:
+            raise ValueError("firecrawl.timeout must be greater than zero")
+        object.__setattr__(self, "timeout", float(self.timeout))
+
+
+@dataclass(frozen=True, slots=True)
 class PrismConfig:
     """Root configuration object for the PRISM foundation module."""
 
     paths: PathConfig = field(default_factory=PathConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
     sources: SourceConfig = field(default_factory=SourceConfig)
+    firecrawl: FirecrawlConfig = field(default_factory=FirecrawlConfig)
 
     def __post_init__(self) -> None:
         if not isinstance(self.paths, PathConfig):
@@ -185,6 +212,8 @@ class PrismConfig:
             raise TypeError("llm must be an LLMConfig")
         if not isinstance(self.sources, SourceConfig):
             raise TypeError("sources must be a SourceConfig")
+        if not isinstance(self.firecrawl, FirecrawlConfig):
+            raise TypeError("firecrawl must be a FirecrawlConfig")
 
     def resolved_paths(self, home: Path | None = None) -> PathConfig:
         return self.paths.resolve(home)
@@ -212,12 +241,19 @@ class PrismConfig:
                 "task_roles": dict(self.llm.task_roles),
             },
             "sources": {"whitelist": list(self.sources.whitelist)},
+            "firecrawl": {
+                "enabled": self.firecrawl.enabled,
+                "api_key_env": self.firecrawl.api_key_env,
+                "base_url": self.firecrawl.base_url,
+                "limit": self.firecrawl.limit,
+                "timeout": self.firecrawl.timeout,
+            },
         }
 
     @classmethod
     def from_dict(cls, raw: Mapping[str, Any]) -> PrismConfig:
         data = _require_mapping("config", raw)
-        _reject_unknown(data, {"paths", "llm", "sources"}, "config")
+        _reject_unknown(data, {"paths", "llm", "sources", "firecrawl"}, "config")
 
         paths_data = _require_mapping("paths", data.get("paths", {}))
         _reject_unknown(
@@ -246,7 +282,15 @@ class PrismConfig:
         _reject_unknown(sources_data, {"whitelist"}, "sources")
         sources = SourceConfig(whitelist=sources_data.get("whitelist", ()))
 
-        return cls(paths=paths, llm=llm, sources=sources)
+        firecrawl_data = _require_mapping("firecrawl", data.get("firecrawl", {}))
+        _reject_unknown(
+            firecrawl_data,
+            {"enabled", "api_key_env", "base_url", "limit", "timeout"},
+            "firecrawl",
+        )
+        firecrawl = FirecrawlConfig(**firecrawl_data)
+
+        return cls(paths=paths, llm=llm, sources=sources, firecrawl=firecrawl)
 
     def save(self, path: str | os.PathLike[str]) -> None:
         destination = Path(path)

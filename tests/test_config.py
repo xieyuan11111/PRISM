@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from prism.config import (
+    FirecrawlConfig,
     LLMConfig,
     LLMProviderConfig,
     PathConfig,
@@ -98,6 +99,30 @@ def test_config_round_trip_preserves_relative_paths_and_values(tmp_path):
     assert json.loads(config_file.read_text(encoding="utf-8"))["paths"]["data_dir"] == "data"
 
 
+def test_config_round_trip_preserves_firecrawl_research_settings(tmp_path):
+    config = PrismConfig(
+        sources=SourceConfig(whitelist=["example.gov"]),
+        firecrawl=FirecrawlConfig(
+            enabled=True,
+            api_key_env="LOCAL_FIRECRAWL_KEY",
+            base_url="https://firecrawl.example.test",
+            limit=7,
+            timeout=4.5,
+        ),
+    )
+    path = tmp_path / "config.json"
+
+    config.save(path)
+
+    assert PrismConfig.load(path) == config
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    assert raw["firecrawl"]["enabled"] is True
+    assert raw["firecrawl"]["api_key_env"] == "LOCAL_FIRECRAWL_KEY"
+
+
+def test_firecrawl_config_is_disabled_by_default():
+    config = PrismConfig()
+    assert config.firecrawl.enabled is False
 def test_config_rejects_unknown_keys():
     data = make_config().to_dict()
     data["unexpected"] = True
