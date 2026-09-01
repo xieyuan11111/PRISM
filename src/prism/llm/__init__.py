@@ -1,9 +1,7 @@
-"""Dependency-free, async LLM routing with injectable offline transports.
+"""Dependency-free, async LLM routing and OpenAI-compatible HTTP transport.
 
 The public API contains immutable provider/route models, :class:`LLMRouter`,
-small result and usage value objects, and explicit router exceptions.  This
-package deliberately implements no HTTP client or provider SDK; applications
-inject a transport matching :class:`LLMTransport`.
+small result and usage value objects, and explicit router exceptions.
 """
 
 from .router import (
@@ -23,15 +21,18 @@ from .router import (
     TransportResponse,
     Usage,
 )
+from .transport import LLMTransportError, OpenAICompatibleTransport
 
 __all__ = [
     "Completion",
     "LLMRouter",
     "LLMRouterError",
     "LLMTransport",
+    "LLMTransportError",
     "MissingAPIKeyError",
     "MissingProviderError",
     "MissingRoleError",
+    "OpenAICompatibleTransport",
     "Provider",
     "RetriesExhaustedError",
     "RetryPolicy",
