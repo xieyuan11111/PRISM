@@ -22,6 +22,9 @@ __pycache__/
 .extraction-final/
 .compile-pipeline-review/
 .analyzer-final/
+.compile-report-wire-final/
+.report-integration/
+.report-wire-audit/
 .*-full/
 .mypy_cache/
 .ruff_cache/
