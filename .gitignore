@@ -19,6 +19,7 @@ __pycache__/
 .runtime-full/
 .llm-*/
 .runtime-llm-*/
+.extraction-final/
 .*-full/
 .mypy_cache/
 .ruff_cache/
