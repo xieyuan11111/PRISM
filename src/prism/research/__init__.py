@@ -37,11 +37,24 @@ from .firecrawl import (
     JsonClient,
     JsonHttpResponse,
 )
+from .firecrawl_http import (
+    DEFAULT_MAX_RESPONSE_BYTES,
+    FirecrawlHttpClientError,
+    FirecrawlHttpRedirectError,
+    FirecrawlHttpResponseTooLargeError,
+    FirecrawlHttpTimeoutError,
+    FirecrawlHttpTransportError,
+    FirecrawlHttpUnicodeError,
+    FirecrawlHttpUrlError,
+    FirecrawlJsonHttpClient,
+    FirecrawlNoRedirectHandler,
+)
 from .planner import SOURCE_SELECTOR_ROLE, ResearchPlanError, ResearchPlanner
 from .provider import SearchProvider
 
 __all__ = [
     "DEFAULT_BASE_URL",
+    "DEFAULT_MAX_RESPONSE_BYTES",
     "FIRECRAWL_API_KEY_ENV",
     "MAP_CANDIDATE_TYPE",
     "PLAN_ORIGINS",
@@ -54,8 +67,17 @@ __all__ = [
     "SOURCE_TYPES",
     "FirecrawlBlockedError",
     "FirecrawlError",
+    "FirecrawlHttpClientError",
     "FirecrawlHttpError",
+    "FirecrawlHttpRedirectError",
+    "FirecrawlHttpResponseTooLargeError",
+    "FirecrawlHttpTimeoutError",
+    "FirecrawlHttpTransportError",
+    "FirecrawlHttpUnicodeError",
+    "FirecrawlHttpUrlError",
     "FirecrawlJsonError",
+    "FirecrawlJsonHttpClient",
+    "FirecrawlNoRedirectHandler",
     "FirecrawlSchemaError",
     "FirecrawlSearchProvider",
     "FirecrawlTimeoutError",

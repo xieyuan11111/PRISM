@@ -311,6 +311,19 @@ def test_search_returns_empty_without_calling_when_scope_misses_whitelist():
     assert client.calls == []
 
 
+def test_provider_json_error_does_not_retain_raw_response_body_in_cause():
+    client = FakeJsonClient(
+        JsonHttpResponse(url=SEARCH_URL, status=200, body='{not-valid-json}')
+    )
+    provider = make_provider(client)
+
+    with pytest.raises(FirecrawlJsonError) as info:
+        asyncio.run(provider.search(make_query()))
+
+    assert info.value.__cause__ is None
+    assert info.value.__context__ is None
+
+
 def test_search_accepts_official_v2_web_response_array():
     payload = {
         "success": True,
@@ -425,11 +438,15 @@ def test_search_classifies_schema_errors(payload):
     assert exc_info.value.kind is FailureKind.PARSE
 
 
-def test_search_blocks_responses_redirected_off_the_api_host():
-    client = FakeJsonClient(ok({"success": True, "data": []}, url="https://evil.example/v2/search"))
+def test_search_blocks_off_host_response_without_reflecting_api_key_in_final_url():
+    client = FakeJsonClient(
+        ok({"success": True, "data": []}, url=f"https://evil.example/v2/search?token={KEY}")
+    )
     with pytest.raises(FirecrawlBlockedError) as exc_info:
         asyncio.run(make_provider(client).search(make_query()))
     assert exc_info.value.kind is FailureKind.BLOCKED
+    assert KEY not in str(exc_info.value)
+    assert "[redacted]" in str(exc_info.value)
 
 
 def test_search_redacts_api_key_from_wrapped_client_errors():

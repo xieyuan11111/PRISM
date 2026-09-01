@@ -482,18 +482,26 @@ class FirecrawlSearchProvider:
             )
         if _host_of(response.url) != _host_of(endpoint):
             raise FirecrawlBlockedError(
-                f"final URL {response.url!r} left the configured Firecrawl host"
+                self._redact(
+                    f"final URL {response.url!r} left the configured Firecrawl host"
+                )
             )
         if not 200 <= response.status < 300:
             raise FirecrawlHttpError(
                 response.status, self._redact(f"request to {endpoint} failed")
             )
+        json_failure: FirecrawlJsonError | None = None
         try:
             payload = json.loads(response.body)
         except ValueError as exc:
-            raise FirecrawlJsonError(
+            json_failure = FirecrawlJsonError(
                 self._redact(f"response from {endpoint} is not valid JSON: {exc}")
-            ) from exc
+            )
+        if json_failure is not None:
+            # Raise outside the parsing except block: JSONDecodeError.doc may
+            # retain the entire raw response body, so it must not become
+            # exception context for a public adapter error.
+            raise json_failure
         if not isinstance(payload, dict):
             raise FirecrawlSchemaError(
                 f"response from {endpoint} must be a JSON object"
