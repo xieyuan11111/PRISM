@@ -6,7 +6,10 @@ and search queries, using the ``source_selector`` LLM role when one is
 injected and a deterministic whitelist-derived fallback otherwise.  This
 package performs no network I/O of its own: the :class:`SearchProvider`
 protocol is executed by :class:`FirecrawlSearchProvider`, a Firecrawl v2
-adapter that talks only through an injected async JSON client.
+adapter that talks only through an injected async JSON client, and plans are
+run end to end by :class:`ResearchExecutor`, whose candidate URLs are
+re-collected as evidence through an injected :class:`SourceIntake`
+(``PrismAPI.fetch_source``) rather than any search payload.
 """
 
 from .models import (
@@ -21,6 +24,19 @@ from .models import (
     ResearchWindow,
     SearchQuery,
     SourceCandidate,
+)
+from .executor import (
+    CANDIDATE_DOMAIN_OUT_OF_SCOPE,
+    CANDIDATE_INVALID_INTAKE,
+    CANDIDATE_INVALID_LEAD,
+    CANDIDATE_NO_CONTENT,
+    CANDIDATE_NO_LINK,
+    CandidateFailure,
+    CandidateSuccess,
+    QueryExecution,
+    ResearchExecutionReport,
+    ResearchExecutor,
+    SourceIntake,
 )
 from .firecrawl import (
     DEFAULT_BASE_URL,
@@ -53,6 +69,11 @@ from .planner import SOURCE_SELECTOR_ROLE, ResearchPlanError, ResearchPlanner
 from .provider import SearchProvider
 
 __all__ = [
+    "CANDIDATE_DOMAIN_OUT_OF_SCOPE",
+    "CANDIDATE_INVALID_INTAKE",
+    "CANDIDATE_INVALID_LEAD",
+    "CANDIDATE_NO_CONTENT",
+    "CANDIDATE_NO_LINK",
     "DEFAULT_BASE_URL",
     "DEFAULT_MAX_RESPONSE_BYTES",
     "FIRECRAWL_API_KEY_ENV",
@@ -65,6 +86,8 @@ __all__ = [
     "RESEARCH_PHASES",
     "SOURCE_SELECTOR_ROLE",
     "SOURCE_TYPES",
+    "CandidateFailure",
+    "CandidateSuccess",
     "FirecrawlBlockedError",
     "FirecrawlError",
     "FirecrawlHttpClientError",
@@ -84,6 +107,9 @@ __all__ = [
     "FirecrawlTransportError",
     "JsonClient",
     "JsonHttpResponse",
+    "QueryExecution",
+    "ResearchExecutionReport",
+    "ResearchExecutor",
     "ResearchPlan",
     "ResearchPlanError",
     "ResearchPlanner",
@@ -91,4 +117,5 @@ __all__ = [
     "SearchProvider",
     "SearchQuery",
     "SourceCandidate",
+    "SourceIntake",
 ]
