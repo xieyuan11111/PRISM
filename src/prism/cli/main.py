@@ -37,6 +37,14 @@ class PrismAPIProtocol(Protocol):
         self, case_id: str, as_of: datetime | None = None, use_llm: bool = True
     ) -> object: ...
 
+    async def fetch_source(
+        self, url: str, *, kind: str = "auto", process: bool = True
+    ) -> object: ...
+
+    async def fetch_sources(
+        self, urls: Sequence[str], *, kind: str = "auto", process: bool = True
+    ) -> object: ...
+
 
 class _ParserExit(Exception):
     def __init__(self, status: int, message: str) -> None:
@@ -172,6 +180,50 @@ def build_parser() -> argparse.ArgumentParser:
         help="Disable the LLM summary and render deterministically.",
     )
     report.set_defaults(handler=handle_report)
+
+    fetch = commands.add_parser(
+        "fetch", help="Fetch one whitelisted public source URL."
+    )
+    fetch.add_argument("url", type=_nonempty, metavar="URL")
+    fetch.add_argument(
+        "--kind",
+        type=_nonempty,
+        default="auto",
+        metavar="KIND",
+        help="Source payload kind: auto (default), feed, or page.",
+    )
+    fetch.add_argument(
+        "--no-process",
+        dest="no_process",
+        action="store_true",
+        help="Stop after ingestion and skip the extraction pipeline.",
+    )
+    fetch.set_defaults(handler=handle_fetch)
+
+    fetch_all = commands.add_parser(
+        "fetch-all",
+        help="Fetch many whitelisted URLs from a JSON array file or a comma-separated list.",
+    )
+    fetch_all.add_argument(
+        "urls",
+        type=_nonempty,
+        metavar="URLS",
+        help="Comma-separated URLs, or a path to a JSON array of URL strings.",
+    )
+    fetch_all.add_argument(
+        "--kind",
+        type=_nonempty,
+        default="auto",
+        metavar="KIND",
+        help="Source payload kind: auto (default), feed, or page.",
+    )
+    fetch_all.add_argument(
+        "--no-process",
+        dest="no_process",
+        action="store_true",
+        help="Stop after ingestion and skip the extraction pipeline.",
+    )
+    fetch_all.set_defaults(handler=handle_fetch_all)
     return parser
 
 
@@ -216,6 +268,46 @@ async def handle_report(args: argparse.Namespace, api: PrismAPIProtocol) -> obje
     """Delegate a parsed report command to the injected facade."""
     return await _await_api_call(
         api.report_case(args.case_id, args.as_of, use_llm=not args.no_llm)
+    )
+
+
+def _resolve_url_source(value: str) -> list[str]:
+    """Interpret one fetch-all argument: comma-separated URLs or a JSON file."""
+    if "://" in value:
+        urls = [part.strip() for part in value.split(",") if part.strip()]
+        if not urls:
+            raise ValueError("URL list is empty")
+        return urls
+    path = Path(value)
+    if not path.is_file():
+        raise ValueError(f"URL list file not found: {value}")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"URL list file is not valid JSON: {exc.msg}") from exc
+    if (
+        not isinstance(payload, list)
+        or not payload
+        or any(not isinstance(item, str) or not item.strip() for item in payload)
+    ):
+        raise ValueError(
+            "URL list file must contain a JSON array of non-empty URL strings"
+        )
+    return [item.strip() for item in payload]
+
+
+async def handle_fetch(args: argparse.Namespace, api: PrismAPIProtocol) -> object:
+    """Delegate a parsed fetch command to the injected facade."""
+    return await _await_api_call(
+        api.fetch_source(args.url, kind=args.kind, process=not args.no_process)
+    )
+
+
+async def handle_fetch_all(args: argparse.Namespace, api: PrismAPIProtocol) -> object:
+    """Resolve the URL list, then delegate to the injected facade."""
+    urls = _resolve_url_source(args.urls)
+    return await _await_api_call(
+        api.fetch_sources(urls, kind=args.kind, process=not args.no_process)
     )
 
 
@@ -350,6 +442,8 @@ async def main(
 __all__ = [
     "PrismAPIProtocol",
     "build_parser",
+    "handle_fetch",
+    "handle_fetch_all",
     "handle_ingest",
     "handle_report",
     "handle_search",

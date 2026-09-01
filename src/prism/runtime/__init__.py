@@ -1,6 +1,7 @@
 """Public local-runtime composition helpers."""
 
 from .composition import (
+    OfflineExtractor,
     OfflineGraphBackend,
     PrismRuntime,
     create_runtime,
@@ -8,6 +9,7 @@ from .composition import (
 )
 
 __all__ = [
+    "OfflineExtractor",
     "OfflineGraphBackend",
     "PrismRuntime",
     "create_runtime",

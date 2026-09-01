@@ -9,7 +9,9 @@ from pathlib import Path
 from prism.api import PrismAPI
 from prism.analyzer import AnalyzerService
 from prism.config import PathConfig, PrismConfig
+from prism.domain import Material
 from prism.events import EventBus
+from prism.extraction import ExtractionResult, ExtractionService
 from prism.graph import GraphBackend, GraphEpisode, GraphService
 from prism.ingestion import IngestionService
 from prism.llm import (
@@ -19,7 +21,9 @@ from prism.llm import (
     Provider,
     TaskRoute,
 )
+from prism.pipeline import PipelineService
 from prism.report import ReportService
+from prism.sources import HttpGetter, SourceService
 from prism.store import EvidenceStore
 
 
@@ -39,6 +43,24 @@ class OfflineGraphBackend:
         # GraphService owns filtering and temporal evaluation.  Returning the
         # local episodes keeps this backend deterministic and fully offline.
         return tuple(self._episodes.values())
+
+
+class OfflineExtractor:
+    """Deterministic extraction stand-in used when no LLM router is configured.
+
+    It performs no I/O and produces no domain objects: the returned
+    :class:`~prism.extraction.ExtractionResult` carries an explicit warning
+    so pipeline audit trails record why structured extraction was skipped
+    instead of silently fabricating one.  Configuring any LLM provider
+    replaces it with the real :class:`~prism.extraction.ExtractionService`.
+    """
+
+    name = "offline"
+
+    async def extract(self, material: Material) -> ExtractionResult:
+        return ExtractionResult(
+            warnings=("no LLM router configured; structured extraction skipped",)
+        )
 
 
 def load_config(
@@ -116,6 +138,9 @@ class PrismRuntime:
     analyzer_service: AnalyzerService
     report_service: ReportService
     api: PrismAPI
+    extraction_service: ExtractionService | OfflineExtractor
+    pipeline_service: PipelineService
+    source_service: SourceService | None = None
     llm_router: LLMRouter | None = None
     _closed: bool = field(default=False, init=False, repr=False)
 
@@ -134,6 +159,18 @@ class PrismRuntime:
     @property
     def graph(self) -> GraphService:
         return self.graph_service
+
+    @property
+    def extraction(self) -> ExtractionService | OfflineExtractor:
+        return self.extraction_service
+
+    @property
+    def pipeline(self) -> PipelineService:
+        return self.pipeline_service
+
+    @property
+    def sources(self) -> SourceService | None:
+        return self.source_service
 
     async def close(self) -> None:
         """Stop asynchronous workers and release the SQLite connection."""
@@ -158,8 +195,14 @@ async def create_runtime(
     *,
     graph_backend: GraphBackend | None = None,
     llm_transport: LLMTransport | None = None,
+    http_getter: HttpGetter | None = None,
 ) -> PrismRuntime:
-    """Construct and start a local runtime without implicit external clients."""
+    """Construct and start a local runtime without implicit external clients.
+
+    ``http_getter`` is the only way to arm source collection: without an
+    explicitly injected getter no ``SourceService`` is created at all, so the
+    default runtime can never issue a real network request.
+    """
 
     config = load_config(config_path)
     llm_router = _compose_llm_router(config, llm_transport)
@@ -185,6 +228,17 @@ async def create_runtime(
     graph = GraphService(backend)
     analyzer = AnalyzerService(graph)
     report = ReportService(llm_router)
+    extraction: ExtractionService | OfflineExtractor = (
+        ExtractionService(llm_router) if llm_router is not None else OfflineExtractor()
+    )
+    pipeline = PipelineService(
+        indexer=store, extraction_service=extraction, graph_service=graph
+    )
+    source_service = (
+        SourceService(config, getter=http_getter)
+        if http_getter is not None
+        else None
+    )
     try:
         store.initialize()
         await events.start()
@@ -200,6 +254,9 @@ async def create_runtime(
         events,
         analyzer_service=analyzer,
         report_service=report,
+        source_service=source_service,
+        pipeline_service=pipeline,
+        source_raw_dir=paths.raw_dir,
     )
     return PrismRuntime(
         config=config,
@@ -211,12 +268,16 @@ async def create_runtime(
         graph_service=graph,
         analyzer_service=analyzer,
         report_service=report,
-        llm_router=llm_router,
         api=api,
+        extraction_service=extraction,
+        pipeline_service=pipeline,
+        source_service=source_service,
+        llm_router=llm_router,
     )
 
 
 __all__ = [
+    "OfflineExtractor",
     "OfflineGraphBackend",
     "PrismRuntime",
     "create_runtime",
