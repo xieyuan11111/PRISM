@@ -23,6 +23,7 @@ from prism.llm import (
 )
 from prism.pipeline import PipelineService
 from prism.report import ReportService
+from prism.research import ResearchPlanner, SearchProvider
 from prism.sources import HttpGetter, SourceService
 from prism.store import EvidenceStore
 
@@ -140,6 +141,8 @@ class PrismRuntime:
     api: PrismAPI
     extraction_service: ExtractionService | OfflineExtractor
     pipeline_service: PipelineService
+    research_planner: ResearchPlanner
+    search_provider: SearchProvider | None = None
     source_service: SourceService | None = None
     llm_router: LLMRouter | None = None
     _closed: bool = field(default=False, init=False, repr=False)
@@ -196,6 +199,7 @@ async def create_runtime(
     graph_backend: GraphBackend | None = None,
     llm_transport: LLMTransport | None = None,
     http_getter: HttpGetter | None = None,
+    search_provider: SearchProvider | None = None,
 ) -> PrismRuntime:
     """Construct and start a local runtime without implicit external clients.
 
@@ -234,6 +238,7 @@ async def create_runtime(
     pipeline = PipelineService(
         indexer=store, extraction_service=extraction, graph_service=graph
     )
+    research_planner = ResearchPlanner(config, router=llm_router)
     source_service = (
         SourceService(config, getter=http_getter)
         if http_getter is not None
@@ -257,6 +262,8 @@ async def create_runtime(
         source_service=source_service,
         pipeline_service=pipeline,
         source_raw_dir=paths.raw_dir,
+        research_planner=research_planner,
+        search_provider=search_provider,
     )
     return PrismRuntime(
         config=config,
@@ -271,6 +278,8 @@ async def create_runtime(
         api=api,
         extraction_service=extraction,
         pipeline_service=pipeline,
+        research_planner=research_planner,
+        search_provider=search_provider,
         source_service=source_service,
         llm_router=llm_router,
     )

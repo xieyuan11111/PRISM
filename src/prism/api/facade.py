@@ -13,10 +13,12 @@ from prism.analyzer import EvolutionAnalysis
 from prism.domain import Claim, EvolutionCase, EvolutionNode, Material, TemporalFact
 from prism.events import Event
 from prism.graph import GraphTimeline, GraphWriteResult
+from prism.extraction import ExtractionResult
 from prism.ingestion import IngestionResult
 from prism.report import ReportDocument, ReportService
+from prism.research import ResearchExecutionReport, ResearchPlan, ResearchPlanner, ResearchExecutor, SearchProvider
 from prism.sources import SourceFetchError, SourceItem
-from prism.store import IndexOutcome, SearchFilter
+from prism.store import IndexEntry, IndexOutcome, SearchFilter
 
 from .fetching import (
     SPOOL_DIRNAME,
@@ -39,6 +41,8 @@ class _IngestionService(Protocol):
 
 class _EvidenceStore(Protocol):
     def index_file(self, path: str | Path) -> IndexOutcome: ...
+
+    def get(self, source_id: str) -> IndexEntry | None: ...
 
     def search(self, criteria: SearchFilter, *, limit: int, offset: int) -> object: ...
 
@@ -85,6 +89,31 @@ class _PipelineService(Protocol):
     ) -> object: ...
 
 
+class _ResearchPlanner(Protocol):
+    async def plan(
+        self,
+        material: Material,
+        extraction: ExtractionResult | None = None,
+        *,
+        core_claims: Iterable[str] = (),
+        evidence_boundaries: Iterable[str] = (),
+    ) -> ResearchPlan: ...
+
+
+class _ResearchExecutor(Protocol):
+    async def execute(
+        self, plan: ResearchPlan, *, process: bool = True
+    ) -> ResearchExecutionReport: ...
+
+
+class _SearchProvider(Protocol):
+    async def search(self, query: object, *, timeout: float = ...) -> object: ...
+
+
+class _MaterialLookup(Protocol):
+    def get(self, source_id: str) -> IndexEntry | None: ...
+
+
 def _required_dependency(
     name: str, dependency: _Dependency | None, method: str
 ) -> _Dependency:
@@ -124,6 +153,10 @@ class PrismAPI:
         source_service: _SourceService | None = None,
         pipeline_service: _PipelineService | None = None,
         source_raw_dir: str | os.PathLike[str] | None = None,
+        research_planner: _ResearchPlanner | None = None,
+        search_provider: _SearchProvider | None = None,
+        research_executor: _ResearchExecutor | None = None,
+        research_intake: object | None = None,
     ) -> None:
         self._ingestion = _required_dependency(
             "ingestion_service", ingestion_service, "ingest"
@@ -156,6 +189,20 @@ class PrismAPI:
         else:
             raise TypeError("source_raw_dir must be path-like")
         self._offline_report: _ReportService | None = None
+        self._research_planner = _optional_dependency(
+            "research_planner", research_planner, "plan"
+        )
+        self._search_provider = _optional_dependency(
+            "search_provider", search_provider, "search"
+        )
+        self._research_executor = _optional_dependency(
+            "research_executor", research_executor, "execute"
+        )
+        if research_intake is not None and not callable(
+            getattr(research_intake, "fetch_source", None)
+        ):
+            raise TypeError("research_intake must provide fetch_source()")
+        self._research_intake = research_intake
 
     async def search(
         self,
@@ -313,6 +360,81 @@ class PrismAPI:
             corpus_path=result.corpus_path,
             pipeline=run,
         )
+
+    async def plan_research(
+        self,
+        material: Material,
+        extraction: ExtractionResult | None = None,
+        *,
+        core_claims: Iterable[str] = (),
+        evidence_boundaries: Iterable[str] = (),
+    ) -> ResearchPlan:
+        """Create an auditable temporal research plan for one material."""
+        if self._research_planner is None:
+            raise ValueError("research_planner is required for plan_research()")
+        return await self._research_planner.plan(
+            material,
+            extraction,
+            core_claims=core_claims,
+            evidence_boundaries=evidence_boundaries,
+        )
+
+    async def plan_research_by_id(
+        self,
+        source_id: str,
+        extraction: ExtractionResult | None = None,
+        *,
+        core_claims: Iterable[str] = (),
+        evidence_boundaries: Iterable[str] = (),
+    ) -> ResearchPlan:
+        """Plan research for a material already indexed in the evidence store."""
+        getter = getattr(self._store, "get", None)
+        if not callable(getter):
+            raise TypeError("evidence_store must provide get() for research planning")
+        entry = getter(source_id)
+        if entry is None:
+            raise LookupError(f"material not found: {source_id}")
+        if not isinstance(entry, IndexEntry):
+            raise TypeError("evidence_store.get() must return an IndexEntry or None")
+        material = Material(
+            id=entry.source_id,
+            title=entry.title,
+            source=entry.source,
+            published_at=entry.published_at,
+            fetched_at=entry.fetched_at,
+            type=entry.type,
+            content=entry.content,
+            original_format=entry.original_format,
+            ocr=entry.ocr,
+            extracted_via=entry.extracted_via,
+            raw_path=entry.raw_path,
+            case_tags=entry.case_tags,
+            url=entry.url,
+        )
+        return await self.plan_research(
+            material,
+            extraction,
+            core_claims=core_claims,
+            evidence_boundaries=evidence_boundaries,
+        )
+
+    async def execute_research(
+        self, plan: ResearchPlan, *, process: bool = True
+    ) -> ResearchExecutionReport:
+        """Execute a plan through the injected provider and authoritative intake."""
+        executor = self._research_executor
+        if executor is None:
+            if self._search_provider is None:
+                raise ValueError(
+                    "search_provider is required for execute_research()"
+                )
+            intake = self._research_intake or self
+            if self._research_intake is None and self._source is None:
+                raise ValueError(
+                    "source_service or research_intake is required for execute_research()"
+                )
+            executor = ResearchExecutor(self._search_provider, intake)
+        return await executor.execute(plan, process=process)
 
     async def build_timeline(self, case_id: str, as_of: datetime) -> GraphTimeline:
         """Build the graph timeline valid at ``as_of``."""

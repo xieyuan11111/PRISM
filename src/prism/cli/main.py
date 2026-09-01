@@ -45,6 +45,10 @@ class PrismAPIProtocol(Protocol):
         self, urls: Sequence[str], *, kind: str = "auto", process: bool = True
     ) -> object: ...
 
+    async def plan_research_by_id(self, source_id: str) -> object: ...
+
+    async def execute_research(self, plan: object, *, process: bool = True) -> object: ...
+
 
 class _ParserExit(Exception):
     def __init__(self, status: int, message: str) -> None:
@@ -224,6 +228,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="Stop after ingestion and skip the extraction pipeline.",
     )
     fetch_all.set_defaults(handler=handle_fetch_all)
+
+    discover = commands.add_parser(
+        "discover", help="Create a temporal research plan for an indexed material."
+    )
+    discover.add_argument("source_id", type=_nonempty, metavar="MATERIAL_ID")
+    discover.set_defaults(handler=handle_discover)
+
+    research = commands.add_parser(
+        "research", help="Search and re-collect evidence for an indexed material."
+    )
+    research.add_argument("source_id", type=_nonempty, metavar="MATERIAL_ID")
+    research.add_argument(
+        "--no-process",
+        dest="no_process",
+        action="store_true",
+        help="Stop after authoritative ingestion and skip extraction/graph processing.",
+    )
+    research.set_defaults(handler=handle_research)
     return parser
 
 
@@ -309,6 +331,19 @@ async def handle_fetch_all(args: argparse.Namespace, api: PrismAPIProtocol) -> o
     return await _await_api_call(
         api.fetch_sources(urls, kind=args.kind, process=not args.no_process)
     )
+
+
+async def handle_research(args: argparse.Namespace, api: PrismAPIProtocol) -> object:
+    """Plan then execute research for one indexed material."""
+    plan = await _await_api_call(api.plan_research_by_id(args.source_id))
+    return await _await_api_call(
+        api.execute_research(plan, process=not args.no_process)
+    )
+
+
+async def handle_discover(args: argparse.Namespace, api: PrismAPIProtocol) -> object:
+    """Create, but do not execute, a research plan."""
+    return await _await_api_call(api.plan_research_by_id(args.source_id))
 
 
 _SENSITIVE_KEY = re.compile(
@@ -444,6 +479,8 @@ __all__ = [
     "build_parser",
     "handle_fetch",
     "handle_fetch_all",
+    "handle_discover",
+    "handle_research",
     "handle_ingest",
     "handle_report",
     "handle_search",
