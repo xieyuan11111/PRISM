@@ -1,0 +1,173 @@
+"""Focused composition-root tests for PRISM's offline runtime."""
+
+from __future__ import annotations
+
+import asyncio
+from datetime import datetime, timezone
+from io import StringIO
+
+import pytest
+
+from prism.cli import main as cli_main
+from prism.config import PathConfig, PrismConfig
+from prism.events import Event
+from prism.graph import GraphEpisode
+from prism.runtime import OfflineGraphBackend, PrismRuntime, create_runtime
+
+
+class FakeGraphBackend:
+    """Small injected backend that cannot access a network or an LLM."""
+
+    def __init__(self) -> None:
+        self.episodes: dict[str, GraphEpisode] = {}
+        self.search_calls: list[str] = []
+
+    async def add_episode(self, episode: GraphEpisode) -> bool:
+        if episode.episode_key in self.episodes:
+            return False
+        self.episodes[episode.episode_key] = episode
+        return True
+
+    async def search(self, query: str) -> tuple[GraphEpisode, ...]:
+        self.search_calls.append(query)
+        return tuple(self.episodes.values())
+
+
+def run(coro):
+    return asyncio.run(coro)
+
+
+def test_explicit_config_is_loaded_and_paths_resolve_under_prism_home(
+    tmp_path, monkeypatch
+):
+    home = tmp_path / "home"
+    monkeypatch.setenv("PRISM_HOME", str(home))
+    explicit = tmp_path / "chosen-config.json"
+    PrismConfig(
+        paths=PathConfig(
+            data_dir="state/index",
+            cache_dir="state/cache",
+            output_dir="results",
+            raw_dir="sources",
+            corpus_dir="documents",
+        )
+    ).save(explicit)
+    PrismConfig(paths=PathConfig(data_dir="wrong")).save(home / "config.json")
+
+    async def exercise():
+        runtime = await create_runtime(explicit, graph_backend=FakeGraphBackend())
+        try:
+            assert isinstance(runtime, PrismRuntime)
+            assert runtime.config == PrismConfig.load(explicit)
+            assert runtime.paths.data_dir == (home / "state/index").resolve()
+            assert runtime.paths.cache_dir == (home / "state/cache").resolve()
+            assert runtime.paths.output_dir == (home / "results").resolve()
+            assert runtime.paths.raw_dir == (home / "state/sources").resolve()
+            assert runtime.paths.corpus_dir == (home / "state/documents").resolve()
+            assert runtime.graph_service.backend is runtime.graph_backend
+        finally:
+            await runtime.close()
+
+    run(exercise())
+
+
+def test_prism_home_config_is_used_when_no_explicit_path(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    monkeypatch.setenv("PRISM_HOME", str(home))
+    expected = PrismConfig(paths=PathConfig(output_dir="published"))
+    expected.save(home / "config.json")
+
+    async def exercise():
+        runtime = await create_runtime(graph_backend=FakeGraphBackend())
+        try:
+            assert runtime.config == expected
+            assert runtime.paths.output_dir == (home / "published").resolve()
+        finally:
+            await runtime.close()
+
+    run(exercise())
+
+
+def test_absent_config_uses_secret_free_offline_defaults_and_creates_directories(
+    tmp_path, monkeypatch
+):
+    home = tmp_path / "empty-home"
+    monkeypatch.setenv("PRISM_HOME", str(home))
+
+    async def exercise():
+        async with await create_runtime() as runtime:
+            assert runtime.config == PrismConfig()
+            assert runtime.config.llm.providers == {}
+            assert runtime.config.sources.whitelist == ()
+            assert isinstance(runtime.graph_backend, OfflineGraphBackend)
+            assert runtime.evidence_store.db_path.is_file()
+            for directory in (
+                runtime.paths.data_dir,
+                runtime.paths.cache_dir,
+                runtime.paths.output_dir,
+                runtime.paths.raw_dir,
+                runtime.paths.corpus_dir,
+            ):
+                assert directory.is_dir()
+
+    run(exercise())
+
+
+def test_runtime_owns_started_bus_and_closes_bus_and_store_without_leaked_worker(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("PRISM_HOME", str(tmp_path / "home"))
+
+    async def exercise():
+        runtime = await create_runtime(graph_backend=FakeGraphBackend())
+        received: list[str] = []
+
+        async def handler(event: Event) -> None:
+            received.append(event.event_id)
+
+        runtime.event_bus.subscribe("test.event", handler)
+        event = Event(
+            event_id="event-1",
+            event_type="test.event",
+            occurred_at=datetime.now(timezone.utc),
+            payload={},
+            correlation_id=None,
+        )
+        await runtime.event_bus.publish(event)
+        await runtime.close()
+        await runtime.close()
+
+        assert received == ["event-1"]
+        assert runtime.evidence_store._connection is None
+        assert not any(
+            task.get_name().startswith("prism.events:") and not task.done()
+            for task in asyncio.all_tasks()
+        )
+        with pytest.raises(RuntimeError, match="not running"):
+            await runtime.event_bus.publish(event)
+
+    run(exercise())
+
+
+def test_cli_builds_and_closes_default_runtime_when_api_is_not_injected(
+    tmp_path, monkeypatch
+):
+    home = tmp_path / "cli-home"
+    monkeypatch.setenv("PRISM_HOME", str(home))
+    stdout = StringIO()
+    stderr = StringIO()
+
+    status = run(
+        cli_main(
+            ["search", "nothing-indexed"],
+            stdout=stdout,
+            stderr=stderr,
+        )
+    )
+
+    assert status == 0
+    assert stdout.getvalue() == "[]\n"
+    assert stderr.getvalue() == ""
+    database = home / "data" / "index.db"
+    database.unlink()
+    assert not database.exists()

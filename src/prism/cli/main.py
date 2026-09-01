@@ -262,8 +262,8 @@ async def main(
 ) -> int:
     """Parse, dispatch, and render one command; return a process exit status.
 
-    The facade is injected deliberately: constructing application services is
-    composition-root work, while this module remains an offline-testable shell.
+    An injected facade keeps tests and embeddings isolated.  The command-line
+    default is an owned, offline-safe runtime that is closed before returning.
     """
     output = stdout if stdout is not None else sys.stdout
     errors = stderr if stderr is not None else sys.stderr
@@ -286,20 +286,17 @@ async def main(
         )
         return exc.status
 
-    if api is None:
-        _write_json(
-            {
-                "error": {
-                    "message": "a PrismAPI instance is required",
-                    "type": "configuration",
-                }
-            },
-            errors,
-        )
-        return 1
-
+    owned_runtime = None
     try:
+        if api is None:
+            from prism.runtime import create_runtime
+
+            owned_runtime = await create_runtime()
+            api = owned_runtime.api
         result = await args.handler(args, api)
+        if owned_runtime is not None:
+            await owned_runtime.close()
+            owned_runtime = None
         _write_json(result, output)
     except (KeyboardInterrupt, SystemExit):
         raise
@@ -314,6 +311,9 @@ async def main(
             errors,
         )
         return 1
+    finally:
+        if owned_runtime is not None:
+            await owned_runtime.close()
     return 0
 
 
