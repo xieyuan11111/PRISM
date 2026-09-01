@@ -33,6 +33,10 @@ class PrismAPIProtocol(Protocol):
         self, path: str | Path, metadata: dict[str, Any] | None = None
     ) -> object: ...
 
+    async def report_case(
+        self, case_id: str, as_of: datetime | None = None, use_llm: bool = True
+    ) -> object: ...
+
 
 class _ParserExit(Exception):
     def __init__(self, status: int, message: str) -> None:
@@ -149,6 +153,25 @@ def build_parser() -> argparse.ArgumentParser:
     ingest.add_argument("input_path", type=Path, metavar="INPUT")
     ingest.add_argument("--metadata", type=_json_object, metavar="JSON")
     ingest.set_defaults(handler=handle_ingest)
+
+    report = commands.add_parser(
+        "report", help="Render a case evolution report as JSON."
+    )
+    report.add_argument("case_id", type=_nonempty, metavar="CASE_ID")
+    report.add_argument(
+        "--as-of",
+        required=False,
+        type=_aware_datetime,
+        metavar="TIMESTAMP",
+        help="ISO-8601 timestamp with a UTC offset; defaults to now.",
+    )
+    report.add_argument(
+        "--no-llm",
+        dest="no_llm",
+        action="store_true",
+        help="Disable the LLM summary and render deterministically.",
+    )
+    report.set_defaults(handler=handle_report)
     return parser
 
 
@@ -187,6 +210,13 @@ async def handle_timeline(args: argparse.Namespace, api: PrismAPIProtocol) -> ob
 async def handle_ingest(args: argparse.Namespace, api: PrismAPIProtocol) -> object:
     """Delegate a parsed ingest command to the injected facade."""
     return await _await_api_call(api.ingest_material(args.input_path, args.metadata))
+
+
+async def handle_report(args: argparse.Namespace, api: PrismAPIProtocol) -> object:
+    """Delegate a parsed report command to the injected facade."""
+    return await _await_api_call(
+        api.report_case(args.case_id, args.as_of, use_llm=not args.no_llm)
+    )
 
 
 _SENSITIVE_KEY = re.compile(
@@ -321,6 +351,7 @@ __all__ = [
     "PrismAPIProtocol",
     "build_parser",
     "handle_ingest",
+    "handle_report",
     "handle_search",
     "handle_timeline",
     "main",

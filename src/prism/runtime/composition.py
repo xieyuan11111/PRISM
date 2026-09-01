@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 
 from prism.api import PrismAPI
+from prism.analyzer import AnalyzerService
 from prism.config import PathConfig, PrismConfig
 from prism.events import EventBus
 from prism.graph import GraphBackend, GraphEpisode, GraphService
@@ -18,6 +19,7 @@ from prism.llm import (
     Provider,
     TaskRoute,
 )
+from prism.report import ReportService
 from prism.store import EvidenceStore
 
 
@@ -111,6 +113,8 @@ class PrismRuntime:
     event_bus: EventBus
     graph_backend: GraphBackend
     graph_service: GraphService
+    analyzer_service: AnalyzerService
+    report_service: ReportService
     api: PrismAPI
     llm_router: LLMRouter | None = None
     _closed: bool = field(default=False, init=False, repr=False)
@@ -179,6 +183,8 @@ async def create_runtime(
     store = EvidenceStore(paths)
     events = EventBus()
     graph = GraphService(backend)
+    analyzer = AnalyzerService(graph)
+    report = ReportService(llm_router)
     try:
         store.initialize()
         await events.start()
@@ -187,7 +193,14 @@ async def create_runtime(
         store.close()
         raise
 
-    api = PrismAPI(ingestion, store, graph, events)
+    api = PrismAPI(
+        ingestion,
+        store,
+        graph,
+        events,
+        analyzer_service=analyzer,
+        report_service=report,
+    )
     return PrismRuntime(
         config=config,
         paths=paths,
@@ -196,6 +209,8 @@ async def create_runtime(
         event_bus=events,
         graph_backend=backend,
         graph_service=graph,
+        analyzer_service=analyzer,
+        report_service=report,
         llm_router=llm_router,
         api=api,
     )

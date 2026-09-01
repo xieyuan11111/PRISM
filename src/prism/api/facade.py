@@ -8,10 +8,12 @@ from pathlib import Path
 from typing import Any, Protocol, TypeVar
 from uuid import uuid4
 
+from prism.analyzer import EvolutionAnalysis
 from prism.domain import Claim, EvolutionCase, EvolutionNode, Material, TemporalFact
 from prism.events import Event
 from prism.graph import GraphTimeline, GraphWriteResult
 from prism.ingestion import IngestionResult
+from prism.report import ReportDocument, ReportService
 from prism.store import IndexOutcome, SearchFilter
 
 
@@ -48,11 +50,35 @@ class _EventBus(Protocol):
     async def publish(self, event: Event) -> None: ...
 
 
+class _AnalyzerService(Protocol):
+    async def analyze(
+        self,
+        case_id: str,
+        as_of: datetime | None = None,
+        *,
+        kinds: Iterable[str] | None = None,
+    ) -> EvolutionAnalysis: ...
+
+
+class _ReportService(Protocol):
+    async def report(self, analysis: EvolutionAnalysis) -> ReportDocument: ...
+
+
 def _required_dependency(
     name: str, dependency: _Dependency | None, method: str
 ) -> _Dependency:
     if dependency is None:
         raise ValueError(f"{name} is required")
+    if not callable(getattr(dependency, method, None)):
+        raise TypeError(f"{name} must provide {method}()")
+    return dependency
+
+
+def _optional_dependency(
+    name: str, dependency: _Dependency | None, method: str
+) -> _Dependency | None:
+    if dependency is None:
+        return None
     if not callable(getattr(dependency, method, None)):
         raise TypeError(f"{name} must provide {method}()")
     return dependency
@@ -71,6 +97,9 @@ class PrismAPI:
         evidence_store: _EvidenceStore,
         graph_service: _GraphService,
         event_bus: _EventBus,
+        *,
+        analyzer_service: _AnalyzerService | None = None,
+        report_service: _ReportService | None = None,
     ) -> None:
         self._ingestion = _required_dependency(
             "ingestion_service", ingestion_service, "ingest"
@@ -84,6 +113,13 @@ class PrismAPI:
         )
         _required_dependency("graph_service", graph_service, "add_case")
         self._events = _required_dependency("event_bus", event_bus, "publish")
+        self._analyzer = _optional_dependency(
+            "analyzer_service", analyzer_service, "analyze"
+        )
+        self._report = _optional_dependency(
+            "report_service", report_service, "report"
+        )
+        self._offline_report: _ReportService | None = None
 
     async def search(
         self,
@@ -155,3 +191,36 @@ class PrismAPI:
             claims=claims,
             materials=materials,
         )
+
+    async def report_case(
+        self,
+        case_id: str,
+        as_of: datetime | None = None,
+        use_llm: bool = True,
+    ) -> ReportDocument:
+        """Analyze one case, then render the analysis as a report document.
+
+        The injected ``AnalyzerService.analyze`` runs first and its finished
+        ``EvolutionAnalysis`` is handed verbatim to ``ReportService.report``;
+        neither stage is reimplemented here.  ``as_of`` is forwarded unchanged
+        (``None`` lets the analyzer use its own clock) and must be
+        timezone-aware when supplied.  ``use_llm=False`` renders through a
+        router-less ``ReportService`` so an explicitly disabled LLM is never
+        contacted regardless of how the injected report service was wired;
+        ``use_llm=True`` uses the injected service, whose router (if any) is
+        the only LLM path.
+        """
+
+        if self._analyzer is None:
+            raise ValueError("analyzer_service is required for report_case()")
+        analysis = await self._analyzer.analyze(case_id, as_of)
+        return await self._report_service_for(use_llm).report(analysis)
+
+    def _report_service_for(self, use_llm: bool) -> _ReportService:
+        if use_llm:
+            if self._report is None:
+                raise ValueError("report_service is required for report_case()")
+            return self._report
+        if self._offline_report is None:
+            self._offline_report = ReportService()
+        return self._offline_report
