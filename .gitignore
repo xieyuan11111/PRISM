@@ -21,6 +21,7 @@ __pycache__/
 .runtime-llm-*/
 .extraction-final/
 .compile-pipeline-review/
+.analyzer-final/
 .*-full/
 .mypy_cache/
 .ruff_cache/
