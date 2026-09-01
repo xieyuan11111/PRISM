@@ -17,6 +17,7 @@ __pycache__/
 *-compile-cache/
 .cli-process-home/
 .runtime-full/
+.*-full/
 .mypy_cache/
 .ruff_cache/
 .venv/
