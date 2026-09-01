@@ -17,6 +17,8 @@ __pycache__/
 *-compile-cache/
 .cli-process-home/
 .runtime-full/
+.llm-*/
+.runtime-llm-*/
 .*-full/
 .mypy_cache/
 .ruff_cache/
