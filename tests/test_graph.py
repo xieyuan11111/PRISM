@@ -16,6 +16,7 @@ from prism.graph import (
     GraphTimeline,
     GraphitiBackend,
 )
+from prism.graph.models import canonical_json
 
 
 NOW = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
@@ -220,13 +221,18 @@ def test_graphiti_adapter_calls_only_documented_add_and_search_methods():
     assert len(client.add_calls) == 1
     assert client.add_calls[0] == {
         "name": episode.name,
-        "episode_body": episode.episode_body,
+        # The PRISM episode_key is injected into a JSON body that lacks it;
+        # it is never sent as the Graphiti uuid (0.29.3 uuid=None = create,
+        # explicit uuid = get_by_uuid lookup that fails on first write).
+        "episode_body": canonical_json(
+            {"kind": "claim", "episode_key": episode.episode_key}
+        ),
         "source": "json",
         "source_description": "PRISM claim episode",
         "reference_time": NOW,
-        "uuid": episode.episode_key,
         "group_id": "prism-test",
     }
+    assert "uuid" not in client.add_calls[0]
 
     client.search_results = [SimpleNamespace(episodes=[episode.episode_key])]
     assert run(adapter.search("case query")) == (episode,)

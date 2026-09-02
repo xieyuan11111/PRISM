@@ -13,15 +13,16 @@ import asyncio
 import builtins
 import importlib.util
 import json
-from datetime import datetime, timezone
+import sqlite3
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from prism.config import GraphitiConfig, PrismConfig
-from prism.graph import GraphEpisode, GraphitiBackend
+from prism.graph import GraphEpisode, GraphitiBackend, SQLiteEpisodeRegistry
 from prism.runtime import OfflineGraphBackend, create_runtime
 
-from graphiti_fakes import FakeGraphitiClient
+from graphiti_fakes import FakeGraphStore, FakeGraphitiClient, NestedResultClient
 
 NOW = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
 
@@ -302,6 +303,157 @@ def test_disabled_config_never_probes_dependencies_or_env(tmp_path, monkeypatch)
         try:
             assert isinstance(runtime.graph_backend, OfflineGraphBackend)
             assert runtime.graphiti_backend is None
+        finally:
+            await runtime.close()
+
+    run(exercise())
+
+
+# ---------------------------------------------------------------------------
+# Persistent SQLite registry lifecycle in the composition root (Phase B).
+# ---------------------------------------------------------------------------
+
+
+def test_enabled_factory_runtime_creates_and_closes_the_sqlite_registry(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("PRISM_HOME", str(tmp_path / "home"))
+    config = enabled_config(tmp_path)
+    config_path = tmp_path / "config.json"
+    config.save(config_path)
+    graph_store = FakeGraphStore()
+
+    def factory(config: GraphitiConfig) -> FakeGraphitiClient:
+        # Real 0.29.3 search shape: body-less EntityEdge results, so restart
+        # attribution depends on the persisted registry mapping.
+        return NestedResultClient(graph_store, with_body=False)
+
+    async def exercise():
+        first = await create_runtime(config_path, graphiti_client_factory=factory)
+        try:
+            assert isinstance(first.graph_backend, GraphitiBackend)
+            assert first.graphiti_backend is first.graph_backend
+            registry = first.graph_episode_registry
+            assert isinstance(registry, SQLiteEpisodeRegistry)
+            assert registry.closed is False
+            # The registry shares the EvidenceStore SQLite file under the
+            # configured data dir.
+            assert registry.db_path == (
+                tmp_path / "home" / "data" / "index.db"
+            ).resolve()
+
+            ep = episode()
+            assert await first.graph_backend.add_episode(ep) is True
+            assert await first.graph_backend.add_episode(ep) is False
+            assert len(graph_store.episodes) == 1
+        finally:
+            await first.close()
+
+        # close() closed the owned backend AND the registry it created.
+        assert registry.closed is True
+
+        # Restart: a fresh runtime, fresh client and fresh registry object on
+        # the same database file must short-circuit the duplicate write and
+        # map body-less EntityEdge results through the persisted mapping.
+        second = await create_runtime(config_path, graphiti_client_factory=factory)
+        try:
+            assert await second.graph_backend.add_episode(episode()) is False
+            assert len(graph_store.episodes) == 1
+            results = await second.graph_backend.search("prism query")
+            assert results == (episode(),)
+        finally:
+            await second.close()
+
+    run(exercise())
+
+
+def test_enabled_runtime_restart_timeline_stays_stable_with_registry(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("PRISM_HOME", str(tmp_path / "home"))
+    config = enabled_config(tmp_path)
+    config_path = tmp_path / "config.json"
+    config.save(config_path)
+    graph_store = FakeGraphStore()
+
+    def factory(config: GraphitiConfig) -> FakeGraphitiClient:
+        return NestedResultClient(graph_store, with_body=False)
+
+    async def exercise():
+        first = await create_runtime(config_path, graphiti_client_factory=factory)
+        ep = episode()
+        try:
+            await first.graph_backend.add_episode(ep)
+            before = await first.graph.timeline(
+                "case", NOW + timedelta(days=1)
+            )
+        finally:
+            await first.close()
+
+        second = await create_runtime(config_path, graphiti_client_factory=factory)
+        try:
+            # The duplicate write across the restart is a no-op...
+            await second.graph_backend.add_episode(ep)
+            after = await second.graph.timeline("case", NOW + timedelta(days=1))
+        finally:
+            await second.close()
+
+        assert [entry.episode_key for entry in after.entries] == [
+            entry.episode_key for entry in before.entries
+        ]
+        assert after.entries and after.entries[0].kind == "claim"
+
+    run(exercise())
+
+
+def test_offline_default_creates_no_registry_and_no_registry_table(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("PRISM_HOME", str(tmp_path / "home"))
+
+    async def exercise():
+        runtime = await create_runtime()
+        try:
+            assert runtime.graph_episode_registry is None
+        finally:
+            await runtime.close()
+
+    run(exercise())
+
+    # The EvidenceStore database exists offline, but the registry table must
+    # not: the default path never creates a registry or touches its schema.
+    db = tmp_path / "home" / "data" / "index.db"
+    assert db.is_file()
+    with sqlite3.connect(db) as conn:
+        tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+    assert "documents" in tables
+    assert "graphiti_episode_registry" not in tables
+
+
+def test_enabled_with_injected_backend_override_creates_no_registry(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("PRISM_HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("PRISM_GRAPHITI_PASSWORD", raising=False)
+    config = enabled_config(tmp_path)
+    config_path = tmp_path / "config.json"
+    config.save(config_path)
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name, *a, **k: None)
+    injected = FakeGraphBackend()
+
+    async def exercise():
+        runtime = await create_runtime(config_path, graph_backend=injected)
+        try:
+            assert runtime.graph_backend is injected
+            assert runtime.graphiti_backend is None
+            # A caller-injected backend is a full override: the runtime does
+            # not create its own registry beside it.
+            assert runtime.graph_episode_registry is None
         finally:
             await runtime.close()
 

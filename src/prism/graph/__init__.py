@@ -1,4 +1,4 @@
-"""PRISM temporal graph contracts, service, and Graphiti adapter."""
+"""PRISM temporal graph contracts, service, Graphiti adapter and registry."""
 
 from .backend import GraphBackend, GraphEpisodeRegistry, GraphitiBackend
 from .models import (
@@ -8,6 +8,7 @@ from .models import (
     GraphWriteResult,
     TimelineEntry,
 )
+from .registry import SQLiteEpisodeRegistry
 from .service import GraphService
 
 __all__ = [
@@ -19,5 +20,6 @@ __all__ = [
     "GraphTimeline",
     "GraphWriteResult",
     "GraphitiBackend",
+    "SQLiteEpisodeRegistry",
     "TimelineEntry",
 ]

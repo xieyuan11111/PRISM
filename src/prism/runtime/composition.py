@@ -16,7 +16,13 @@ from prism.config import GraphitiConfig, PathConfig, PrismConfig
 from prism.domain import Material
 from prism.events import EventBus
 from prism.extraction import ExtractionEvidenceGap, ExtractionResult, ExtractionService
-from prism.graph import GraphBackend, GraphEpisode, GraphitiBackend, GraphService
+from prism.graph import (
+    GraphBackend,
+    GraphEpisode,
+    GraphitiBackend,
+    GraphService,
+    SQLiteEpisodeRegistry,
+)
 from prism.graph.graphiti_client import build_graphiti_client, resolve_episode_type_json
 from prism.ingestion import IngestionService
 from prism.llm import (
@@ -129,27 +135,39 @@ def _compose_graphiti_backend(
     config: PrismConfig,
     graph_backend: GraphBackend | None,
     graphiti_client_factory: Callable[[GraphitiConfig], Any] | None,
-) -> tuple[GraphBackend, GraphitiBackend | None]:
+    *,
+    paths: PathConfig,
+) -> tuple[
+    GraphBackend, GraphitiBackend | None, SQLiteEpisodeRegistry | None
+]:
     """Compose the graph backend for the configured Graphiti opt-in.
 
-    Returns ``(backend, owned_graphiti_backend)``.  ``owned_graphiti_backend``
-    is not None only when THIS call created a real :class:`GraphitiBackend`
-    from a client factory; the runtime must then close it on shutdown.
-    Injected ``graph_backend`` instances belong to the caller and are never
-    closed by the runtime.
+    Returns ``(backend, owned_graphiti_backend, owned_registry)``.
+    ``owned_graphiti_backend``/``owned_registry`` are not None only when THIS
+    call created a real :class:`GraphitiBackend` (and its project-owned
+    persistent registry) from a client factory; the runtime must then close
+    both on shutdown.  Injected ``graph_backend`` instances belong to the
+    caller and are never closed by the runtime, and no registry is created
+    next to them.
 
     The default (``graphiti.enabled=false``) path never imports
-    graphiti-core/neo4j, never builds a client, never probes dependencies and
-    never reads credential env vars.  The enabled path only attempts the real
-    client when a factory is injected or the optional dependencies are
-    installed; anything missing fails with an explicit error before any
-    service is touched.
+    graphiti-core/neo4j, never builds a client, never probes dependencies,
+    never reads credential env vars and never creates a registry.  The
+    enabled path only attempts the real client when a factory is injected or
+    the optional dependencies are installed; anything missing fails with an
+    explicit error before any service is touched.  When the real backend IS
+    created, PRISM's own SQLite-backed episode registry
+    (:class:`SQLiteEpisodeRegistry`) is created and injected too: it shares
+    the EvidenceStore SQLite file under the data dir and persists the
+    episode_key -> real Graphiti uuid mapping, so writes stay idempotent and
+    body-less search results stay attributable across process restarts.
     """
     if not config.graphiti.enabled:
         if graphiti_client_factory is not None:
             raise ValueError("graphiti_client_factory requires graphiti.enabled=true")
         return (
             graph_backend if graph_backend is not None else OfflineGraphBackend(),
+            None,
             None,
         )
     if graph_backend is not None and graphiti_client_factory is not None:
@@ -158,8 +176,8 @@ def _compose_graphiti_backend(
         )
     if graph_backend is not None:
         # Explicit backend injection is a full override: no client is built,
-        # no dependency probe and no credential lookup happen.
-        return graph_backend, None
+        # no dependency probe, no credential lookup and no registry.
+        return graph_backend, None, None
     if graphiti_client_factory is None and not _graphiti_dependency_available():
         raise RuntimeError(
             "graphiti.enabled=true but the optional graphiti dependencies are "
@@ -172,12 +190,22 @@ def _compose_graphiti_backend(
             raise ValueError("graphiti_client_factory returned None")
     else:
         client = build_graphiti_client(config.graphiti)
+    # The real path always gets PRISM's own persistent registry (never a
+    # caller-supplied one): it records the PRISM key, the real Graphiti
+    # uuid captured from each add result, the group/database and the
+    # canonical body in the shared SQLite file under the data dir.  The
+    # table is created additively, so pre-existing store databases migrate
+    # without any change to their rows.
+    registry = SQLiteEpisodeRegistry(
+        paths, database=config.graphiti.database
+    )
     backend = GraphitiBackend(
         client,
         group_id=config.graphiti.group_id,
         episode_type_json=resolve_episode_type_json(),
+        registry=registry,
     )
-    return backend, backend
+    return backend, backend, registry
 
 
 def _compose_llm_router(
@@ -253,6 +281,11 @@ class PrismRuntime:
     # Owned Graphiti backend created by the composition root (never the
     # caller-injected ``graph_backend``); closed by :meth:`close`.
     graphiti_backend: GraphitiBackend | None = None
+    # Owned persistent episode registry (PRISM key -> real Graphiti uuid)
+    # created by the composition root next to ``graphiti_backend``; closed
+    # by :meth:`close`.  None on the offline default and when a caller
+    # injected ``graph_backend`` (full override).
+    graph_episode_registry: SQLiteEpisodeRegistry | None = None
     _closed: bool = field(default=False, init=False, repr=False)
 
     @property
@@ -285,8 +318,9 @@ class PrismRuntime:
 
     async def close(self) -> None:
         """Stop asynchronous workers, release the SQLite connection and close
-        every real resource this runtime created (including an owned
-        Graphiti client).  Idempotent; caller-injected services stay open."""
+        every real resource this runtime created (an owned Graphiti client
+        and its persistent episode registry included).  Idempotent;
+        caller-injected services stay open."""
 
         if self._closed:
             return
@@ -297,8 +331,12 @@ class PrismRuntime:
             try:
                 self.evidence_store.close()
             finally:
-                if self.graphiti_backend is not None:
-                    await self.graphiti_backend.close()
+                try:
+                    if self.graphiti_backend is not None:
+                        await self.graphiti_backend.close()
+                finally:
+                    if self.graph_episode_registry is not None:
+                        self.graph_episode_registry.close()
 
     async def __aenter__(self) -> PrismRuntime:
         return self
@@ -329,8 +367,13 @@ async def create_runtime(
     ``graphiti.enabled=true`` is the opt-in for the real Graphiti/Neo4j spike
     path: it only attempts a client when ``graphiti_client_factory`` is
     injected or the optional ``[graphiti]`` dependencies are installed, and
-    composition itself never connects to any service.  A ``graph_backend``
-    injection is a full override that stays fully offline.
+    composition itself never connects to any service.  The enabled path also
+    creates PRISM's own SQLite-backed episode registry (episode_key -> real
+    Graphiti uuid) under the data dir and injects it into the backend, so
+    duplicate writes and body-less search attribution stay correct across
+    process restarts; :meth:`PrismRuntime.close` closes both.  A
+    ``graph_backend`` injection is a full override that stays fully offline
+    and creates no registry.
     """
 
     config = load_config(config_path)
@@ -345,8 +388,8 @@ async def create_runtime(
     ):
         directory.mkdir(parents=True, exist_ok=True)
 
-    backend, owned_graphiti_backend = _compose_graphiti_backend(
-        config, graph_backend, graphiti_client_factory
+    backend, owned_graphiti_backend, owned_registry = _compose_graphiti_backend(
+        config, graph_backend, graphiti_client_factory, paths=paths
     )
     if not isinstance(backend, GraphBackend):
         raise TypeError("graph_backend must provide add_episode() and search()")
@@ -416,6 +459,8 @@ async def create_runtime(
     except BaseException:
         if owned_graphiti_backend is not None:
             await owned_graphiti_backend.close()
+        if owned_registry is not None:
+            owned_registry.close()
         await events.stop()
         store.close()
         raise
@@ -460,6 +505,7 @@ async def create_runtime(
         source_service=source_service,
         llm_router=llm_router,
         graphiti_backend=owned_graphiti_backend,
+        graph_episode_registry=owned_registry,
     )
 
 

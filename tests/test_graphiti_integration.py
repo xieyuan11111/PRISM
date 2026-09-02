@@ -69,9 +69,13 @@ def live_config(tmp_path) -> tuple[PrismConfig, object]:
     Neo4j group as a database, so GraphitiConfig rejects any live config
     whose group differs from its database; an operator may override both
     names together (PRISM_GRAPHITI_DATABASE and PRISM_GRAPHITI_GROUP) only
-    when the server really serves that database.  Reruns need no test-scoped
-    group: episode writes are keyed by deterministic PRISM uuids, so a
-    repeated write is a no-op.
+    when the server really serves that database.  Reruns are write-no-ops by
+    PRISM key because create_runtime injects the persistent SQLite registry:
+    the second runtime short-circuits every duplicate write before the
+    client.  (Before the registry existed, a rerun added duplicate graph
+    nodes under fresh Graphiti-assigned uuids; that was harmless for the
+    assertions here because every episode body carries the deterministic
+    PRISM episode_key and search dedups by it.)
     """
     database = os.environ.get("PRISM_GRAPHITI_DATABASE", "neo4j")
     group_id = os.environ.get("PRISM_GRAPHITI_GROUP", database)

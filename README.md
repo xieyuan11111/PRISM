@@ -138,11 +138,12 @@ before authoritative re-fetching. A concept may return fewer results because
 of source availability, duplicate URLs, timeouts, or failed body extraction;
 PRISM records those outcomes rather than padding the count with duplicates.
 
-## Graphiti/GTI spike (Phase A)
+## Graphiti/GTI spike (Phase A + A.5 registry)
 
 PRISM's graph layer is a PRISM-owned Graphiti/Neo4j instance (FR-3), but the
 real integration is **not yet validated**: Phase A implemented the code,
-configuration and offline tests only. Nothing in the default runtime imports
+configuration and offline tests only, and Phase A.5 added the offline-verified
+persistent episode registry described below. Nothing in the default runtime imports
 `graphiti-core`/`neo4j`, builds a client, probes for the optional packages or
 reads Graphiti credentials. To opt in, enable the extra and the config:
 
@@ -187,10 +188,21 @@ default local Neo4j.
 variable *names* (`PRISM_GRAPHITI_PASSWORD`, optional `PRISM_GRAPHITI_USERNAME`),
 never values. With `enabled: true` the runtime attempts the real client only
 when the optional dependencies are installed; missing credentials or packages
-fail with explicit errors before any service is touched. A caller can instead
+fail with explicit errors before any service is touched. The enabled path
+also creates PRISM's own SQLite-backed episode registry
+(`src/prism/graph/registry.py`) and injects it into the backend: it records
+each PRISM `episode_key`, the real Graphiti-assigned uuid captured from the
+write, the group/database and the canonical episode body in an additive
+`graphiti_episode_registry` table of the existing SQLite file (`index.db`
+under the data dir — old databases migrate in place, and nothing with
+credentials or absolute paths is ever stored). Duplicate writes therefore
+stay no-ops across process restarts, and body-less `search` results (real
+0.29.3 `EntityEdge` uuid references) are attributed through the persisted
+mapping instead of in-process state alone. `PrismRuntime.close()` closes the
+backend and the registry the runtime created. A caller can instead
 inject `graph_backend`/`graphiti_client_factory` into `create_runtime` for
-controlled integrations. `PrismRuntime.close()` closes the resources the
-runtime created.
+controlled integrations; a caller-injected `graph_backend` is a full
+override that creates no registry.
 
 A PRISM-owned deployment template (service `prism-graphiti-spike`, host
 ports 7475/7688) and the full spike plan — side effects, acceptance
