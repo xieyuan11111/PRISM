@@ -10,13 +10,22 @@
 # its own service name, volume and published host ports - a separate Neo4j
 # home and process.  It never touches any pre-existing Neo4j/Graphiti
 # installation or configuration, and it does NOT rely on multiple database
-# names inside a shared instance for isolation.
+# names inside a shared instance for isolation: the Community edition cannot
+# host a second group/database, so PRISM environments are isolated from each
+# other by running their own instance, never by sharing one.
 #
 # Database: the image is the Neo4j Community edition, which serves a SINGLE
 # built-in database named `neo4j`.  The template therefore sets NO custom
 # default database name: the single-database edition would not create it and
-# the server can fail to start.  PRISM configs for this container must use
-# graphiti.database = "neo4j" (or leave it empty for the server default).
+# the server can fail to start.  PRISM configs for this container must set
+# graphiti.database = "neo4j" AND graphiti.group_id = "neo4j" (equal):
+# graphiti-core 0.29.3 realises a Neo4j group as a database, and add_episode
+# clones the driver to database=<group_id> whenever an explicit group_id
+# differs from the connected database, so any other group name would target a
+# database the Community edition does not serve.  Two-group isolation on one
+# Community instance is NOT supported; isolation between PRISM environments
+# is this container itself (own home/service/data volume/ports) plus PRISM
+# schema-marker gating.
 # PHASE B VERIFY: confirm the pinned image's default database name and
 # single-database behavior at first start.
 #

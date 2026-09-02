@@ -31,11 +31,15 @@ def run(coro):
 
 
 def enabled_config(tmp_path, *, uri="bolt://prism-graphiti-spike:7688") -> PrismConfig:
+    # Phase B Community shape: group_id == database == the container's single
+    # built-in database "neo4j" (graphiti-core 0.29.3 realises a Neo4j group
+    # as a database, so the config validation requires the two to be equal).
     return PrismConfig(
         graphiti=GraphitiConfig(
             enabled=True,
             uri=uri,
-            group_id="prism-spike",
+            database="neo4j",
+            group_id="neo4j",
             password_env="PRISM_GRAPHITI_PASSWORD",
         )
     )
@@ -163,7 +167,8 @@ def test_enabled_missing_username_env_fails_when_username_env_configured(
         graphiti=GraphitiConfig(
             enabled=True,
             uri="bolt://prism-graphiti-spike:7688",
-            group_id="prism-spike",
+            database="neo4j",
+            group_id="neo4j",
             username_env="PRISM_GRAPHITI_USERNAME",
         )
     )
@@ -192,14 +197,14 @@ def test_enabled_with_injected_factory_composes_owned_backend_and_closes_it(
         try:
             assert isinstance(runtime.graph_backend, GraphitiBackend)
             assert runtime.graphiti_backend is runtime.graph_backend
-            assert runtime.graphiti_backend.group_id == "prism-spike"
+            assert runtime.graphiti_backend.group_id == "neo4j"
             assert factory.calls == [config.graphiti]
             client = factory.clients[-1]
 
             # No credential env is needed on the injected-factory path: the
             # factory owns credential handling for its own client.
             assert await runtime.graph_backend.add_episode(episode()) is True
-            assert client.add_calls[-1]["group_id"] == "prism-spike"
+            assert client.add_calls[-1]["group_id"] == "neo4j"
             assert await runtime.graph_backend.add_episode(episode()) is False
             assert len(client.add_calls) == 1
             assert client.closed is False
@@ -271,7 +276,7 @@ def test_enabled_config_without_uri_fails_at_load_before_any_client(tmp_path, mo
     monkeypatch.setenv("PRISM_HOME", str(tmp_path / "home"))
     config_path = tmp_path / "config.json"
     config_path.write_text(
-        json.dumps({"graphiti": {"enabled": True, "group_id": "prism-spike"}}),
+        json.dumps({"graphiti": {"enabled": True, "group_id": "neo4j"}}),
         encoding="utf-8",
     )
 
@@ -285,7 +290,8 @@ def test_disabled_config_never_probes_dependencies_or_env(tmp_path, monkeypatch)
     config = PrismConfig(
         graphiti=GraphitiConfig(
             uri="bolt://prism-graphiti-spike:7688",
-            group_id="prism-spike",
+            database="neo4j",
+            group_id="neo4j",
         )
     )
     config.save(config_path)

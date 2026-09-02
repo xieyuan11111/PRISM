@@ -301,12 +301,22 @@ class GraphitiConfig:
     here: ``username_env``/``password_env`` name environment variables that the
     runtime resolves only at connection time.  An empty ``username_env`` means
     the Neo4j default administrative user ``neo4j`` (the deployment template's
-    own container uses the same default).  An empty ``database`` means the
-    server's default database; the Community template's PRISM-owned container
-    serves Neo4j's single built-in database ``neo4j``, so a Phase B config
-    should set ``database`` to ``neo4j`` (or leave it empty) unless a live run
-    verifies the server's actual database capabilities.  ``enabled`` configs
-    (and ``effective_uri``) require an explicit non-default port: the
+    own container uses the same default).
+
+    Group/database semantics (graphiti-core 0.29.3, source-confirmed):
+    Graphiti realises a Neo4j "group" as a *database*.  ``add_episode`` treats
+    an explicit ``group_id`` as the target database: whenever it differs from
+    the driver's database it clones the driver with ``database=group_id`` and
+    writes there.  Neo4j Community serves exactly one built-in database
+    (``neo4j`` on the PRISM-owned container), so an ``enabled`` config MUST
+    set ``database`` and ``group_id`` to the same value; validation rejects
+    any mismatch before a client could clone onto a database the
+    single-database edition does not serve.  Isolation between PRISM
+    environments comes from dedicated instances (their own Neo4j home,
+    service, data volume and ports), never from two group names inside one
+    Community instance; the adapter's group filtering remains a defensive
+    contract for future multi-database/Enterprise servers.  ``enabled``
+    configs (and ``effective_uri``) require an explicit non-default port: the
     standard Neo4j listener port numbers 7474/7687 are refused under every
     scheme, so a portless or standard-port URI - ``bolt://host:7474`` and
     ``http://host:7687`` included - cannot silently reach a default local
@@ -332,10 +342,13 @@ class GraphitiConfig:
 
         if not isinstance(self.database, str):
             raise TypeError("graphiti.database must be a string")
-        if self.database and any(character.isspace() for character in self.database):
+        raw_database = self.database
+        if raw_database and any(character.isspace() for character in raw_database):
             raise ValueError(
                 "graphiti.database must be a bare database name without whitespace"
             )
+        database = raw_database.strip()
+        object.__setattr__(self, "database", database)
 
         if not isinstance(self.group_id, str):
             raise TypeError("graphiti.group_id must be a string")
@@ -367,9 +380,34 @@ class GraphitiConfig:
                     "graphiti.enabled requires graphiti.uri (e.g. "
                     "bolt://prism-graphiti-spike:7688)"
                 )
+            if not database:
+                raise ValueError(
+                    "graphiti.enabled requires an explicit graphiti.database: "
+                    "graphiti-core 0.29.3 treats an explicit group_id as the "
+                    "Neo4j database selection (add_episode clones the driver "
+                    "to database=group_id whenever they differ), so "
+                    "graphiti.database must name the same single Community "
+                    "database as graphiti.group_id (\"neo4j\" for the "
+                    "PRISM-owned container)"
+                )
             if not group_id:
                 raise ValueError(
-                    "graphiti.enabled requires an explicit graphiti.group_id"
+                    "graphiti.enabled requires an explicit graphiti.group_id "
+                    "equal to graphiti.database"
+                )
+            if group_id != database:
+                raise ValueError(
+                    "graphiti.enabled requires graphiti.group_id == "
+                    "graphiti.database: graphiti.database="
+                    f"{database!r} but graphiti.group_id={group_id!r}.  "
+                    "graphiti-core 0.29.3 realises a Neo4j group as a "
+                    "database (add_episode clones the driver to "
+                    "database=group_id whenever an explicit group_id differs "
+                    "from the connected database), and Neo4j Community "
+                    "serves only its single built-in database (\"neo4j\" on "
+                    "the PRISM-owned container); two-group isolation on one "
+                    "Community instance is not supported - isolation comes "
+                    "from a dedicated PRISM-owned instance"
                 )
         if uri:
             _, _, port = _graphiti_uri_parts(uri)

@@ -47,8 +47,8 @@ PRISM 的分析对象是政策、观点或公共议题随时间的变化；新�
 ## 自动化验收（本次实测）
 
 - M0 相关 focused 套件：198 passed（analyzer / api / case-merge / cli / domain / extraction / graph / pipeline / report / runtime / store 与 M0 演变验收、旧合并包时间语义回归文件）。
-- 全套离线测试：632 passed；未调用真实网络、LLM、Graphiti 或 Neo4j；运行设置 `PYTHONDONTWRITEBYTECODE=1`。
-- 无 `.pyc` 内存编译检查：93 个 Python 文件（src + tests）全部通过，`pyc_written=0`。
+- 全套离线测试：761 passed + 2 skipped（仅 `tests/test_graphiti_integration.py` 的 opt-in live 用例按设计跳过：未设置 `PRISM_GRAPHITI_URI`/`PRISM_GRAPHITI_PASSWORD`，不会触碰任何真实 Graphiti/Neo4j）；未调用真实网络、LLM、Graphiti 或 Neo4j；运行设置 `PYTHONDONTWRITEBYTECODE=1`。
+- 无 `.pyc` 内存编译检查：103 个 Python 文件（src + tests）全部通过，`pyc_written=0`。
 - `git diff --check`：通过。
 
 ## 未完成与阻塞

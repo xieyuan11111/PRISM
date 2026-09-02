@@ -201,6 +201,62 @@ def test_readme_is_honest_that_real_graphiti_is_not_validated():
     assert "tests/test_graphiti_integration.py" in readme
 
 
+def test_env_template_requires_group_equal_to_database_not_a_second_tenant():
+    env_text = (TEMPLATE_DIR / ".env.example").read_text(encoding="utf-8")
+    assert "PRISM_GRAPHITI_GROUP=neo4j" in env_text
+    # graphiti-core 0.29.3 realises a Neo4j group as a database, so the
+    # template must never suggest a group different from the Community
+    # database (the old "prism-spike" group example is gone) and must say the
+    # two names stay equal.
+    assert "prism-spike" not in env_text
+    assert "equal" in env_text.lower()
+
+
+def test_no_template_or_doc_uses_prism_spike_as_a_group_id():
+    # The pre-fix group id example implied a second tenant inside one
+    # Community instance; templates/plan/README now use group == database ==
+    # "neo4j" and must not resurrect the old group id.
+    for path in (
+        PLAN_DOC,
+        REPO_ROOT / "README.md",
+        TEMPLATE_DIR / "compose.yaml",
+        TEMPLATE_DIR / ".env.example",
+    ):
+        text = path.read_text(encoding="utf-8")
+        assert "prism-spike" not in text, path.name
+
+
+def test_plan_config_example_keeps_group_equal_to_database():
+    text = PLAN_DOC.read_text(encoding="utf-8")
+    example = text.split('"graphiti": {', 1)[1].split("}", 1)[0]
+    assert '"database": "neo4j"' in example
+    assert '"group_id": "neo4j"' in example
+    # The rule itself is stated: graphiti 0.29.3 treats group_id as the
+    # database selection and GraphitiConfig rejects an enabled mismatch.
+    assert "group_id == database" in text or "equal to it" in text
+
+
+def test_readme_config_example_uses_community_group_equal_to_database():
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    example = readme.split('"graphiti": {', 1)[1].split("}", 1)[0]
+    assert '"database": "neo4j"' in example
+    assert '"group_id": "neo4j"' in example
+    plain = re.sub(r"\s+", " ", readme)
+    assert "realises a Neo4j group as a database" in plain
+
+
+def test_plan_does_not_promise_two_group_isolation_on_one_community_instance():
+    text = PLAN_DOC.read_text(encoding="utf-8")
+    # The old acceptance item claimed two groups on the shared PRISM-owned
+    # instance never see each other - impossible on Community, where a group
+    # is a database and only one database exists.
+    assert "two groups on the shared PRISM-owned instance never" not in text
+    assert "not a Community isolation mechanism" in text
+    assert "PRISM-dedicated instance" in text or "instance isolation" in text
+    assert "schema marker" in text.lower()
+    assert "NOT an" in text  # two-group isolation is explicitly not an item
+
+
 def test_no_tracked_doc_mentions_external_private_systems():
     # 开源边界: docs never reference any private memory system or personal
     # agent framework as a dependency.

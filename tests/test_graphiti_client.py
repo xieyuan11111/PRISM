@@ -67,8 +67,12 @@ def test_build_graphiti_client_uses_graphiti_0293_constructor_keywords(monkeypat
 
 
 def test_build_graphiti_client_never_forwards_database_or_neo4j_kwargs(monkeypatch):
-    """Even a non-default PRISM database must stay metadata: 0.29.3 accepts
-    no database argument, and no ``neo4j_*`` keyword may reach it."""
+    """``config.database`` never reaches the 0.29.3 constructor: it accepts no
+    database argument, and no ``neo4j_*`` keyword may leak through.  Graphiti
+    selects the database later through ``group_id`` (add_episode clones the
+    driver to ``database=group_id`` when they differ), which is why enabled
+    configs require ``group_id == database``; a disabled config may still
+    carry database metadata without it ever being forwarded."""
     monkeypatch.setenv(USERNAME_ENV, USERNAME)
     monkeypatch.setenv(PASSWORD_ENV, PASSWORD)
     calls: list[dict[str, object]] = []

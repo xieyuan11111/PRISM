@@ -9,6 +9,16 @@ They also require the optional ``[graphiti]`` dependencies and a live,
 PRISM-OWNED Neo4j/Graphiti instance reachable at ``PRISM_GRAPHITI_URI``
 (see deploy/graphiti-spike and docs/graphiti-spike-plan.md).
 
+Community live semantics: the PRISM-owned container runs Neo4j Community,
+which serves ONE built-in database.  graphiti-core 0.29.3 realises a Neo4j
+group as a database (``add_episode`` clones the driver to
+``database=group_id`` whenever an explicit group_id differs), so live configs
+here use group_id == database == "neo4j" and GraphitiConfig rejects any
+mismatch.  Two-group isolation is therefore NOT a live Community acceptance
+item: isolation is the PRISM-dedicated instance itself plus PRISM schema
+marker gating on search mapping (both exercised offline as pure adapter
+contracts in test_graphiti_backend.py).
+
 Phase A honesty note: the real Graphiti integration has NOT been verified
 yet.  A first live run is expected to surface API mismatches (the plan doc
 keeps a PHASE B VERIFY list); treat failures here as spike findings to
@@ -54,15 +64,23 @@ def run(coro):
 def live_config(tmp_path) -> tuple[PrismConfig, object]:
     """Build a config pointing at the PRISM-owned live instance.
 
-    The group id is explicit and test-scoped so repeated live runs on the
-    same instance do not collide with spike data.
+    Community shape: group_id == database == "neo4j" (the single built-in
+    database of the PRISM-owned container).  graphiti-core 0.29.3 realises a
+    Neo4j group as a database, so GraphitiConfig rejects any live config
+    whose group differs from its database; an operator may override both
+    names together (PRISM_GRAPHITI_DATABASE and PRISM_GRAPHITI_GROUP) only
+    when the server really serves that database.  Reruns need no test-scoped
+    group: episode writes are keyed by deterministic PRISM uuids, so a
+    repeated write is a no-op.
     """
+    database = os.environ.get("PRISM_GRAPHITI_DATABASE", "neo4j")
+    group_id = os.environ.get("PRISM_GRAPHITI_GROUP", database)
     config = PrismConfig(
         graphiti=GraphitiConfig(
             enabled=True,
             uri=os.environ["PRISM_GRAPHITI_URI"],
-            database=os.environ.get("PRISM_GRAPHITI_DATABASE", ""),
-            group_id=os.environ.get("PRISM_GRAPHITI_GROUP", "prism-live-integration"),
+            database=database,
+            group_id=group_id,
             password_env="PRISM_GRAPHITI_PASSWORD",
         )
     )

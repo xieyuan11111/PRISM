@@ -4,6 +4,15 @@ These tests never import graphiti-core or neo4j and never touch a network.
 A fake graph store stands in for a real Graphiti database, and a fake registry
 stands in for durable PRISM-side uuid knowledge, so idempotency and restart
 behavior are exercised with the same code paths Phase B will run live.
+
+Scope note: the group-scoped tests below (``test_group_isolation_...``,
+``test_search_filters_results_whose_group_mismatches_...``) are PURE ADAPTER
+CONTRACT tests over the fake store.  They are NOT Community live acceptance:
+graphiti-core 0.29.3 realises a Neo4j group as a database, Neo4j Community
+serves one built-in database, and live Phase B uses group_id == database ==
+"neo4j" on a PRISM-dedicated instance (see docs/graphiti-spike-plan.md).
+Group labels in these tests are opaque partition strings, not Community
+config values.
 """
 
 from __future__ import annotations
@@ -89,15 +98,15 @@ def test_backend_requires_an_explicit_group_id():
         GraphitiBackend(client, group_id="")
     with pytest.raises(ValueError, match="group_id"):
         GraphitiBackend(client, group_id="   ")
-    GraphitiBackend(client, group_id="prism-spike")
+    GraphitiBackend(client, group_id="neo4j")
 
 
 def test_backend_requires_a_client():
     with pytest.raises(ValueError, match="client"):
-        GraphitiBackend(None, group_id="prism-spike")  # type: ignore[arg-type]
+        GraphitiBackend(None, group_id="neo4j")  # type: ignore[arg-type]
 
 
-def make_backend(client, *, group_id="prism-spike", registry=None) -> GraphitiBackend:
+def make_backend(client, *, group_id="neo4j", registry=None) -> GraphitiBackend:
     return GraphitiBackend(
         client,
         group_id=group_id,
@@ -115,7 +124,7 @@ def test_add_episode_passes_group_id_and_is_in_process_idempotent():
     assert run(backend.add_episode(episode)) is False
     assert len(client.add_calls) == 1
     assert client.add_calls[0]["uuid"] == episode.episode_key
-    assert client.add_calls[0]["group_id"] == "prism-spike"
+    assert client.add_calls[0]["group_id"] == "neo4j"
     assert client.add_calls[0]["name"] == episode.name
     assert client.add_calls[0]["episode_body"] == episode.episode_body
     assert client.add_calls[0]["source"] == "json"
@@ -164,7 +173,7 @@ def test_search_after_restart_maps_episodes_from_graph_bodies():
     restarted = make_backend(client)
     results = run(restarted.search("prism query"))
 
-    assert client.search_calls == [("prism query", "prism-spike")]
+    assert client.search_calls == [("prism query", "neo4j")]
     assert len(results) == 1
     mapped = results[0]
     assert mapped.episode_key == episode.episode_key
@@ -200,7 +209,7 @@ def test_search_skips_unknown_uuids_without_bodies():
     # The store gains an episode this backend never wrote and whose body the
     # client does not return: nothing to positively map -> skipped.
     client.store.episodes["22222222-3333-4444-5555-666666666666"] = StoredEpisode(
-        make_episode("22222222-3333-4444-5555-666666666666", case_id="case-y"), "prism-spike"
+        make_episode("22222222-3333-4444-5555-666666666666", case_id="case-y"), "neo4j"
     )
 
     results = run(backend.search("anything"))
@@ -209,6 +218,11 @@ def test_search_skips_unknown_uuids_without_bodies():
 
 
 def test_search_filters_results_whose_group_mismatches_even_when_client_is_group_blind():
+    # Pure adapter defense contract: when a client returns results from more
+    # than one group (a group-blind client, or a future multi-database
+    # server), the adapter still skips results tagged with another group.
+    # NOT a Community live acceptance - a Community instance has one database
+    # (see the module docstring).
     client = FakeGraphitiClient(group_aware=False)
     backend = make_backend(client)
     ours = make_episode()
@@ -222,11 +236,17 @@ def test_search_filters_results_whose_group_mismatches_even_when_client_is_group
 
 
 def test_group_isolation_between_two_backends_shared_graph():
+    # Pure adapter contract test over a fake store shared by two group-scoped
+    # backends ("tenant-a"/"tenant-b" are opaque partition labels).
+    # NOT a Community live acceptance: graphiti-core 0.29.3 realises a Neo4j
+    # group as a database, Neo4j Community serves one built-in database, and
+    # live Phase B isolation is the PRISM-dedicated instance + schema-marker
+    # gating (see the module docstring and docs/graphiti-spike-plan.md).
     store = FakeGraphStore()
     group_a = FakeGraphitiClient(store)
     group_b = FakeGraphitiClient(store)
-    backend_a = make_backend(group_a, group_id="prism-spike-a")
-    backend_b = make_backend(group_b, group_id="prism-spike-b")
+    backend_a = make_backend(group_a, group_id="tenant-a")
+    backend_b = make_backend(group_b, group_id="tenant-b")
     episode_a = make_episode("aaaaaaaa-1111-2222-3333-444444444444", case_id="case-a")
     episode_b = make_episode("bbbbbbbb-1111-2222-3333-444444444444", case_id="case-b")
 
@@ -238,8 +258,8 @@ def test_group_isolation_between_two_backends_shared_graph():
 
     assert [episode.episode_key for episode in results_a] == [episode_a.episode_key]
     assert [episode.episode_key for episode in results_b] == [episode_b.episode_key]
-    assert group_a.search_calls[-1] == ("query", "prism-spike-a")
-    assert group_b.search_calls[-1] == ("query", "prism-spike-b")
+    assert group_a.search_calls[-1] == ("query", "tenant-a")
+    assert group_b.search_calls[-1] == ("query", "tenant-b")
 
 
 def test_search_passes_through_graph_episode_results_directly():
@@ -266,7 +286,7 @@ def test_search_maps_registry_episodes_without_bodies():
     registry.put(episode)
     # The graph store holds the episode too, but the client returns no body;
     # only the registry's uuid knowledge maps the result back.
-    client.store.episodes[episode.episode_key] = StoredEpisode(episode, "prism-spike")
+    client.store.episodes[episode.episode_key] = StoredEpisode(episode, "neo4j")
 
     results = run(backend.search("query"))
 

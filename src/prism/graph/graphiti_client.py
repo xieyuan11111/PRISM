@@ -69,10 +69,16 @@ def resolve_episode_type_json() -> Any:
 def build_graphiti_client(config: GraphitiConfig) -> Any:
     """Build the real Graphiti client for a live Phase B spike run.
 
-    Graphiti 0.29.3 accepts ``uri``, ``user`` and ``password``.  PRISM keeps
-    ``config.database`` as adapter metadata/future capability, but that
-    version's constructor does not consume it.  Credential resolution happens
-    first so missing env vars fail before any import.
+    Graphiti 0.29.3 accepts ``uri``, ``user`` and ``password``; neither that
+    constructor nor this function consumes ``config.database``.  The database
+    is selected later by graphiti itself: ``add_episode`` treats an explicit
+    ``group_id`` as the Neo4j database and clones the driver to
+    ``database=group_id`` whenever it differs from the connected database.
+    That is why ``GraphitiConfig`` requires ``database == group_id`` for
+    every enabled config: on the PRISM-owned Community container both are the
+    single built-in database ``neo4j``, and no other group name could resolve
+    to a database the single-database edition serves.  Credential resolution
+    happens first so missing env vars fail before any import.
     """
     username, password = _resolve_credentials(config)
     uri = config.effective_uri

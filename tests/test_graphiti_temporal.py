@@ -24,7 +24,7 @@ def run(coro):
     return asyncio.run(coro)
 
 
-def make_backend(client, *, group_id="prism-spike", registry=None) -> GraphitiBackend:
+def make_backend(client, *, group_id="neo4j", registry=None) -> GraphitiBackend:
     return GraphitiBackend(
         client,
         group_id=group_id,

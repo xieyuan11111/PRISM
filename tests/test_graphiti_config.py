@@ -147,7 +147,7 @@ def test_enabled_path_rejects_uri_without_an_explicit_port(uri):
     # Neo4j ports 7687/7474, so a portless URI is refused before any client
     # could be built against a default local instance.
     with pytest.raises(ValueError, match="port"):
-        GraphitiConfig(enabled=True, uri=uri, group_id="prism-spike")
+        GraphitiConfig(enabled=True, uri=uri, database="neo4j", group_id="neo4j")
 
 
 def test_disabled_config_parses_standard_ports_but_never_connects_to_them():
@@ -178,7 +178,7 @@ def test_enabled_path_rejects_standard_default_ports(uri):
     # Even an explicit 7474/7687 targets a default local Neo4j, not the
     # PRISM-owned container; the enabled path must refuse it.
     with pytest.raises(ValueError, match="port"):
-        GraphitiConfig(enabled=True, uri=uri, group_id="prism-spike")
+        GraphitiConfig(enabled=True, uri=uri, database="neo4j", group_id="neo4j")
 
 
 @pytest.mark.parametrize(
@@ -198,7 +198,7 @@ def test_enabled_path_rejects_standard_default_ports(uri):
 )
 def test_enabled_path_rejects_standard_ports_under_any_scheme(uri):
     with pytest.raises(ValueError, match="port"):
-        GraphitiConfig(enabled=True, uri=uri, group_id="prism-spike")
+        GraphitiConfig(enabled=True, uri=uri, database="neo4j", group_id="neo4j")
 
 
 @pytest.mark.parametrize(
@@ -211,7 +211,7 @@ def test_enabled_path_rejects_standard_ports_under_any_scheme(uri):
     ],
 )
 def test_enabled_path_accepts_explicit_non_default_ports(uri):
-    config = GraphitiConfig(enabled=True, uri=uri, group_id="prism-spike")
+    config = GraphitiConfig(enabled=True, uri=uri, database="neo4j", group_id="neo4j")
     assert config.effective_uri == uri
 
 
@@ -242,16 +242,52 @@ def test_uri_rejects_paths_queries_and_fragments(uri):
         GraphitiConfig(uri=uri)
 
 
-def test_enabled_requires_uri_and_explicit_group_id():
+def test_enabled_requires_uri_database_and_equal_group_id():
     with pytest.raises(ValueError, match="uri"):
-        GraphitiConfig(enabled=True, group_id="prism-spike")
+        GraphitiConfig(enabled=True, database="neo4j", group_id="neo4j")
+    with pytest.raises(ValueError, match="database"):
+        GraphitiConfig(enabled=True, uri="bolt://prism.local:7688", group_id="neo4j")
     with pytest.raises(ValueError, match="group_id"):
-        GraphitiConfig(enabled=True, uri="bolt://prism.local:7688")
+        GraphitiConfig(enabled=True, uri="bolt://prism.local:7688", database="neo4j")
     GraphitiConfig(
         enabled=True,
         uri="bolt://prism.local:7688",
-        group_id="prism-spike",
+        database="neo4j",
+        group_id="neo4j",
     )
+
+
+def test_enabled_rejects_group_id_differing_from_database():
+    # graphiti-core 0.29.3 realises a Neo4j group as a database: add_episode
+    # clones the driver to database=group_id whenever an explicit group_id
+    # differs from the connected database, and Neo4j Community serves only its
+    # single built-in database.  An enabled config with database="neo4j" and a
+    # different group id (the pre-fix "prism-spike" example) would target a
+    # database the edition does not serve, so it is rejected offline before
+    # any client could be built.
+    with pytest.raises(ValueError, match="group_id == graphiti.database"):
+        GraphitiConfig(
+            enabled=True,
+            uri="bolt://prism.local:7688",
+            database="neo4j",
+            group_id="prism-spike",
+        )
+    with pytest.raises(ValueError, match="group_id == graphiti.database"):
+        GraphitiConfig(
+            enabled=True,
+            uri="bolt://prism.local:7688",
+            database="prism-spike",
+            group_id="neo4j",
+        )
+    # Equal values are accepted; the concrete name is the server's to serve
+    # (the PRISM-owned Community container serves the built-in "neo4j").
+    config = GraphitiConfig(
+        enabled=True,
+        uri="bolt://prism.local:7688",
+        database="neo4j",
+        group_id="neo4j",
+    )
+    assert config.database == config.group_id == "neo4j"
 
 
 def test_config_fields_validate_types_and_shapes():
@@ -275,7 +311,8 @@ def test_env_fields_name_environment_variables_never_values():
     config = GraphitiConfig(
         enabled=True,
         uri="bolt://prism.local:7688",
-        group_id="prism-spike",
+        database="neo4j",
+        group_id="neo4j",
         username_env="PRISM_GRAPHITI_USERNAME",
         password_env="PRISM_GRAPHITI_PASSWORD",
     )
@@ -294,7 +331,7 @@ def test_graphiti_round_trips_through_portable_json(tmp_path):
             enabled=True,
             uri="bolt://prism-graphiti-spike:7688",
             database="neo4j",
-            group_id="prism-spike",
+            group_id="neo4j",
             username_env="PRISM_GRAPHITI_USERNAME",
             password_env="PRISM_GRAPHITI_PASSWORD",
             timeout=7.5,
@@ -341,7 +378,8 @@ def test_graphiti_to_dict_never_contains_password_values():
         graphiti=GraphitiConfig(
             enabled=True,
             uri="bolt://prism.local:7688",
-            group_id="prism-spike",
+            database="neo4j",
+            group_id="neo4j",
             username_env="PRISM_GRAPHITI_USERNAME",
             password_env="PRISM_GRAPHITI_PASSWORD",
         )

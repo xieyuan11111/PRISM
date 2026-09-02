@@ -156,7 +156,7 @@ pip install -e ".[graphiti]"
     "enabled": true,
     "uri": "bolt://localhost:7688",
     "database": "neo4j",
-    "group_id": "prism-spike",
+    "group_id": "neo4j",
     "username_env": "",
     "password_env": "PRISM_GRAPHITI_PASSWORD",
     "timeout": 30.0
@@ -166,16 +166,22 @@ pip install -e ".[graphiti]"
 
 The example connects to the PRISM-owned container's single built-in `neo4j`
 database: the template runs Neo4j Community Edition (a single-database
-edition) and sets no custom default database name, so `graphiti.database`
-must be `neo4j` (or empty for the server default) unless a live run
-verifies otherwise. Database isolation comes from the separate PRISM-owned
-container (its own Neo4j home and data volume), not from multiple database
-names on a shared instance. The `database` value is currently retained as
-PRISM adapter metadata and a future capability; graphiti-core 0.29.3's
-`Graphiti(uri, user, password, ...)` constructor does not consume it, so the
-adapter does not forward a database keyword. `graphiti.uri` must also carry
-an explicit non-default port (the standard 7474/7687 are never applied), so
-an enabled config cannot silently reach a default local Neo4j.
+edition) and sets no custom default database name. `group_id` is not a second
+tenant inside the instance: graphiti-core 0.29.3 realises a Neo4j group as a
+database — `add_episode` treats an explicit `group_id` as the target database
+and clones the driver to `database=group_id` whenever they differ — so an
+enabled config must set `database` and `group_id` to the same value (`neo4j`
+here), and PRISM's config validation rejects any enabled config where they
+differ. Isolation comes from the separate PRISM-owned container (its own
+Neo4j home, service and data volume): two groups on one Community instance
+are not supported, and the adapter's group filtering remains a defensive
+contract for future multi-database/Enterprise servers. The `database` value
+is adapter metadata that graphiti-core 0.29.3's
+`Graphiti(uri, user, password, ...)` constructor does not consume; it must
+equal `group_id` because that is the name graphiti selects as the database.
+`graphiti.uri` must also carry an explicit non-default port (the standard
+7474/7687 are never applied), so an enabled config cannot silently reach a
+default local Neo4j.
 
 `graphiti.uri` must not embed credentials; the config stores environment
 variable *names* (`PRISM_GRAPHITI_PASSWORD`, optional `PRISM_GRAPHITI_USERNAME`),

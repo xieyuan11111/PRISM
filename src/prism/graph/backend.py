@@ -5,8 +5,19 @@ Phase A (Graphiti/Neo4j spike) design notes
 - Importing ``prism.graph`` never imports ``graphiti_core`` or ``neo4j`` and
   builds no client.  The real client is only ever constructed by an explicit
   factory path in the composition root after ``graphiti.enabled=true``.
-- Every episode is written under an explicit ``group_id`` so PRISM data is
-  scoped inside its own Graphiti database/group.
+- Every episode is written under an explicit ``group_id``.  On
+  graphiti-core 0.29.3 with Neo4j a group IS a database: ``add_episode``
+  clones the driver to ``database=group_id`` whenever an explicit group_id
+  differs from the connected database, so PRISM's config requires
+  ``group_id == database`` for enabled configs.  Neo4j Community serves a
+  single built-in database (``neo4j`` on the PRISM-owned container), so live
+  Phase B data lives in that one database/group; isolation between PRISM
+  environments comes from dedicated instances (own Neo4j home, service, data
+  volume and ports), never from two group names on one Community instance.
+- The group filtering below is therefore a DEFENSIVE adapter contract for
+  future multi-database/Enterprise servers (where each group is a real
+  database) and for group-blind clients: it is NOT a Community live
+  acceptance claim.
 - Idempotency across process restarts is provided by an injected registry
   (write-before existence lookup), never by the in-process cache.  The
   ``_episodes`` dict below is a per-process local cache only and is NOT
@@ -160,10 +171,15 @@ class GraphitiBackend:
 
     Graphiti's documented ``add_episode`` and ``search`` methods are the only
     client operations used.  All episodes belong to the explicit ``group_id``
-    and search results are mapped back to PRISM payloads only when they can be
-    positively attributed (registry/cache uuid knowledge or a PRISM schema
-    marker in the returned body), preserving provenance and uncertainty
-    without guessing at a live graph schema.
+    - on graphiti-core 0.29.3 with Neo4j that group is a database, so the
+    adapter's group id always equals the connected database name (PRISM's
+    config enforces ``group_id == database``).  Search results are mapped
+    back to PRISM payloads only when they can be positively attributed
+    (registry/cache uuid knowledge or a PRISM schema marker in the returned
+    body), and results tagged with another group are skipped as a defensive
+    contract for group-aware/multi-database servers - it is not a Community
+    isolation mechanism (see the module notes).  Provenance and uncertainty
+    are preserved without guessing at a live graph schema.
     """
 
     def __init__(
