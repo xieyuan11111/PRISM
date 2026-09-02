@@ -2,18 +2,22 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+import importlib.util
 import os
 from pathlib import Path
+from typing import Any
 
 from prism.api import PrismAPI
 from prism.analyzer import AnalyzerService
-from prism.config import PathConfig, PrismConfig
+from prism.config import GraphitiConfig, PathConfig, PrismConfig
 from prism.domain import Material
 from prism.events import EventBus
 from prism.extraction import ExtractionEvidenceGap, ExtractionResult, ExtractionService
-from prism.graph import GraphBackend, GraphEpisode, GraphService
+from prism.graph import GraphBackend, GraphEpisode, GraphitiBackend, GraphService
+from prism.graph.graphiti_client import build_graphiti_client, resolve_episode_type_json
 from prism.ingestion import IngestionService
 from prism.llm import (
     LLMRouter,
@@ -108,6 +112,74 @@ def load_config(
     return PrismConfig.load(source)
 
 
+def _graphiti_dependency_available() -> bool:
+    """Whether the optional graphiti extra's packages are importable.
+
+    Probing with ``find_spec`` never imports the packages, so the offline
+    default stays dependency-free even when this probe runs (it only ever
+    runs on the explicitly enabled path).
+    """
+    return (
+        importlib.util.find_spec("graphiti_core") is not None
+        and importlib.util.find_spec("neo4j") is not None
+    )
+
+
+def _compose_graphiti_backend(
+    config: PrismConfig,
+    graph_backend: GraphBackend | None,
+    graphiti_client_factory: Callable[[GraphitiConfig], Any] | None,
+) -> tuple[GraphBackend, GraphitiBackend | None]:
+    """Compose the graph backend for the configured Graphiti opt-in.
+
+    Returns ``(backend, owned_graphiti_backend)``.  ``owned_graphiti_backend``
+    is not None only when THIS call created a real :class:`GraphitiBackend`
+    from a client factory; the runtime must then close it on shutdown.
+    Injected ``graph_backend`` instances belong to the caller and are never
+    closed by the runtime.
+
+    The default (``graphiti.enabled=false``) path never imports
+    graphiti-core/neo4j, never builds a client, never probes dependencies and
+    never reads credential env vars.  The enabled path only attempts the real
+    client when a factory is injected or the optional dependencies are
+    installed; anything missing fails with an explicit error before any
+    service is touched.
+    """
+    if not config.graphiti.enabled:
+        if graphiti_client_factory is not None:
+            raise ValueError("graphiti_client_factory requires graphiti.enabled=true")
+        return (
+            graph_backend if graph_backend is not None else OfflineGraphBackend(),
+            None,
+        )
+    if graph_backend is not None and graphiti_client_factory is not None:
+        raise ValueError(
+            "graphiti_client_factory cannot be combined with graph_backend"
+        )
+    if graph_backend is not None:
+        # Explicit backend injection is a full override: no client is built,
+        # no dependency probe and no credential lookup happen.
+        return graph_backend, None
+    if graphiti_client_factory is None and not _graphiti_dependency_available():
+        raise RuntimeError(
+            "graphiti.enabled=true but the optional graphiti dependencies are "
+            "not installed; install them with 'pip install -e \".[graphiti]\"' "
+            "or inject graphiti_client_factory/graph_backend"
+        )
+    if graphiti_client_factory is not None:
+        client = graphiti_client_factory(config.graphiti)
+        if client is None:
+            raise ValueError("graphiti_client_factory returned None")
+    else:
+        client = build_graphiti_client(config.graphiti)
+    backend = GraphitiBackend(
+        client,
+        group_id=config.graphiti.group_id,
+        episode_type_json=resolve_episode_type_json(),
+    )
+    return backend, backend
+
+
 def _compose_llm_router(
     config: PrismConfig,
     transport: LLMTransport | None,
@@ -178,6 +250,9 @@ class PrismRuntime:
     # New dependencies are appended after the original optional fields so
     # existing positional callers keep their argument order unchanged.
     scholarly_metadata_client: ScholarlyMetadataClient | None = None
+    # Owned Graphiti backend created by the composition root (never the
+    # caller-injected ``graph_backend``); closed by :meth:`close`.
+    graphiti_backend: GraphitiBackend | None = None
     _closed: bool = field(default=False, init=False, repr=False)
 
     @property
@@ -209,7 +284,9 @@ class PrismRuntime:
         return self.source_service
 
     async def close(self) -> None:
-        """Stop asynchronous workers and release the SQLite connection."""
+        """Stop asynchronous workers, release the SQLite connection and close
+        every real resource this runtime created (including an owned
+        Graphiti client).  Idempotent; caller-injected services stay open."""
 
         if self._closed:
             return
@@ -217,7 +294,11 @@ class PrismRuntime:
         try:
             await self.event_bus.stop()
         finally:
-            self.evidence_store.close()
+            try:
+                self.evidence_store.close()
+            finally:
+                if self.graphiti_backend is not None:
+                    await self.graphiti_backend.close()
 
     async def __aenter__(self) -> PrismRuntime:
         return self
@@ -234,6 +315,7 @@ async def create_runtime(
     http_getter: HttpGetter | None = None,
     search_provider: SearchProvider | None = None,
     firecrawl_client: object | None = None,
+    graphiti_client_factory: Callable[[GraphitiConfig], Any] | None = None,
 ) -> PrismRuntime:
     """Construct and start a local runtime without implicit external clients.
 
@@ -243,6 +325,12 @@ async def create_runtime(
     standard-library Firecrawl client and public GET transport.  Credentials
     are resolved from the configured environment variable and never stored in
     :class:`~prism.config.PrismConfig`.
+
+    ``graphiti.enabled=true`` is the opt-in for the real Graphiti/Neo4j spike
+    path: it only attempts a client when ``graphiti_client_factory`` is
+    injected or the optional ``[graphiti]`` dependencies are installed, and
+    composition itself never connects to any service.  A ``graph_backend``
+    injection is a full override that stays fully offline.
     """
 
     config = load_config(config_path)
@@ -257,8 +345,8 @@ async def create_runtime(
     ):
         directory.mkdir(parents=True, exist_ok=True)
 
-    backend: GraphBackend = (
-        graph_backend if graph_backend is not None else OfflineGraphBackend()
+    backend, owned_graphiti_backend = _compose_graphiti_backend(
+        config, graph_backend, graphiti_client_factory
     )
     if not isinstance(backend, GraphBackend):
         raise TypeError("graph_backend must provide add_episode() and search()")
@@ -326,6 +414,8 @@ async def create_runtime(
         store.initialize()
         await events.start()
     except BaseException:
+        if owned_graphiti_backend is not None:
+            await owned_graphiti_backend.close()
         await events.stop()
         store.close()
         raise
@@ -369,6 +459,7 @@ async def create_runtime(
         search_provider=effective_provider,
         source_service=source_service,
         llm_router=llm_router,
+        graphiti_backend=owned_graphiti_backend,
     )
 
 

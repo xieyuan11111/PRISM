@@ -17,6 +17,18 @@ dev = [
     "pytest>=8.0",
 ]
 
+# Phase A (Graphiti/Neo4j spike): the graphiti extra is opt-in and NEVER part of
+# the default install; PRISM's default runtime stays fully offline without it.
+# Version bounds are deliberately left unpinned: PRISM has not yet installed or
+# verified graphiti-core/neo4j against a live server (offline Phase A), so any
+# lower bound asserted here would be unverified. Confirm the real minimum
+# versions during the Phase B live spike (docs/graphiti-spike-plan.md) and pin
+# them conservatively afterwards.
+graphiti = [
+    "graphiti-core",
+    "neo4j",
+]
+
 [tool.setuptools.packages.find]
 where = ["src"]
 

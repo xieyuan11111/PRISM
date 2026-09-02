@@ -9,6 +9,7 @@ Current foundation modules:
 - Markdown/PDF/OCR ingestion with raw-file retention;
 - SQLite/FTS5 evidence indexing and filtered search;
 - dependency-optional Graphiti/GTI temporal graph adapter and historical timeline contract;
+- opt-in Graphiti/Neo4j spike scaffolding (config, deploy template, live-test gate) that stays fully offline by default;
 - offline tests for every completed module.
 
 Run the offline test suite with:
@@ -136,3 +137,64 @@ that result limit for Firecrawl Search, and are globally URL-deduplicated
 before authoritative re-fetching. A concept may return fewer results because
 of source availability, duplicate URLs, timeouts, or failed body extraction;
 PRISM records those outcomes rather than padding the count with duplicates.
+
+## Graphiti/GTI spike (Phase A)
+
+PRISM's graph layer is a PRISM-owned Graphiti/Neo4j instance (FR-3), but the
+real integration is **not yet validated**: Phase A implemented the code,
+configuration and offline tests only. Nothing in the default runtime imports
+`graphiti-core`/`neo4j`, builds a client, probes for the optional packages or
+reads Graphiti credentials. To opt in, enable the extra and the config:
+
+```console
+pip install -e ".[graphiti]"
+```
+
+```json
+{
+  "graphiti": {
+    "enabled": true,
+    "uri": "bolt://localhost:7688",
+    "database": "neo4j",
+    "group_id": "prism-spike",
+    "username_env": "",
+    "password_env": "PRISM_GRAPHITI_PASSWORD",
+    "timeout": 30.0
+  }
+}
+```
+
+The example connects to the PRISM-owned container's single built-in `neo4j`
+database: the template runs Neo4j Community Edition (a single-database
+edition) and sets no custom default database name, so `graphiti.database`
+must be `neo4j` (or empty for the server default) unless a live run
+verifies otherwise. Database isolation comes from the separate PRISM-owned
+container (its own Neo4j home and data volume), not from multiple database
+names on a shared instance. `graphiti.uri` must also carry an explicit
+non-default port (the standard 7474/7687 are never applied), so an enabled
+config cannot silently reach a default local Neo4j.
+
+`graphiti.uri` must not embed credentials; the config stores environment
+variable *names* (`PRISM_GRAPHITI_PASSWORD`, optional `PRISM_GRAPHITI_USERNAME`),
+never values. With `enabled: true` the runtime attempts the real client only
+when the optional dependencies are installed; missing credentials or packages
+fail with explicit errors before any service is touched. A caller can instead
+inject `graph_backend`/`graphiti_client_factory` into `create_runtime` for
+controlled integrations. `PrismRuntime.close()` closes the resources the
+runtime created.
+
+A PRISM-owned deployment template (service `prism-graphiti-spike`, host
+ports 7475/7688) and the full spike plan — side effects, acceptance
+criteria, rollback, and the list of API surfaces the live spike must verify —
+live in `deploy/graphiti-spike/` and `docs/graphiti-spike-plan.md`.
+
+Live integration tests are opt-in and never part of a default CI run: they
+skip unless `PRISM_GRAPHITI_URI` and `PRISM_GRAPHITI_PASSWORD` are both set in
+the environment:
+
+```console
+python -m pytest tests/test_graphiti_integration.py -v
+```
+
+Until a live Phase B spike passes those tests, treat every claim about the
+real Graphiti/Neo4j behavior in this repository as unverified.

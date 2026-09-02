@@ -2,6 +2,7 @@
 
 from .models import (
     FirecrawlConfig,
+    GraphitiConfig,
     LLMConfig,
     LLMProviderConfig,
     PathConfig,
@@ -11,6 +12,7 @@ from .models import (
 
 __all__ = [
     "FirecrawlConfig",
+    "GraphitiConfig",
     "LLMConfig",
     "LLMProviderConfig",
     "PathConfig",

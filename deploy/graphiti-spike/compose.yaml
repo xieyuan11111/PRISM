@@ -1,0 +1,59 @@
+# PRISM Graphiti/Neo4j spike - Phase A TEMPLATE (deploy/graphiti-spike)
+#
+# This template is NOT yet validated against a live server (Phase A is
+# offline-only).  It is a starting point for the Phase B live spike, which
+# must verify every unverified item below before relying on it.  See
+# docs/graphiti-spike-plan.md for side effects, acceptance criteria and
+# rollback instructions.
+#
+# Isolation: this compose project deploys a PRISM-OWNED Neo4j container with
+# its own service name, volume and published host ports - a separate Neo4j
+# home and process.  It never touches any pre-existing Neo4j/Graphiti
+# installation or configuration, and it does NOT rely on multiple database
+# names inside a shared instance for isolation.
+#
+# Database: the image is the Neo4j Community edition, which serves a SINGLE
+# built-in database named `neo4j`.  The template therefore sets NO custom
+# default database name: the single-database edition would not create it and
+# the server can fail to start.  PRISM configs for this container must use
+# graphiti.database = "neo4j" (or leave it empty for the server default).
+# PHASE B VERIFY: confirm the pinned image's default database name and
+# single-database behavior at first start.
+#
+# Ports: 7475 (HTTP) and 7688 (Bolt) are the host-published ports, mapped to
+# Neo4j's standard in-container ports 7474/7687.  They are SUGGESTED values to
+# avoid colliding with a default local Neo4j on 7474/7687, but there is NO
+# guarantee they are free: run the port preflight (check_ports.py) first and
+# change the values in .env if anything occupies them.
+
+name: prism-graphiti-spike
+
+services:
+  neo4j:
+    # PHASE B VERIFY: pin a concrete image tag after the first live run; the
+    # version below is the research baseline (Neo4j >= 5.26) and is
+    # intentionally not claimed as verified here.
+    image: neo4j:5.26-community
+    container_name: prism-graphiti-spike
+    restart: unless-stopped
+    environment:
+      # PRISM resolves credentials from the same env var names at runtime;
+      # the container user below matches PRISM's default username (neo4j)
+      # when graphiti.username_env is left empty.
+      NEO4J_AUTH: "neo4j/${PRISM_GRAPHITI_PASSWORD:?PRISM_GRAPHITI_PASSWORD is required; copy .env.example to .env and set it}"
+    ports:
+      - "${PRISM_GRAPHITI_HTTP_PORT:-7475}:7474"
+      - "${PRISM_GRAPHITI_BOLT_PORT:-7688}:7687"
+    volumes:
+      - prism_graphiti_neo4j_data:/data
+    # PHASE B VERIFY: healthcheck command syntax for the chosen image/tag.
+    healthcheck:
+      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost:7474 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+volumes:
+  # PRISM-owned data volume; removed by the documented rollback
+  # (`docker compose down -v`), never a shared/pre-existing volume.
+  prism_graphiti_neo4j_data:

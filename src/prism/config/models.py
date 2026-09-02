@@ -9,12 +9,107 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Mapping
+from urllib.parse import urlsplit
 
 
 _DOMAIN_PATTERN = re.compile(
     r"(?=^.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+"
     r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$"
 )
+
+# Phase A Graphiti/Neo4j URI policy.  Neo4j's standard listener ports are
+# 7474 (HTTP) and 7687 (Bolt and the neo4j routing family) - precisely the
+# ports a default local Neo4j occupies.  PRISM NEVER applies a default port
+# when connecting, and every connection path (an ``enabled`` config and
+# ``effective_uri``) refuses EITHER standard port NUMBER under ANY scheme:
+# bolt://host:7474 and http://host:7687 are cross-scheme mistakes that would
+# still touch the port numbers a default local instance owns, so they are
+# rejected exactly like their scheme-native forms.  A portless or
+# standard-port URI can therefore never silently reach a pre-existing
+# default local instance instead of the PRISM-owned container.  A scheme
+# with a documented standard port may omit the port while disabled (its URI
+# is only stored, never connected).  https has NO documented default here on
+# purpose: Neo4j's own https listener default (7473) is outside the two
+# reserved values, so an https URI must state an explicit port rather than
+# receive a guessed one.  Verify during Phase B before widening this set.
+_GRAPHITI_SCHEMES = frozenset(
+    {"bolt", "bolt+s", "bolt+ssc", "http", "https", "neo4j", "neo4j+s", "neo4j+ssc"}
+)
+# Schemes whose standard Neo4j listener port is documented for Phase A (bolt
+# family: 7687, http: 7474).  Only membership matters: a portless URI of
+# such a scheme may be stored while disabled - it is never connectable.
+# https is absent because 7473 is not a documented Phase A default, so an
+# https URI must state its port even at parse time.
+_GRAPHITI_DOCUMENTED_DEFAULT_SCHEMES = frozenset(
+    {"bolt", "bolt+s", "bolt+ssc", "neo4j", "neo4j+s", "neo4j+ssc", "http"}
+)
+# Standard listener port numbers of a default local Neo4j: 7474 (HTTP) and
+# 7687 (Bolt and the neo4j routing family).  Every connection path refuses
+# these numbers under ANY scheme, because a default local instance owns both
+# port numbers no matter which listener natively uses them.  Do not widen:
+# 7473 (Neo4j's https listener) is deliberately outside Phase A's reserved
+# set.
+_GRAPHITI_RESERVED_PORTS = frozenset({7474, 7687})
+
+
+def _graphiti_uri_parts(uri: str) -> tuple[str, str, int | None]:
+    """Validate a Graphiti URI and return ``(scheme, host, port)``.
+
+    Credentials embedded in the URI are rejected outright; PRISM reads them
+    from environment variables named by config instead.  Host, port, path and
+    scheme rules are enforced here so a typo is caught at config load time,
+    offline, before any service is touched.
+    """
+    try:
+        parts = urlsplit(uri)
+    except ValueError as error:
+        raise ValueError(f"graphiti.uri is not parseable: {uri!r}") from error
+    scheme = parts.scheme.lower()
+    if not scheme:
+        raise ValueError(
+            f"graphiti.uri must include a scheme such as bolt:// or http://: {uri!r}"
+        )
+    if scheme not in _GRAPHITI_SCHEMES:
+        allowed = ", ".join(sorted(_GRAPHITI_SCHEMES))
+        raise ValueError(f"graphiti.uri scheme {scheme!r} is not supported; use one of: {allowed}")
+    if parts.username not in (None, "") or parts.password not in (None, ""):
+        raise ValueError(
+            "graphiti.uri must not embed credentials; configure "
+            "graphiti.username_env/graphiti.password_env instead"
+        )
+    if "@" in parts.netloc:
+        raise ValueError(
+            "graphiti.uri must not embed credentials; configure "
+            "graphiti.username_env/graphiti.password_env instead"
+        )
+    host = parts.hostname
+    if host is None or not host:
+        raise ValueError(f"graphiti.uri host must not be empty: {uri!r}")
+    if any(character.isspace() for character in host):
+        raise ValueError(f"graphiti.uri host must not contain whitespace: {uri!r}")
+    if parts.path not in ("", "/"):
+        raise ValueError(
+            "graphiti.uri must not include a path; put the database name in "
+            "graphiti.database instead"
+        )
+    if parts.query or parts.fragment:
+        raise ValueError(
+            "graphiti.uri must not include a query or fragment; put the database "
+            "name in graphiti.database instead"
+        )
+    port: int | None = None
+    try:
+        port = parts.port
+    except ValueError as error:
+        raise ValueError(f"graphiti.uri has an invalid port: {uri!r}") from error
+    if port is not None and not 1 <= port <= 65535:
+        raise ValueError(f"graphiti.uri port must be between 1 and 65535: {uri!r}")
+    if port is None and scheme not in _GRAPHITI_DOCUMENTED_DEFAULT_SCHEMES:
+        raise ValueError(
+            f"graphiti.uri scheme {scheme!r} has no Phase A default port; "
+            "include an explicit port such as bolt://host:7688"
+        )
+    return scheme, host, port
 
 
 def _require_text(name: str, value: str) -> None:
@@ -197,6 +292,149 @@ class FirecrawlConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class GraphitiConfig:
+    """Explicit opt-in connection settings for the PRISM Graphiti/Neo4j spike.
+
+    The default configuration is fully offline: ``enabled`` defaults to false
+    and no Graphiti/Neo4j dependency is imported or client built unless the
+    runtime is explicitly asked to attempt it.  Credentials are never stored
+    here: ``username_env``/``password_env`` name environment variables that the
+    runtime resolves only at connection time.  An empty ``username_env`` means
+    the Neo4j default administrative user ``neo4j`` (the deployment template's
+    own container uses the same default).  An empty ``database`` means the
+    server's default database; the Community template's PRISM-owned container
+    serves Neo4j's single built-in database ``neo4j``, so a Phase B config
+    should set ``database`` to ``neo4j`` (or leave it empty) unless a live run
+    verifies the server's actual database capabilities.  ``enabled`` configs
+    (and ``effective_uri``) require an explicit non-default port: the
+    standard Neo4j listener port numbers 7474/7687 are refused under every
+    scheme, so a portless or standard-port URI - ``bolt://host:7474`` and
+    ``http://host:7687`` included - cannot silently reach a default local
+    Neo4j instead of the PRISM-owned container.
+    """
+
+    enabled: bool = False
+    uri: str = ""
+    database: str = ""
+    group_id: str = ""
+    username_env: str = ""
+    password_env: str = "PRISM_GRAPHITI_PASSWORD"
+    timeout: float = 30.0
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.enabled, bool):
+            raise TypeError("graphiti.enabled must be a bool")
+
+        if not isinstance(self.uri, str):
+            raise TypeError("graphiti.uri must be a string")
+        uri = self.uri.strip()
+        object.__setattr__(self, "uri", uri)
+
+        if not isinstance(self.database, str):
+            raise TypeError("graphiti.database must be a string")
+        if self.database and any(character.isspace() for character in self.database):
+            raise ValueError(
+                "graphiti.database must be a bare database name without whitespace"
+            )
+
+        if not isinstance(self.group_id, str):
+            raise TypeError("graphiti.group_id must be a string")
+        group_id = self.group_id.strip()
+        object.__setattr__(self, "group_id", group_id)
+
+        if self.username_env is None:
+            raise ValueError("graphiti.username_env must be a string")
+        if not isinstance(self.username_env, str):
+            raise TypeError("graphiti.username_env must be a string")
+        object.__setattr__(self, "username_env", self.username_env.strip())
+
+        if not isinstance(self.password_env, str):
+            raise TypeError("graphiti.password_env must be a string")
+        password_env = self.password_env.strip()
+        object.__setattr__(self, "password_env", password_env)
+        if not password_env:
+            raise ValueError("graphiti.password_env must be a non-empty string")
+
+        if isinstance(self.timeout, bool) or not isinstance(self.timeout, (int, float)):
+            raise TypeError("graphiti.timeout must be a number")
+        if self.timeout <= 0:
+            raise ValueError("graphiti.timeout must be greater than zero")
+        object.__setattr__(self, "timeout", float(self.timeout))
+
+        if self.enabled:
+            if not uri:
+                raise ValueError(
+                    "graphiti.enabled requires graphiti.uri (e.g. "
+                    "bolt://prism-graphiti-spike:7688)"
+                )
+            if not group_id:
+                raise ValueError(
+                    "graphiti.enabled requires an explicit graphiti.group_id"
+                )
+        if uri:
+            _, _, port = _graphiti_uri_parts(uri)
+            if self.enabled:
+                if port is None:
+                    raise ValueError(
+                        "graphiti.enabled requires an explicit port in "
+                        f"graphiti.uri ({uri!r}); PRISM never applies a "
+                        "default port for connections, so a portless URI "
+                        "cannot be used"
+                    )
+                if port in _GRAPHITI_RESERVED_PORTS:
+                    raise ValueError(
+                        f"graphiti.uri port {port} is a standard Neo4j "
+                        "default port (7474 http, 7687 bolt); graphiti.enabled "
+                        "refuses these port numbers under every scheme and "
+                        "must target the PRISM-owned container instead - use "
+                        "an explicit non-default port (e.g. 7475 or 7688) "
+                        "rather than a default local instance's ports"
+                    )
+
+    @property
+    def uri_scheme(self) -> str | None:
+        return None if not self.uri else _graphiti_uri_parts(self.uri)[0]
+
+    @property
+    def uri_host(self) -> str | None:
+        return None if not self.uri else _graphiti_uri_parts(self.uri)[1]
+
+    @property
+    def uri_port(self) -> int | None:
+        return None if not self.uri else _graphiti_uri_parts(self.uri)[2]
+
+    @property
+    def effective_uri(self) -> str:
+        """The URI a real client would connect to - never a guessed default.
+
+        PRISM never applies a default port, and no connection accepts the
+        standard Neo4j listener port numbers 7474 (http) or 7687 (bolt
+        family) under any scheme: an omitted port or a 7474/7687 port would
+        silently reach a default local Neo4j instead of the PRISM-owned
+        container, so this property raises for all of them instead of
+        synthesizing a URI.  The stored ``uri`` is returned unchanged only
+        once it carries an explicit non-default port.
+        """
+        if not self.uri:
+            raise ValueError("graphiti.uri is not configured")
+        _, _, port = _graphiti_uri_parts(self.uri)
+        if port is None:
+            raise ValueError(
+                "graphiti.uri must include an explicit port for connections "
+                f"({self.uri!r}); PRISM never applies a default port, so a "
+                "portless URI cannot be used"
+            )
+        if port in _GRAPHITI_RESERVED_PORTS:
+            raise ValueError(
+                f"graphiti.uri port {port} is a standard Neo4j default port "
+                "(7474 http, 7687 bolt); connections never target a default "
+                "local instance's port numbers under any scheme - use an "
+                "explicit non-default port such as 7475 or 7688"
+            )
+        return self.uri
+
+
+@dataclass(frozen=True, slots=True)
 class PrismConfig:
     """Root configuration object for the PRISM foundation module."""
 
@@ -204,6 +442,7 @@ class PrismConfig:
     llm: LLMConfig = field(default_factory=LLMConfig)
     sources: SourceConfig = field(default_factory=SourceConfig)
     firecrawl: FirecrawlConfig = field(default_factory=FirecrawlConfig)
+    graphiti: GraphitiConfig = field(default_factory=GraphitiConfig)
 
     def __post_init__(self) -> None:
         if not isinstance(self.paths, PathConfig):
@@ -214,6 +453,8 @@ class PrismConfig:
             raise TypeError("sources must be a SourceConfig")
         if not isinstance(self.firecrawl, FirecrawlConfig):
             raise TypeError("firecrawl must be a FirecrawlConfig")
+        if not isinstance(self.graphiti, GraphitiConfig):
+            raise TypeError("graphiti must be a GraphitiConfig")
 
     def resolved_paths(self, home: Path | None = None) -> PathConfig:
         return self.paths.resolve(home)
@@ -248,12 +489,23 @@ class PrismConfig:
                 "limit": self.firecrawl.limit,
                 "timeout": self.firecrawl.timeout,
             },
+            "graphiti": {
+                "enabled": self.graphiti.enabled,
+                "uri": self.graphiti.uri,
+                "database": self.graphiti.database,
+                "group_id": self.graphiti.group_id,
+                "username_env": self.graphiti.username_env,
+                "password_env": self.graphiti.password_env,
+                "timeout": self.graphiti.timeout,
+            },
         }
 
     @classmethod
     def from_dict(cls, raw: Mapping[str, Any]) -> PrismConfig:
         data = _require_mapping("config", raw)
-        _reject_unknown(data, {"paths", "llm", "sources", "firecrawl"}, "config")
+        _reject_unknown(
+            data, {"paths", "llm", "sources", "firecrawl", "graphiti"}, "config"
+        )
 
         paths_data = _require_mapping("paths", data.get("paths", {}))
         _reject_unknown(
@@ -290,7 +542,29 @@ class PrismConfig:
         )
         firecrawl = FirecrawlConfig(**firecrawl_data)
 
-        return cls(paths=paths, llm=llm, sources=sources, firecrawl=firecrawl)
+        graphiti_data = _require_mapping("graphiti", data.get("graphiti", {}))
+        _reject_unknown(
+            graphiti_data,
+            {
+                "enabled",
+                "uri",
+                "database",
+                "group_id",
+                "username_env",
+                "password_env",
+                "timeout",
+            },
+            "graphiti",
+        )
+        graphiti = GraphitiConfig(**graphiti_data)
+
+        return cls(
+            paths=paths,
+            llm=llm,
+            sources=sources,
+            firecrawl=firecrawl,
+            graphiti=graphiti,
+        )
 
     def save(self, path: str | os.PathLike[str]) -> None:
         destination = Path(path)

@@ -19,6 +19,7 @@ from prism.domain import (
 
 from .backend import GraphBackend
 from .models import (
+    EPISODE_SCHEMA,
     GraphEpisode,
     GraphTimeline,
     GraphWriteResult,
@@ -28,7 +29,7 @@ from .models import (
 )
 
 
-SCHEMA = "prism.graph.episode.v2"
+SCHEMA = EPISODE_SCHEMA
 
 
 def _iso(value: datetime | None) -> str | None:

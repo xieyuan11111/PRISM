@@ -2,10 +2,24 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Any
 
 from prism.domain import EvidenceLocator
+
+#: Schema marker of PRISM's own episode payloads.  Only episodes carrying this
+#: marker are ever mapped back by the Graphiti adapter, so a shared Graphiti
+#: database can never leak foreign episodes into PRISM search results.
+EPISODE_SCHEMA = "prism.graph.episode.v2"
+
+
+def canonical_json(payload: dict[str, Any]) -> str:
+    """Deterministic, compact JSON used for episode bodies and fingerprints."""
+    return json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
 
 
 def require_text(name: str, value: str) -> str:

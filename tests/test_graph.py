@@ -54,7 +54,7 @@ class FakeGraphitiClient:
     async def add_episode(self, **kwargs):
         self.add_calls.append(kwargs)
 
-    async def search(self, query):
+    async def search(self, query, group_id=None):
         self.search_calls.append(query)
         return self.search_results
 
@@ -202,7 +202,7 @@ def test_graph_episode_rejects_naive_or_reversed_validity():
 
 def test_graphiti_adapter_calls_only_documented_add_and_search_methods():
     client = FakeGraphitiClient()
-    adapter = GraphitiBackend(client, episode_type_json="json")
+    adapter = GraphitiBackend(client, group_id="prism-test", episode_type_json="json")
     episode = GraphEpisode(
         episode_key="4d8fe701-5578-5ca3-a436-1f24d29c6300",
         name="prism:case:claim:claim-a",
@@ -225,6 +225,7 @@ def test_graphiti_adapter_calls_only_documented_add_and_search_methods():
         "source_description": "PRISM claim episode",
         "reference_time": NOW,
         "uuid": episode.episode_key,
+        "group_id": "prism-test",
     }
 
     client.search_results = [SimpleNamespace(episodes=[episode.episode_key])]
@@ -243,14 +244,16 @@ def test_graphiti_adapter_does_not_require_graphiti_core_when_type_is_injected(m
         return real_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", guarded_import)
-    adapter = GraphitiBackend(FakeGraphitiClient(), episode_type_json="json")
+    adapter = GraphitiBackend(
+        FakeGraphitiClient(), group_id="prism-test", episode_type_json="json"
+    )
     episode = GraphEpisode("key", "name", "case", "claim", "{}", NOW, NOW, None, ())
     assert run(adapter.add_episode(episode)) is True
 
 
 def test_graphiti_adapter_accepts_uuid_objects_from_search_results():
     client = FakeGraphitiClient()
-    adapter = GraphitiBackend(client, episode_type_json="json")
+    adapter = GraphitiBackend(client, group_id="prism-test", episode_type_json="json")
     episode = GraphEpisode("key", "name", "case", "claim", "{}", NOW, NOW, None, ())
     run(adapter.add_episode(episode))
 
