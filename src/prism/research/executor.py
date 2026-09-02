@@ -51,6 +51,7 @@ CANDIDATE_NO_CONTENT = "no_content"
 
 DEFAULT_MAX_CANDIDATES_PER_QUERY = 3
 DEFAULT_SEARCH_TIMEOUT = 10.0
+DEFAULT_SEARCH_RETRIES = 1
 DEFAULT_INTAKE_KIND = "page"
 
 _SENSITIVE_VALUE = re.compile(
@@ -208,6 +209,7 @@ class QueryExecution:
     reason: str
     source_domains: tuple[str, ...]
     discovered: int
+    concept_id: str | None = None
     successes: tuple[CandidateSuccess, ...] = ()
     failures: tuple[CandidateFailure, ...] = ()
     duplicates: tuple[str, ...] = ()
@@ -218,6 +220,8 @@ class QueryExecution:
         if not isinstance(self.window, ResearchWindow):
             raise TypeError("window must be a ResearchWindow")
         _require_text("reason", self.reason)
+        if self.concept_id is not None:
+            _require_text("concept_id", self.concept_id)
         object.__setattr__(
             self, "source_domains", _text_tuple("source_domains", self.source_domains)
         )
@@ -304,6 +308,7 @@ class ResearchExecutor:
         *,
         max_candidates_per_query: int = DEFAULT_MAX_CANDIDATES_PER_QUERY,
         search_timeout: float = DEFAULT_SEARCH_TIMEOUT,
+        search_retries: int = DEFAULT_SEARCH_RETRIES,
         kind: str = DEFAULT_INTAKE_KIND,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
@@ -322,6 +327,10 @@ class ResearchExecutor:
             raise TypeError("search_timeout must be a number")
         if search_timeout <= 0:
             raise ValueError("search_timeout must be greater than zero")
+        if isinstance(search_retries, bool) or not isinstance(search_retries, int):
+            raise TypeError("search_retries must be an integer")
+        if search_retries < 0:
+            raise ValueError("search_retries must not be negative")
         if not isinstance(kind, str) or not kind.strip():
             raise ValueError("kind must be a non-empty string")
         if clock is not None and not callable(clock):
@@ -330,6 +339,7 @@ class ResearchExecutor:
         self._intake = intake
         self._max_candidates = max_candidates_per_query
         self._search_timeout = float(search_timeout)
+        self._search_retries = search_retries
         self._kind = kind.strip()
         self._clock: Callable[[], datetime] = clock or (
             lambda: datetime.now(timezone.utc)
@@ -347,8 +357,18 @@ class ResearchExecutor:
         # plan.queries is already in canonical deterministic order; the seen
         # set dedupes candidate URLs across queries by normalized link.
         seen: set[str] = set()
+        concept_budgets = {
+            concept.concept_id: concept.target_results for concept in plan.concepts
+        }
+        concept_attempted: dict[str, int] = {}
         executions = [
-            await self._execute_query(query, seen, process=process)
+            await self._execute_query(
+                query,
+                seen,
+                concept_budgets,
+                concept_attempted,
+                process=process,
+            )
             for query in plan.queries
         ]
         return ResearchExecutionReport(
@@ -361,25 +381,51 @@ class ResearchExecutor:
         )
 
     async def _execute_query(
-        self, query: SearchQuery, seen: set[str], *, process: bool
+        self,
+        query: SearchQuery,
+        seen: set[str],
+        concept_budgets: dict[str, int],
+        concept_attempted: dict[str, int],
+        *,
+        process: bool,
     ) -> QueryExecution:
         provider_error: str | None = None
-        leads: tuple | None
-        try:
-            leads = tuple(
-                await self._provider.search(query, timeout=self._search_timeout)
+        leads: tuple | None = None
+        provider_exception: Exception | None = None
+        for attempt in range(self._search_retries + 1):
+            try:
+                leads = tuple(
+                    await self._provider.search(query, timeout=self._search_timeout)
+                )
+                provider_exception = None
+                break
+            except Exception as error:
+                provider_exception = error
+                is_timeout = isinstance(error, TimeoutError) or "timeout" in type(error).__name__.lower()
+                if not is_timeout or attempt >= self._search_retries:
+                    break
+        if provider_exception is not None:
+            provider_error = (
+                f"{type(provider_exception).__name__}: "
+                f"{_safe_error_detail(provider_exception)}"
             )
-        except Exception as error:
-            provider_error = f"{type(error).__name__}: {_safe_error_detail(error)}"
             leads = None
 
         successes: list[CandidateSuccess] = []
         failures: list[CandidateFailure] = []
         duplicates: list[str] = []
         attempted = 0
+        max_candidates = (
+            min(
+                query.result_limit,
+                max(0, concept_budgets[query.concept_id] - concept_attempted.get(query.concept_id, 0)),
+            )
+            if query.concept_id in concept_budgets
+            else self._max_candidates
+        )
         if leads is not None:
             for index, entry in enumerate(leads):
-                if attempted >= self._max_candidates:
+                if attempted >= max_candidates:
                     break
                 if not isinstance(entry, SourceItem):
                     failures.append(
@@ -421,6 +467,10 @@ class ResearchExecutor:
                     continue
                 seen.add(normalized)
                 attempted += 1
+                if query.concept_id in concept_budgets:
+                    concept_attempted[query.concept_id] = (
+                        concept_attempted.get(query.concept_id, 0) + 1
+                    )
                 success = await self._collect(normalized, process=process)
                 if isinstance(success, CandidateSuccess):
                     successes.append(success)
@@ -429,6 +479,7 @@ class ResearchExecutor:
 
         return QueryExecution(
             query=query.query,
+            concept_id=query.concept_id,
             window=query.window,
             reason=query.reason,
             source_domains=query.source_domains,
@@ -499,6 +550,7 @@ __all__ = [
     "CANDIDATE_NO_LINK",
     "DEFAULT_INTAKE_KIND",
     "DEFAULT_MAX_CANDIDATES_PER_QUERY",
+    "DEFAULT_SEARCH_RETRIES",
     "DEFAULT_SEARCH_TIMEOUT",
     "CandidateFailure",
     "CandidateSuccess",

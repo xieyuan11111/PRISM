@@ -52,6 +52,9 @@ PLAN_ORIGINS = frozenset({PLAN_ORIGIN_LLM, PLAN_ORIGIN_FALLBACK})
 
 PRIORITY_MIN = 1
 PRIORITY_MAX = 5
+CONCEPT_TARGET_MIN = 10
+CONCEPT_TARGET_MAX = 20
+MAX_RESEARCH_CONCEPTS = 50
 
 _DOMAIN_SHAPE = re.compile(r"^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$")
 
@@ -188,6 +191,46 @@ class SourceCandidate:
 
 
 @dataclass(frozen=True, slots=True)
+class ResearchConcept:
+    """One searchable concept extracted from the research material."""
+
+    concept_id: str
+    label: str
+    description: str
+    aliases: tuple[str, ...]
+    source_ids: tuple[str, ...]
+    target_results: int = CONCEPT_TARGET_MIN
+
+    def __post_init__(self) -> None:
+        for name, value in (
+            ("concept_id", self.concept_id),
+            ("label", self.label),
+            ("description", self.description),
+        ):
+            _require_text(name, value)
+        object.__setattr__(self, "concept_id", self.concept_id.strip())
+        object.__setattr__(self, "label", self.label.strip())
+        object.__setattr__(self, "description", self.description.strip())
+        object.__setattr__(
+            self, "aliases", tuple(dict.fromkeys(_text_tuple("aliases", self.aliases)))
+        )
+        object.__setattr__(
+            self,
+            "source_ids",
+            tuple(dict.fromkeys(_text_tuple("source_ids", self.source_ids))),
+        )
+        if isinstance(self.target_results, bool) or not isinstance(
+            self.target_results, int
+        ):
+            raise TypeError("target_results must be an integer")
+        if not CONCEPT_TARGET_MIN <= self.target_results <= CONCEPT_TARGET_MAX:
+            raise ValueError(
+                f"target_results must be between {CONCEPT_TARGET_MIN} and "
+                f"{CONCEPT_TARGET_MAX}"
+            )
+
+
+@dataclass(frozen=True, slots=True)
 class SearchQuery:
     """One executable retrieval instruction bound to a research window."""
 
@@ -196,6 +239,8 @@ class SearchQuery:
     source_types: tuple[str, ...]
     source_domains: tuple[str, ...]
     reason: str
+    concept_id: str | None = None
+    result_limit: int = CONCEPT_TARGET_MIN
 
     def __post_init__(self) -> None:
         if not isinstance(self.query, str) or not self.query.strip():
@@ -212,6 +257,16 @@ class SearchQuery:
             self, "source_domains", _domain_tuple("source_domains", self.source_domains)
         )
         _require_text("reason", self.reason)
+        if self.concept_id is not None:
+            _require_text("concept_id", self.concept_id)
+            object.__setattr__(self, "concept_id", self.concept_id.strip())
+        if isinstance(self.result_limit, bool) or not isinstance(self.result_limit, int):
+            raise TypeError("result_limit must be an integer")
+        if not CONCEPT_TARGET_MIN <= self.result_limit <= CONCEPT_TARGET_MAX:
+            raise ValueError(
+                f"result_limit must be between {CONCEPT_TARGET_MIN} and "
+                f"{CONCEPT_TARGET_MAX}"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -237,6 +292,7 @@ class ResearchPlan:
     candidates: tuple[SourceCandidate, ...] = ()
     queries: tuple[SearchQuery, ...] = ()
     warnings: tuple[str, ...] = ()
+    concepts: tuple[ResearchConcept, ...] = ()
 
     def __post_init__(self) -> None:
         _require_text("source_id", self.source_id)
@@ -268,6 +324,17 @@ class ResearchPlan:
             sorted(candidates, key=lambda item: (item.priority, item.domain))
         )
 
+        concepts = _typed_tuple("concepts", self.concepts, ResearchConcept)
+        if len(concepts) > MAX_RESEARCH_CONCEPTS:
+            raise ValueError(
+                f"concepts must not contain more than {MAX_RESEARCH_CONCEPTS} items"
+            )
+        concept_ids = [item.concept_id for item in concepts]
+        if len(set(concept_ids)) != len(concept_ids):
+            raise ValueError("concepts must not repeat a concept_id")
+        concepts = tuple(sorted(concepts, key=lambda item: item.concept_id))
+        concepts_by_id = {item.concept_id: item for item in concepts}
+
         candidate_domains = {item.domain for item in candidates}
         queries = _typed_tuple("queries", self.queries, SearchQuery)
         seen: set[tuple[str, str]] = set()
@@ -282,6 +349,22 @@ class ResearchPlan:
                     f"query {item.query!r} references domains not among the plan "
                     f"candidates: {', '.join(sorted(unknown))}"
                 )
+            if concepts_by_id:
+                if item.concept_id is None:
+                    raise ValueError(
+                        f"query {item.query!r} must reference a declared concept"
+                    )
+                concept = concepts_by_id.get(item.concept_id)
+                if concept is None:
+                    raise ValueError(
+                        f"query {item.query!r} references a concept not among the "
+                        "declared concepts"
+                    )
+                if item.result_limit != concept.target_results:
+                    raise ValueError(
+                        f"query {item.query!r} result_limit must equal the "
+                        f"concept target_results ({concept.target_results})"
+                    )
             key = (item.window.phase, item.query)
             if key in seen:
                 raise ValueError(
@@ -299,3 +382,4 @@ class ResearchPlan:
         object.__setattr__(self, "candidates", candidates)
         object.__setattr__(self, "queries", queries)
         object.__setattr__(self, "warnings", _text_tuple("warnings", self.warnings))
+        object.__setattr__(self, "concepts", concepts)

@@ -490,13 +490,16 @@ def test_fallback_windows_are_phased_sorted_and_contiguous():
     assert all(w.focus.strip() for w in plan.windows)
 
 
-def test_fallback_uses_whitelist_candidates_and_one_query_per_window():
+def test_fallback_uses_whitelist_candidates_and_one_query_per_concept_per_window():
     planner = ResearchPlanner(make_config(), clock=fixed_clock())
     plan = asyncio.run(planner.plan(make_material()))
     assert [c.domain for c in plan.candidates] == list(sorted(WHITELIST))
     assert all(c.priority == 1 for c in plan.candidates)
     assert all(c.reason.strip() for c in plan.candidates)
-    assert len(plan.queries) == len(plan.windows)
+    assert len(plan.queries) == len(plan.windows) * len(plan.concepts)
+    assert {query.concept_id for query in plan.queries} == {
+        concept.concept_id for concept in plan.concepts
+    }
     domains = {c.domain for c in plan.candidates}
     for q in plan.queries:
         assert q.query.strip()
@@ -506,6 +509,7 @@ def test_fallback_uses_whitelist_candidates_and_one_query_per_window():
         assert q.source_types
         assert set(q.source_types) <= SOURCE_TYPES
         assert q.window in plan.windows
+        assert q.result_limit == 10
     # Without an extraction the anchor is the publication time.
     assert plan.anchor_at == PUBLISHED
     assert plan.core_claims == ()

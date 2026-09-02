@@ -18,6 +18,7 @@ from prism.research import (
     CandidateSuccess,
     FirecrawlTransportError,
     QueryExecution,
+    ResearchConcept,
     ResearchExecutionReport,
     ResearchExecutor,
     ResearchPlan,
@@ -683,6 +684,86 @@ def test_max_candidates_per_query_limits_intake_attempts(tmp_path):
     assert report.material_ids == ("mat-a", "mat-b")
 
 
+def test_concept_query_uses_result_limit_as_candidate_budget(tmp_path):
+    concept = ResearchConcept(
+        "policy", "Policy", "policy records", (), ("material-7",), 10
+    )
+    urls = [f"https://gov.example/item-{i}" for i in range(12)]
+    outcomes = {url: intake_report(url, tmp_path, f"mat-{i}") for i, url in enumerate(urls)}
+    provider = FakeProvider({"gov policy record": tuple(lead(url) for url in urls)})
+    intake = FakeIntake(outcomes)
+    executor = make_executor(provider, intake, max_candidates_per_query=2)
+    plan = make_plan(
+        concepts=(concept,),
+        queries=(
+            SearchQuery(
+                "gov policy record", window(), ("news",), (GOV,), "concept search",
+                concept_id="policy", result_limit=10,
+            ),
+        ),
+    )
+
+    report = asyncio.run(executor.execute(plan))
+
+    execution = report.query_executions[0]
+    assert execution.concept_id == "policy"
+    assert len(intake.calls) == 10
+    assert len(execution.successes) == 10
+    assert execution.discovered == 12
+def test_timeout_search_is_retried_once_and_then_collected(tmp_path):
+    class FlakyProvider:
+        name = "flaky"
+
+        def __init__(self):
+            self.calls = 0
+
+        async def search(self, query, *, timeout=10.0):
+            self.calls += 1
+            if self.calls == 1:
+                raise TimeoutError("temporary timeout")
+            return (lead(GOV_POLICY),)
+
+    provider = FlakyProvider()
+    intake = FakeIntake({GOV_POLICY: intake_report(GOV_POLICY, tmp_path)})
+    executor = make_executor(provider, intake)
+
+    report = asyncio.run(executor.execute(make_plan()))
+
+    assert provider.calls == 3
+    assert report.query_executions[0].provider_error is None
+    assert report.query_executions[0].successes
+def test_concept_budget_is_shared_across_multiple_queries(tmp_path):
+    concept = ResearchConcept(
+        "policy", "Policy", "policy records", (), ("material-7",), 10
+    )
+    urls = [f"https://gov.example/shared-{i}" for i in range(12)]
+    outcomes = {url: intake_report(url, tmp_path, f"mat-{i}") for i, url in enumerate(urls)}
+    provider = FakeProvider(
+        {
+            "gov policy first": tuple(lead(url) for url in urls[:7]),
+            "gov policy second": tuple(lead(url) for url in urls[5:]),
+        }
+    )
+    intake = FakeIntake(outcomes)
+    executor = make_executor(provider, intake, max_candidates_per_query=20)
+    plan = make_plan(
+        concepts=(concept,),
+        queries=(
+            SearchQuery(
+                "gov policy first", window(), ("news",), (GOV,), "first",
+                concept_id="policy", result_limit=10,
+            ),
+            SearchQuery(
+                "gov policy second", window(), ("news",), (GOV,), "second",
+                concept_id="policy", result_limit=10,
+            ),
+        ),
+    )
+
+    report = asyncio.run(executor.execute(plan))
+
+    assert len(intake.calls) == 10
+    assert sum(len(q.successes) for q in report.query_executions) == 10
 def test_empty_plan_makes_no_requests():
     provider = FakeProvider()
     intake = FakeIntake()

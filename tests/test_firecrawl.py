@@ -107,13 +107,21 @@ def make_query(
     text="data retention policy",
     domains=("gov.example", "news.example"),
     types=("policy_document", "news"),
+    result_limit=None,
+    concept_id=None,
 ):
+    kwargs = {}
+    if result_limit is not None:
+        kwargs["result_limit"] = result_limit
+    if concept_id is not None:
+        kwargs["concept_id"] = concept_id
     return SearchQuery(
         query=text,
         window=window(),
         source_types=types,
         source_domains=domains,
         reason="Locate the original text.",
+        **kwargs,
     )
 
 
@@ -214,10 +222,19 @@ def test_search_posts_the_explicit_v2_search_contract():
         "limit": 10,
         "tbs": "cdr:1,cd_min:06/01/2025,cd_max:09/01/2025",
         "includeDomains": ["gov.example", "news.example"],
-        "scrapeOptions": {"formats": ["markdown"], "onlyMainContent": True},
     }
 
 
+def test_search_uses_query_result_limit():
+    client = FakeJsonClient(ok({"success": True, "data": []}))
+    provider = make_provider(client)
+    asyncio.run(
+        provider.search(
+            make_query(result_limit=20, concept_id="retention"),
+            timeout=4.5,
+        )
+    )
+    assert client.calls[0]["body"]["limit"] == 20
 def test_search_maps_results_onto_source_items():
     payload = {
         "success": True,

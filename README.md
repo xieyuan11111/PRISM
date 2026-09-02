@@ -56,3 +56,14 @@ python -m prism.cli research MATERIAL_ID --no-process
 The key itself must not be placed in the JSON file. Firecrawl results are
 only discovery leads; `research` re-fetches each public URL through PRISM's
 whitelist-gated source service before ingestion.
+
+## Concept-level research
+
+For a long report, PRISM's research planner can extract searchable concepts
+such as policy actions, indicators, mechanisms, actors, and predictions. Each
+concept becomes an independently auditable query with a target of 10–20
+results (10 by default, configurable up to 20). Queries carry `concept_id`, use
+that result limit for Firecrawl Search, and are globally URL-deduplicated
+before authoritative re-fetching. A concept may return fewer results because
+of source availability, duplicate URLs, timeouts, or failed body extraction;
+PRISM records those outcomes rather than padding the count with duplicates.

@@ -13,7 +13,7 @@ Security posture (mirrors the sources layer, REQUIREMENTS NFR-6 / FR-1.15):
   travels only in the ``Authorization`` header — never in a request body,
   ``repr``, or error detail (transport wrapping redacts it defensively);
 * the request body carries explicit fields only (``query``/``limit``/``tbs``/
-  ``scrapeOptions``, or ``url``/``limit``/``includeSubdomains``) and never
+  ``includeDomains``, or ``url``/``limit``/``includeSubdomains``) and never
   local paths or private material;
 * every returned URL is re-validated with
   :func:`prism.sources.validate_public_url` (whitelist + SSRF policy) and the
@@ -21,12 +21,10 @@ Security posture (mirrors the sources layer, REQUIREMENTS NFR-6 / FR-1.15):
   if the client followed a redirect that left the configured Firecrawl host
   the response is rejected wholesale.
 
-Results are deduplicated by normalized link, truncated to the rank-ordered
+Results are deduplicated by normalized link, truncated to the configured
 limit, then sorted by normalized link so output is deterministic.  Firecrawl
-output is *discovery*, not evidence: search results keep scraped markdown as
-``content`` for later re-collection, map candidates are URL-only
-(``content``/``summary`` stay ``None``, ``type`` is
-:data:`MAP_CANDIDATE_TYPE`), and everything is handed onward to
+output is *discovery*, not evidence: Search returns URL/title/description
+leads, map candidates are URL-only, and everything is handed onward to
 :class:`~prism.ingestion.IngestionService` for the authoritative fetch.
 """
 
@@ -330,12 +328,14 @@ class FirecrawlSearchProvider:
 
     Satisfies the :class:`~prism.research.provider.SearchProvider` protocol.
     ``search`` posts one query (explicit ``query``/``limit``/``tbs``/
-    ``scrapeOptions`` body) and maps ranked results to
+    ``includeDomains`` body) and maps ranked results to
     :class:`~prism.sources.SourceItem` objects whose links re-passed the full
     whitelist/SSRF policy *and* the query's own ``source_domains`` scope;
     ``map_site`` returns URL-only candidates for one whitelisted site.  Items
     are discovery leads: the authoritative fetch still belongs to
-    :class:`~prism.ingestion.IngestionService`.
+    :class:`~prism.ingestion.IngestionService`.  Concept-bound queries use
+    their explicit 10–20 result target; legacy queries retain the provider
+    default limit.
     """
 
     name = "firecrawl"
@@ -397,12 +397,14 @@ class FirecrawlSearchProvider:
             # skip the request entirely instead of spending credits.
             return ()
 
+        request_limit = (
+            query.result_limit if query.concept_id is not None else self._limit
+        )
         body = {
             "query": query.query,
-            "limit": self._limit,
+            "limit": request_limit,
             "tbs": _window_tbs(query.window),
             "includeDomains": sorted(allowed),
-            "scrapeOptions": {"formats": ["markdown"], "onlyMainContent": True},
         }
         payload = await self._request(self.search_endpoint, body, seconds)
         entries = _search_entries(payload)
@@ -432,7 +434,7 @@ class FirecrawlSearchProvider:
                     type=query.source_types[0],
                 )
             )
-        return _settle(items, self._limit)
+        return _settle(items, request_limit)
 
     async def map_site(
         self, url: str, *, limit: int | None = None, timeout: float = 10.0
