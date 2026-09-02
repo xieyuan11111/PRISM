@@ -357,13 +357,32 @@ def _evidence_bindings(analysis: EvolutionAnalysis) -> dict[str, frozenset[str]]
 
 
 def _fallback_summary(analysis: EvolutionAnalysis) -> ReportSummary:
+    node_count = sum(1 for stage in analysis.stages if stage.kind == "evolution_node")
+    fact_count = sum(1 for stage in analysis.stages if stage.kind == "temporal_fact")
+    claim_count = sum(1 for stage in analysis.stages if stage.kind == "claim")
     stage_count = len(analysis.stages)
     if stage_count:
+        # The tally reports only substantive entry kinds so recorded counts can
+        # never be padded by the case frame or by material provenance rows
+        # (which are evidence metadata, not evolution).  Type composition is
+        # stated plainly (e.g. publication nodes) without judging it.
+        node_types: dict[str, int] = {}
+        for stage in analysis.stages:
+            if stage.kind == "evolution_node" and stage.node_type:
+                node_types[stage.node_type] = node_types.get(stage.node_type, 0) + 1
+        type_label = ""
+        if node_types:
+            parts = ", ".join(
+                f"{count} {node_type}" for node_type, count in sorted(node_types.items())
+            )
+            type_label = f" (node types: {parts})"
         summary = (
-            f"Case {analysis.case_id!r} recorded {stage_count} timeline stage(s) as "
-            f"of {analysis.as_of.isoformat()}, including "
-            f"{len(analysis.turning_points)} turning point(s) and "
-            f"{len(analysis.change_reasons)} recorded change reason(s)."
+            f"Case {analysis.case_id!r} recorded {node_count} evolution node(s)"
+            f"{type_label}, {fact_count} fact(s) and {claim_count} claim(s) as "
+            f"of {analysis.as_of.isoformat()}, with "
+            f"{len(analysis.turning_points)} turning point(s), "
+            f"{len(analysis.change_reasons)} recorded change reason(s) and "
+            f"{len(analysis.evidence_gaps)} evidence gap(s)."
         )
     else:
         summary = (

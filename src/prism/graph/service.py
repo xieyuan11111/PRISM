@@ -69,18 +69,37 @@ class GraphService:
         claims: Iterable[Claim] = (),
         materials: Iterable[Material] = (),
     ) -> GraphWriteResult:
-        """Incrementally add a case and its source-backed evolution records."""
+        """Incrementally add a case and its source-backed evolution records.
+
+        When materials are supplied, every node/fact/claim episode is bounded
+        by the availability of its bound materials: an entry can never be
+        treated as observed before every material it cites was published, so a
+        record kept only by a later-published source cannot leak into earlier
+        historical states.  Multi-source entries use the latest bound-material
+        publication time (the latest necessary observation time), never the
+        earliest.
+        """
+        material_list = tuple(materials)
+        availability: dict[str, datetime] | None = None
+        if material_list:
+            availability = {
+                material.id: material.published_at for material in material_list
+            }
         episodes = [self._case_episode(case)]
         for node in nodes:
             if node.case_id != case.case_id:
                 raise ValueError(
                     f"node {node.id!r} belongs to {node.case_id!r}, not {case.case_id!r}"
                 )
-            episodes.append(self._node_episode(node))
-        episodes.extend(self._fact_episode(case.case_id, fact) for fact in facts)
-        episodes.extend(self._claim_episode(case.case_id, claim) for claim in claims)
+            episodes.append(self._node_episode(node, availability))
         episodes.extend(
-            self._material_episode(case.case_id, material) for material in materials
+            self._fact_episode(case.case_id, fact, availability) for fact in facts
+        )
+        episodes.extend(
+            self._claim_episode(case.case_id, claim, availability) for claim in claims
+        )
+        episodes.extend(
+            self._material_episode(case.case_id, material) for material in material_list
         )
 
         added: list[str] = []
@@ -187,9 +206,39 @@ class GraphService:
             },
         )
 
-    def _node_episode(self, node: EvolutionNode) -> GraphEpisode:
+    @staticmethod
+    def _material_floor(
+        availability: dict[str, datetime] | None, source_ids: tuple[str, ...]
+    ) -> datetime | None:
+        """Latest publication time among bound materials that are available.
+
+        ``None`` when no material availability was supplied or when none of
+        the cited source ids resolve; callers keep the recorded observation
+        anchor in that case.  Multi-source entries are bounded by the latest
+        necessary observation time, never the earliest.
+        """
+        if not availability:
+            return None
+        resolved = [
+            availability[source_id]
+            for source_id in source_ids
+            if source_id in availability
+        ]
+        return max(resolved) if resolved else None
+
+    def _node_episode(
+        self,
+        node: EvolutionNode,
+        availability: dict[str, datetime] | None = None,
+    ) -> GraphEpisode:
         valid_at = node.valid_at or node.happened_at
+        # The knowledge boundary is never earlier than the bound materials:
+        # a node that only a later-published material reports must not appear
+        # in states that predate that material.
         observed_at = node.observed_at or node.happened_at
+        floor = self._material_floor(availability, node.source_ids)
+        if floor is not None and floor > observed_at:
+            observed_at = floor
         return self._make_episode(
             case_id=node.case_id,
             kind="evolution_node",
@@ -211,13 +260,25 @@ class GraphService:
             },
         )
 
-    def _fact_episode(self, case_id: str, fact: TemporalFact) -> GraphEpisode:
+    def _fact_episode(
+        self,
+        case_id: str,
+        fact: TemporalFact,
+        availability: dict[str, datetime] | None = None,
+    ) -> GraphEpisode:
         identity = f"{fact.subject}:{fact.predicate}:{fact.object}"
+        observed_at = fact.observed_at
+        floor = self._material_floor(availability, fact.source_ids)
+        if floor is not None and floor > observed_at:
+            # A fact cannot be treated as observed before the material(s)
+            # asserting it were published, however early its recorded
+            # observed_at may claim to be.
+            observed_at = floor
         return self._make_episode(
             case_id=case_id,
             kind="temporal_fact",
             identity=identity,
-            reference_time=fact.observed_at,
+            reference_time=observed_at,
             valid_at=fact.valid_at,
             invalid_at=fact.invalid_at,
             source_ids=fact.source_ids,
@@ -228,16 +289,29 @@ class GraphService:
                 "subject": fact.subject,
                 "predicate": fact.predicate,
                 "object": fact.object,
-                "observed_at": _iso(fact.observed_at),
+                "observed_at": _iso(observed_at),
             },
         )
 
-    def _claim_episode(self, case_id: str, claim: Claim) -> GraphEpisode:
+    def _claim_episode(
+        self,
+        case_id: str,
+        claim: Claim,
+        availability: dict[str, datetime] | None = None,
+    ) -> GraphEpisode:
+        # ``stated_at`` stays the validity anchor; ``observed_at`` (recorded,
+        # or the latest bound-material publication) is the knowledge boundary.
+        # A claim stated early but recorded only by a later material stays out
+        # of states that predate that material.
+        observed_at = claim.observed_at or claim.stated_at
+        floor = self._material_floor(availability, claim.based_on)
+        if floor is not None and floor > observed_at:
+            observed_at = floor
         return self._make_episode(
             case_id=case_id,
             kind="claim",
             identity=claim.claim_id,
-            reference_time=claim.stated_at,
+            reference_time=observed_at,
             valid_at=claim.stated_at,
             invalid_at=None,
             source_ids=claim.based_on,
@@ -249,6 +323,7 @@ class GraphService:
                 "stance": claim.stance,
                 "based_on": list(claim.based_on),
                 "revised_by": claim.revised_by,
+                "observed_at": _iso(observed_at),
             },
         )
 

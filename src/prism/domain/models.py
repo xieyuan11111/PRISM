@@ -287,7 +287,13 @@ class TemporalFact:
 
 @dataclass(frozen=True, slots=True)
 class Claim:
-    """A source-backed position stated by an actor at a specific time."""
+    """A source-backed position stated by an actor at a specific time.
+
+    ``stated_at`` is when the actor made the statement; ``observed_at`` is when
+    the claim became observable through the material(s) that record it.  The
+    two must stay distinct: a claim quoted by a later-published material must
+    never leak into historical states that predate that material.
+    """
 
     claim_id: str
     actor: str
@@ -297,6 +303,8 @@ class Claim:
     based_on: tuple[str, ...] = ()
     revised_by: str | None = None
     evidence: tuple[EvidenceLocator, ...] = ()
+    # Appended optional field preserves every pre-M0 positional constructor.
+    observed_at: datetime | None = None
 
     def __post_init__(self) -> None:
         for name in ("claim_id", "actor", "proposition"):
@@ -310,3 +318,5 @@ class Claim:
         )
         if not {item.source_id for item in self.evidence}.issubset(set(self.based_on)):
             raise ValueError("claim evidence source_id must be present in based_on")
+        if self.observed_at is not None:
+            _require_aware_datetime("observed_at", self.observed_at)

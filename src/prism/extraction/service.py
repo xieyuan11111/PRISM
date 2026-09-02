@@ -369,6 +369,12 @@ class ExtractionService:
                 f"{path}.based_on", obj.get("based_on"), material.id
             ),
             revised_by=obj.get("revised_by"),
+            # A claim asserted by this material is only observable from the
+            # material publication date onward.  Binding ``observed_at`` here —
+            # instead of defaulting it to ``stated_at`` — keeps a claim that a
+            # later material quotes from leaking into states that predate the
+            # material, while ``stated_at`` remains the claim's own time.
+            observed_at=material.published_at,
         )
         self._not_future(f"{path}.stated_at", claim.stated_at, material)
         return claim

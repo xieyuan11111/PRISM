@@ -234,6 +234,10 @@ class CaseBundleMerger:
                         else None
                     ),
                     evidence=claim.evidence,
+                    # Preserve the extraction's observation boundary: dropping
+                    # observed_at would let a claim recorded only by a later
+                    # material appear in states that predate that material.
+                    observed_at=claim.observed_at,
                 )
                 self._append_by_id(
                     normalized_claim.claim_id,
@@ -310,3 +314,21 @@ class CaseBundleMerger:
 
 
 __all__ = ["CaseBundleMerger", "CaseEvidence", "MergedCaseBundle"]
+
+from .legacy import (  # noqa: E402  (must follow base exports)
+    ISSUE_OBSERVED_AT_BOUNDED_LATER,
+    ISSUE_OBSERVED_AT_DERIVED,
+    ISSUE_OBSERVED_AT_UNDETERMINED,
+    LegacyBundleLoadResult,
+    LegacyCaseLoader,
+    LegacyLoadIssue,
+)
+
+__all__ += [
+    "ISSUE_OBSERVED_AT_BOUNDED_LATER",
+    "ISSUE_OBSERVED_AT_DERIVED",
+    "ISSUE_OBSERVED_AT_UNDETERMINED",
+    "LegacyBundleLoadResult",
+    "LegacyCaseLoader",
+    "LegacyLoadIssue",
+]
