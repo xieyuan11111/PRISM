@@ -11,6 +11,7 @@ import pytest
 from prism.cli import main as cli_main
 from prism.config import FirecrawlConfig, PathConfig, PrismConfig, SourceConfig
 from prism.research import FirecrawlSearchProvider, ResearchExecutor
+from prism.sources import ScholarlyMetadataClient
 from prism.events import Event
 from prism.graph import GraphEpisode
 from prism.runtime import OfflineGraphBackend, PrismRuntime, create_runtime
@@ -73,7 +74,89 @@ def test_enabled_firecrawl_is_composed_only_with_explicit_client(tmp_path, monke
             assert isinstance(runtime.search_provider, FirecrawlSearchProvider)
             assert isinstance(runtime.research_executor, ResearchExecutor)
             assert runtime.source_service is not None
+            assert runtime.scholarly_metadata_client is not None
+            assert isinstance(runtime.scholarly_metadata_client, ScholarlyMetadataClient)
             assert runtime.api._search_provider is runtime.search_provider
+        finally:
+            await runtime.close()
+
+    run(exercise())
+
+
+def test_runtime_optional_fields_keep_legacy_positional_order(tmp_path, monkeypatch):
+    home = tmp_path / "positional-home"
+    monkeypatch.setenv("PRISM_HOME", str(home))
+    monkeypatch.setenv("LOCAL_FIRECRAWL_KEY", "test-only-key")
+    config = PrismConfig(
+        sources=SourceConfig(("example.gov",)),
+        firecrawl=FirecrawlConfig(
+            enabled=True,
+            api_key_env="LOCAL_FIRECRAWL_KEY",
+            base_url="https://firecrawl.example.test",
+        ),
+    )
+    config_path = tmp_path / "config.json"
+    config.save(config_path)
+
+    async def exercise():
+        runtime = await create_runtime(
+            config_path,
+            graph_backend=FakeGraphBackend(),
+            firecrawl_client=FakeFirecrawlClient(),
+        )
+        try:
+            # PrismRuntime historically ended with ..., research_executor,
+            # search_provider, source_service, llm_router as positional
+            # defaults; scholarly_metadata_client must be appended after them
+            # so legacy positional callers keep their original slots.
+            rebuilt = PrismRuntime(
+                runtime.config,
+                runtime.paths,
+                runtime.ingestion_service,
+                runtime.evidence_store,
+                runtime.event_bus,
+                runtime.graph_backend,
+                runtime.graph_service,
+                runtime.analyzer_service,
+                runtime.report_service,
+                runtime.api,
+                runtime.extraction_service,
+                runtime.pipeline_service,
+                runtime.research_planner,
+                runtime.research_executor,
+                runtime.search_provider,
+                runtime.source_service,
+                runtime.llm_router,
+            )
+            assert rebuilt.research_executor is runtime.research_executor
+            assert rebuilt.search_provider is runtime.search_provider
+            assert rebuilt.source_service is runtime.source_service
+            assert rebuilt.llm_router is runtime.llm_router
+            assert rebuilt.scholarly_metadata_client is None
+            assert rebuilt.scholarly_metadata_client is not runtime.scholarly_metadata_client
+
+            # The new dependency is reachable as the appended optional field.
+            appended = PrismRuntime(
+                runtime.config,
+                runtime.paths,
+                runtime.ingestion_service,
+                runtime.evidence_store,
+                runtime.event_bus,
+                runtime.graph_backend,
+                runtime.graph_service,
+                runtime.analyzer_service,
+                runtime.report_service,
+                runtime.api,
+                runtime.extraction_service,
+                runtime.pipeline_service,
+                runtime.research_planner,
+                runtime.research_executor,
+                runtime.search_provider,
+                runtime.source_service,
+                runtime.llm_router,
+                runtime.scholarly_metadata_client,
+            )
+            assert appended.scholarly_metadata_client is runtime.scholarly_metadata_client
         finally:
             await runtime.close()
 
@@ -90,6 +173,7 @@ def test_disabled_firecrawl_does_not_create_provider_or_source_network_client(
         try:
             assert runtime.search_provider is None
             assert runtime.source_service is None
+            assert runtime.scholarly_metadata_client is None
         finally:
             await runtime.close()
 

@@ -42,6 +42,12 @@ _DETAIL_DUPLICATE_MATERIAL = "duplicate material_id"
 _DETAIL_DUPLICATE_CORRELATION = "duplicate correlation_id"
 _DETAIL_NO_CASE = "extraction produced no case"
 
+# Levels that carry evidence *about* a work (an abstract, or bibliographic
+# metadata only), never the work's full text.  Structured extraction and
+# graph writing over such bodies would treat the placeholder as the article,
+# so the pipeline indexes them but skips those stages with an audit record.
+_NON_FULLTEXT_ACCESS_LEVELS = frozenset({"abstract_only", "metadata_only"})
+
 _STAGE_RESULT_TYPES = (IndexOutcome, ExtractionResult, GraphWriteResult)
 
 
@@ -212,7 +218,14 @@ class PipelineService:
     async def run_material(
         self, result: IngestionResult, *, correlation_id: str | None = None
     ) -> PipelineRun:
-        """Run the full pipeline for one ingested material, exactly once."""
+        """Run the full pipeline for one ingested material, exactly once.
+
+        Materials whose ``access_level`` is ``abstract_only`` or
+        ``metadata_only`` carry an abstract or bibliographic placeholder, not
+        the work's full text: they are still indexed (so the metadata stays
+        searchable) but the extract and graph stages are skipped and recorded
+        as such, so the placeholder is never treated as an article body.
+        """
 
         if not isinstance(result, IngestionResult):
             raise TypeError("result must be an IngestionResult")
@@ -274,44 +287,62 @@ class PipelineService:
             ) from exc
         stages.append(PipelineStage(_STAGE_INDEX, outcome.status, outcome))
 
-        try:
-            extraction = await self._extraction.extract(result.material)
-            if not isinstance(extraction, ExtractionResult):
-                raise TypeError(
-                    "extraction_service must return an ExtractionResult, got "
-                    f"{type(extraction).__name__}"
-                )
-        except Exception as exc:
-            raise self._stage_failure(
-                _STAGE_EXTRACT, material_id, stages, exc
-            ) from exc
-        stages.append(PipelineStage(_STAGE_EXTRACT, "extracted", extraction))
-
-        if extraction.case is None:
+        if result.material.access_level in _NON_FULLTEXT_ACCESS_LEVELS:
+            # The material is an abstract or a bibliographic placeholder, not
+            # full text: ordinary structured extraction (and therefore graph
+            # writing) is skipped, never run over the placeholder.  The skip
+            # is recorded per stage with the access level preserved so the
+            # audit trail shows exactly why no domain objects were produced.
+            skip_detail = (
+                f"material access_level {result.material.access_level!r} does "
+                "not provide full text; structured extraction and graph "
+                "writing are skipped"
+            )
             stages.append(
-                PipelineStage(
-                    _STAGE_GRAPH, _STATUS_SKIPPED, None, detail=_DETAIL_NO_CASE
-                )
+                PipelineStage(_STAGE_EXTRACT, _STATUS_SKIPPED, None, detail=skip_detail)
+            )
+            stages.append(
+                PipelineStage(_STAGE_GRAPH, _STATUS_SKIPPED, None, detail=skip_detail)
             )
         else:
             try:
-                write = await self._graph.add_case(
-                    extraction.case,
-                    nodes=extraction.nodes,
-                    facts=extraction.temporal_facts,
-                    claims=extraction.claims,
-                    materials=(result.material,),
-                )
-                if not isinstance(write, GraphWriteResult):
+                extraction = await self._extraction.extract(result.material)
+                if not isinstance(extraction, ExtractionResult):
                     raise TypeError(
-                        "graph_service must return a GraphWriteResult, got "
-                        f"{type(write).__name__}"
+                        "extraction_service must return an ExtractionResult, got "
+                        f"{type(extraction).__name__}"
                     )
             except Exception as exc:
                 raise self._stage_failure(
-                    _STAGE_GRAPH, material_id, stages, exc
+                    _STAGE_EXTRACT, material_id, stages, exc
                 ) from exc
-            stages.append(PipelineStage(_STAGE_GRAPH, "written", write))
+            stages.append(PipelineStage(_STAGE_EXTRACT, "extracted", extraction))
+
+            if extraction.case is None:
+                stages.append(
+                    PipelineStage(
+                        _STAGE_GRAPH, _STATUS_SKIPPED, None, detail=_DETAIL_NO_CASE
+                    )
+                )
+            else:
+                try:
+                    write = await self._graph.add_case(
+                        extraction.case,
+                        nodes=extraction.nodes,
+                        facts=extraction.temporal_facts,
+                        claims=extraction.claims,
+                        materials=(result.material,),
+                    )
+                    if not isinstance(write, GraphWriteResult):
+                        raise TypeError(
+                            "graph_service must return a GraphWriteResult, got "
+                            f"{type(write).__name__}"
+                        )
+                except Exception as exc:
+                    raise self._stage_failure(
+                        _STAGE_GRAPH, material_id, stages, exc
+                    ) from exc
+                stages.append(PipelineStage(_STAGE_GRAPH, "written", write))
 
         run = PipelineRun(
             material_id=material_id,

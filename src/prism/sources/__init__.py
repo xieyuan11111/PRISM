@@ -25,6 +25,16 @@ from .models import (
     SourceItem,
 )
 from .pages import PageFetcher, extract_page
+from .scholarly import (
+    AcademicRecord,
+    CrossrefClient,
+    MetadataClient,
+    OpenAlexClient,
+    ScholarlyMetadataClient,
+    ScholarlyRecord,
+    extract_doi,
+    normalize_doi,
+)
 from .service import (
     KIND_AUTO,
     FetchBatch,
@@ -44,6 +54,14 @@ __all__ = [
     "HttpGetterNoRedirectHandler",
     "HttpGetterResponseTooLargeError",
     "HttpResponse",
+    "AcademicRecord",
+    "CrossrefClient",
+    "MetadataClient",
+    "OpenAlexClient",
+    "ScholarlyMetadataClient",
+    "ScholarlyRecord",
+    "extract_doi",
+    "normalize_doi",
     "KIND_AUTO",
     "PageFetcher",
     "SourceFetchError",

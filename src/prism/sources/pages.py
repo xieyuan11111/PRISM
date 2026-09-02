@@ -29,6 +29,26 @@ _BLOCK_TAGS = frozenset(
 )
 _DESCRIPTION_NAMES = frozenset({"description", "og:description", "article:description"})
 _SPACE_PATTERN = re.compile(r"[ \t\f\v]+")
+_ACCESS_WALL_PATTERN = re.compile(
+    r"(?i)captcha|recaptcha|checking your browser|enable javascript|"
+    r"access denied|please verify you are human|sign in to continue"
+)
+# Verification-wall detection blocks a response only when BOTH conditions
+# hold:
+#   1. wall phrasing appears within the first _WALL_SCAN_CHARS characters of
+#      the visible text — real interstitials ("checking your browser",
+#      CAPTCHA prompts, ...) announce themselves at the very top; and
+#   2. the whole visible text is shorter than _MAX_WALL_TEXT_CHARS.
+# The lead-only scan keeps a page that merely mentions or quotes such
+# phrasing later in the article from being flagged, and the length cap keeps
+# long-form pages (e.g. a survey about CAPTCHA usability, or an incident
+# report quoting "Access denied") from being flagged even when they open
+# with wall-like wording.  Both guards are deliberate and are part of the
+# safety boundary: they make the classifier narrow (only short, top-heavy
+# interstitials are blocked) rather than broad, and they must not be relaxed
+# into whole-body scanning or an unbounded length check.
+_WALL_SCAN_CHARS = 400
+_MAX_WALL_TEXT_CHARS = 2000
 
 
 class _PageParser(HTMLParser):
@@ -104,6 +124,10 @@ def extract_page(body: str, *, url: str, fetched_at: datetime) -> SourceItem:
         raise SourceFetchError(
             FailureKind.PARSE, url, "page contains no extractable text"
         )
+    if _ACCESS_WALL_PATTERN.search(text[:_WALL_SCAN_CHARS]) and len(text) < _MAX_WALL_TEXT_CHARS:
+        raise SourceFetchError(
+            FailureKind.BLOCKED, url, "page appears to be an access-verification wall"
+        )
     return SourceItem(
         title=parser.title or f"Untitled page ({host or url})",
         source=host or url,
@@ -112,6 +136,8 @@ def extract_page(body: str, *, url: str, fetched_at: datetime) -> SourceItem:
         published_at=None,
         summary=parser.description,
         content=text,
+        retrieval_level="fulltext",
+        access_level="fulltext",
     )
 
 

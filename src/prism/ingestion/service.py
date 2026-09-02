@@ -268,6 +268,11 @@ class IngestionService:
             raw_path=raw_destination.as_posix(),
             case_tags=merged.get("case_tags", ()),
             url=merged.get("url"),
+            retrieval_level=merged.get("retrieval_level"),
+            access_level=merged.get("access_level"),
+            doi=merged.get("doi"),
+            authors=merged.get("authors", ()),
+            container_title=merged.get("container_title"),
         )
         frontmatter = {
             "source_id": material.id,
@@ -282,6 +287,11 @@ class IngestionService:
             "extracted_via": material.extracted_via,
             "raw_path": material.raw_path,
             "url": material.url,
+            "retrieval_level": material.retrieval_level,
+            "access_level": material.access_level,
+            "doi": material.doi,
+            "authors": material.authors,
+            "container_title": material.container_title,
         }
         lines = (
             ["---"]

@@ -91,6 +91,7 @@ def _safe_fetch_report(report: SourceFetchReport) -> SourceFetchReport:
             raw_path=item.raw_path,
             corpus_path=item.corpus_path,
             pipeline=item.pipeline,
+            access_level=item.access_level,
         )
         for item in report.items
     )

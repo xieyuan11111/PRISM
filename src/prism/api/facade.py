@@ -15,7 +15,12 @@ from prism.events import Event
 from prism.graph import GraphTimeline, GraphWriteResult
 from prism.ingestion import IngestionResult
 from prism.report import ReportDocument, ReportService
-from prism.sources import SourceFetchError, SourceItem
+from prism.sources import (
+    ScholarlyMetadataClient,
+    SourceFetchError,
+    SourceItem,
+    extract_doi,
+)
 from prism.store import IndexEntry, IndexOutcome, SearchFilter
 
 if TYPE_CHECKING:
@@ -83,6 +88,10 @@ class _ReportService(Protocol):
 
 class _SourceService(Protocol):
     async def fetch(self, url: str, *, kind: str = ...) -> object: ...
+
+
+class _ScholarlyMetadataClient(Protocol):
+    async def fetch(self, value: str) -> SourceItem: ...
 
 
 class _PipelineService(Protocol):
@@ -159,6 +168,7 @@ class PrismAPI:
         search_provider: _SearchProvider | None = None,
         research_executor: _ResearchExecutor | None = None,
         research_intake: object | None = None,
+        scholarly_metadata_client: _ScholarlyMetadataClient | None = None,
     ) -> None:
         self._ingestion = _required_dependency(
             "ingestion_service", ingestion_service, "ingest"
@@ -205,6 +215,9 @@ class PrismAPI:
         ):
             raise TypeError("research_intake must provide fetch_source()")
         self._research_intake = research_intake
+        self._scholarly = _optional_dependency(
+            "scholarly_metadata_client", scholarly_metadata_client, "fetch"
+        )
 
     async def search(
         self,
@@ -269,7 +282,19 @@ class PrismAPI:
         reported as fetched when it was not.
         """
         source = self._fetch_dependencies(process)
-        fetch_result = await source.fetch(url, kind=kind)
+        try:
+            fetch_result = await source.fetch(url, kind=kind)
+        except SourceFetchError:
+            if self._scholarly is None or extract_doi(url) is None:
+                raise
+            item = await self._scholarly.fetch(url)
+            item_report = await self._intake_source_item(item, process=process)
+            return SourceFetchReport(
+                url=item.link or url,
+                fetched_at=item.fetched_at,
+                items=(item_report,),
+                duplicate_keys=(),
+            )
         items: list[SourceItemReport] = []
         for item in getattr(fetch_result, "items", ()):
             if not isinstance(item, SourceItem):
@@ -361,6 +386,7 @@ class PrismAPI:
             raw_path=result.raw_path,
             corpus_path=result.corpus_path,
             pipeline=run,
+            access_level=item.access_level,
         )
 
     async def plan_research(
@@ -412,6 +438,11 @@ class PrismAPI:
             raw_path=entry.raw_path,
             case_tags=entry.case_tags,
             url=entry.url,
+            retrieval_level=getattr(entry, "retrieval_level", None),
+            access_level=getattr(entry, "access_level", None),
+            doi=getattr(entry, "doi", None),
+            authors=getattr(entry, "authors", ()),
+            container_title=getattr(entry, "container_title", None),
         )
         return await self.plan_research(
             material,

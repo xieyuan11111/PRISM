@@ -136,6 +136,11 @@ class SourceItem:
     content: str | None = None
     type: str = "news"
     case_tags: tuple[str, ...] = ()
+    retrieval_level: str | None = None
+    access_level: str | None = None
+    doi: str | None = None
+    authors: tuple[str, ...] = ()
+    container_title: str | None = None
 
     def __post_init__(self) -> None:
         for name in ("title", "source", "type"):
@@ -148,6 +153,15 @@ class SourceItem:
             if self.published_at > self.fetched_at:
                 raise ValueError("published_at must not be later than fetched_at")
         object.__setattr__(self, "case_tags", _text_tuple("case_tags", self.case_tags))
+        for name in ("retrieval_level", "access_level", "doi", "container_title"):
+            value = getattr(self, name)
+            if value is not None:
+                _require_text(name, value)
+        if self.access_level is not None and self.access_level not in {
+            "fulltext", "abstract_only", "metadata_only", "blocked"
+        }:
+            raise ValueError("access_level must be fulltext, abstract_only, metadata_only, or blocked")
+        object.__setattr__(self, "authors", _text_tuple("authors", self.authors))
 
     @property
     def dedup_key(self) -> str:
@@ -164,7 +178,7 @@ class SourceItem:
         Write ``content`` to a Markdown file and pass that path together with
         this mapping; the sources layer never writes the corpus itself.
         """
-        return {
+        metadata: dict[str, Any] = {
             "title": self.title,
             "source": self.source,
             "published_at": self.published_at or self.fetched_at,
@@ -173,6 +187,15 @@ class SourceItem:
             "case_tags": list(self.case_tags),
             "url": self.link,
         }
+        for name in ("retrieval_level", "access_level", "doi"):
+            value = getattr(self, name)
+            if value is not None:
+                metadata[name] = value
+        if self.authors:
+            metadata["authors"] = list(self.authors)
+        if self.container_title is not None:
+            metadata["container_title"] = self.container_title
+        return metadata
 
 
 @dataclass(frozen=True, slots=True)

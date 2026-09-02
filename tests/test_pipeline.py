@@ -382,6 +382,64 @@ def test_graph_failure_reports_index_and_extract_stages():
     asyncio.run(main())
 
 
+def test_non_fulltext_materials_are_indexed_but_skip_extraction_and_graph():
+    async def main():
+        for level in ("abstract_only", "metadata_only"):
+            service, indexer, extractor, graph, order = make_service()
+            material = make_material(
+                access_level=level,
+                retrieval_level=level,
+                type="academic",
+                source="academic",
+            )
+            run = await service.run_material(make_result(material))
+
+            # The placeholder is never handed to extraction or the graph, but
+            # the material is still indexed so its metadata stays searchable.
+            assert order == ["index"]
+            assert indexer.calls == [Path("corpus") / f"doc-{material.id}.md"]
+            assert extractor.calls == []
+            assert graph.calls == []
+            assert run.status == "completed"
+            assert [stage.name for stage in run.stages] == [
+                "index",
+                "extract",
+                "graph",
+            ]
+            assert [stage.status for stage in run.stages] == [
+                "indexed",
+                "skipped",
+                "skipped",
+            ]
+            assert run.stages[1].result is None
+            assert run.stages[2].result is None
+            assert level in run.stages[1].detail
+            assert level in run.stages[2].detail
+
+    asyncio.run(main())
+
+
+def test_fulltext_materials_still_run_extraction_and_graph():
+    async def main():
+        service, indexer, extractor, graph, order = make_service()
+        material = make_material(access_level="fulltext", retrieval_level="fulltext")
+        run = await service.run_material(make_result(material))
+
+        assert order == ["index", "extract", "graph"]
+        assert extractor.calls == [material]
+        assert graph.calls == [
+            (CASE, (NODE,), (FACT,), (CLAIM,), (material,))
+        ]
+        assert run.status == "completed"
+        assert [stage.status for stage in run.stages] == [
+            "indexed",
+            "extracted",
+            "written",
+        ]
+
+    asyncio.run(main())
+
+
 def test_caseless_extraction_skips_the_graph_stage_without_fabricating_a_case():
     async def main():
         service, indexer, extractor, graph, order = make_service(

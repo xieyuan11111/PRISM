@@ -89,6 +89,11 @@ class Material:
     raw_path: str | None = None
     case_tags: tuple[str, ...] = ()
     url: str | None = None
+    retrieval_level: str | None = None
+    access_level: str | None = None
+    doi: str | None = None
+    authors: tuple[str, ...] = ()
+    container_title: str | None = None
 
     def __post_init__(self) -> None:
         for name in ("id", "title", "source", "type", "content"):
@@ -103,9 +108,16 @@ class Material:
             )
         if not isinstance(self.ocr, bool):
             raise TypeError("ocr must be a bool")
-        for name in ("extracted_via", "raw_path", "url"):
+        for name in ("extracted_via", "raw_path", "url", "retrieval_level", "access_level", "doi", "container_title"):
             _validate_optional_text(name, getattr(self, name))
+        if self.access_level is not None and self.access_level not in {
+            "fulltext", "abstract_only", "metadata_only", "blocked"
+        }:
+            raise ValueError(
+                "access_level must be fulltext, abstract_only, metadata_only, or blocked"
+            )
         object.__setattr__(self, "case_tags", _text_tuple("case_tags", self.case_tags))
+        object.__setattr__(self, "authors", _text_tuple("authors", self.authors))
 
 
 @dataclass(frozen=True, slots=True)

@@ -30,7 +30,14 @@ from prism.research import (
     ResearchPlanner,
     SearchProvider,
 )
-from prism.sources import HttpGetter, SourceService, UrllibHttpGetter
+from prism.sources import (
+    CrossrefClient,
+    HttpGetter,
+    OpenAlexClient,
+    ScholarlyMetadataClient,
+    SourceService,
+    UrllibHttpGetter,
+)
 from prism.store import EvidenceStore
 
 
@@ -152,6 +159,9 @@ class PrismRuntime:
     search_provider: SearchProvider | None = None
     source_service: SourceService | None = None
     llm_router: LLMRouter | None = None
+    # New dependencies are appended after the original optional fields so
+    # existing positional callers keep their argument order unchanged.
+    scholarly_metadata_client: ScholarlyMetadataClient | None = None
     _closed: bool = field(default=False, init=False, repr=False)
 
     @property
@@ -280,6 +290,13 @@ async def create_runtime(
         else None
     )
     research_executor = None
+    scholarly_metadata_client = None
+    if effective_http_getter is not None:
+        scholarly_metadata_client = ScholarlyMetadataClient(
+            CrossrefClient(effective_http_getter),
+            OpenAlexClient(effective_http_getter),
+            clock=lambda: datetime.now(timezone.utc),
+        )
     if effective_provider is not None:
         if source_service is None:
             raise ValueError(
@@ -306,6 +323,7 @@ async def create_runtime(
         source_raw_dir=paths.raw_dir,
         research_planner=research_planner,
         search_provider=effective_provider,
+        scholarly_metadata_client=scholarly_metadata_client,
     )
     if effective_provider is not None:
         research_executor = ResearchExecutor(
@@ -327,6 +345,7 @@ async def create_runtime(
         pipeline_service=pipeline,
         research_planner=research_planner,
         research_executor=research_executor,
+        scholarly_metadata_client=scholarly_metadata_client,
         search_provider=effective_provider,
         source_service=source_service,
         llm_router=llm_router,

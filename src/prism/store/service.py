@@ -54,9 +54,49 @@ _FTS_COLUMNS = (
     "extracted_via",
     "raw_path",
     "url",
+    "retrieval_level",
+    "access_level",
+    "doi",
+    "authors",
+    "container_title",
     "path",
     "content",
 )
+
+# Columns added after the original release: ``documents`` gains them through
+# ALTER TABLE, and the FTS5 index is rebuilt when it lacks any of them.
+_EXTRA_COLUMNS = {
+    "retrieval_level": "TEXT",
+    "access_level": "TEXT",
+    "doi": "TEXT",
+    "authors": "TEXT NOT NULL DEFAULT '[]'",
+    "container_title": "TEXT",
+}
+
+_FTS_TABLE_SQL = """
+CREATE VIRTUAL TABLE IF NOT EXISTS document_fts USING fts5(
+    source_id UNINDEXED,
+    title,
+    source UNINDEXED,
+    published_at UNINDEXED,
+    fetched_at UNINDEXED,
+    type UNINDEXED,
+    case_tags UNINDEXED,
+    original_format UNINDEXED,
+    ocr UNINDEXED,
+    extracted_via UNINDEXED,
+    raw_path UNINDEXED,
+    url UNINDEXED,
+    retrieval_level UNINDEXED,
+    access_level UNINDEXED,
+    doi UNINDEXED,
+    authors UNINDEXED,
+    container_title UNINDEXED,
+    path UNINDEXED,
+    content,
+    tokenize = 'unicode61'
+);
+"""
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS documents (
@@ -72,6 +112,11 @@ CREATE TABLE IF NOT EXISTS documents (
     extracted_via TEXT,
     raw_path TEXT,
     url TEXT,
+    retrieval_level TEXT,
+    access_level TEXT,
+    doi TEXT,
+    authors TEXT NOT NULL DEFAULT '[]',
+    container_title TEXT,
     path TEXT NOT NULL,
     content TEXT NOT NULL,
     content_hash TEXT NOT NULL,
@@ -82,24 +127,7 @@ CREATE INDEX IF NOT EXISTS documents_type_idx ON documents(type);
 CREATE INDEX IF NOT EXISTS documents_published_at_idx ON documents(published_at);
 CREATE INDEX IF NOT EXISTS documents_fetched_at_idx ON documents(fetched_at);
 CREATE INDEX IF NOT EXISTS documents_path_idx ON documents(path);
-CREATE VIRTUAL TABLE IF NOT EXISTS document_fts USING fts5(
-    source_id UNINDEXED,
-    title,
-    source UNINDEXED,
-    published_at UNINDEXED,
-    fetched_at UNINDEXED,
-    type UNINDEXED,
-    case_tags UNINDEXED,
-    original_format UNINDEXED,
-    ocr UNINDEXED,
-    extracted_via UNINDEXED,
-    raw_path UNINDEXED,
-    url UNINDEXED,
-    path UNINDEXED,
-    content,
-    tokenize = 'unicode61'
-);
-"""
+""" + _FTS_TABLE_SQL
 
 
 def bigramize(text: str) -> str:
@@ -187,19 +215,23 @@ def _iso_utc(value: datetime) -> str:
     return value.astimezone(timezone.utc).isoformat()
 
 
-def _parse_case_tags(value: Any) -> tuple[str, ...]:
+def _parse_text_list(name: str, value: Any) -> tuple[str, ...]:
     if value is None:
         return ()
     if isinstance(value, str):
-        raise ValueError("case_tags must be a list of non-empty strings")
+        raise ValueError(f"{name} must be a list of non-empty strings")
     try:
-        tags = tuple(value)
+        items = tuple(value)
     except TypeError:
-        raise ValueError("case_tags must be a list of non-empty strings") from None
-    for tag in tags:
-        if not isinstance(tag, str) or not tag.strip():
-            raise ValueError("case_tags must be a list of non-empty strings")
-    return tags
+        raise ValueError(f"{name} must be a list of non-empty strings") from None
+    for item in items:
+        if not isinstance(item, str) or not item.strip():
+            raise ValueError(f"{name} must be a list of non-empty strings")
+    return items
+
+
+def _parse_case_tags(value: Any) -> tuple[str, ...]:
+    return _parse_text_list("case_tags", value)
 
 
 def _parse_ocr(value: Any) -> bool:
@@ -258,8 +290,69 @@ class EvidenceStore:
     def initialize(self) -> None:
         """Create the data directory and the schema (idempotent)."""
         self.paths.data_dir.mkdir(parents=True, exist_ok=True)
-        self._raw_connection().executescript(_SCHEMA)
+        connection = self._raw_connection()
+        connection.executescript(_SCHEMA)
+        columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(documents)")
+        }
+        for name, declaration in _EXTRA_COLUMNS.items():
+            if name not in columns:
+                connection.execute(
+                    f"ALTER TABLE documents ADD COLUMN {name} {declaration}"
+                )
+        fts_columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(document_fts)")
+        }
+        if not _EXTRA_COLUMNS.keys() <= fts_columns:
+            # FTS5 virtual tables cannot be ALTERed in place: rebuild the
+            # index from ``documents`` so pre-migration databases keep
+            # searchable legacy rows under the new column set.
+            with connection:
+                connection.execute("DROP TABLE document_fts")
+                connection.execute(_FTS_TABLE_SQL)
+                self._rebuild_fts(connection)
         self._initialized = True
+
+    @staticmethod
+    def _rebuild_fts(connection: sqlite3.Connection) -> None:
+        """Repopulate the FTS index from every ``documents`` row."""
+        rows = connection.execute(
+            "SELECT rowid, source_id, title, source, published_at, fetched_at,"
+            " type, case_tags, original_format, ocr, extracted_via, raw_path,"
+            " url, retrieval_level, access_level, doi, authors, container_title,"
+            " path, content"
+            " FROM documents"
+        ).fetchall()
+        placeholders = ", ".join("?" for _ in range(len(_FTS_COLUMNS) + 1))
+        insert = (
+            f"INSERT INTO document_fts (rowid, {', '.join(_FTS_COLUMNS)})"
+            f" VALUES ({placeholders})"
+        )
+        for row in rows:
+            values = (
+                row["source_id"],
+                bigramize(row["title"]),
+                row["source"],
+                row["published_at"],
+                row["fetched_at"],
+                row["type"],
+                row["case_tags"],
+                row["original_format"],
+                row["ocr"],
+                row["extracted_via"],
+                row["raw_path"],
+                row["url"],
+                row["retrieval_level"],
+                row["access_level"],
+                row["doi"],
+                row["authors"],
+                row["container_title"],
+                row["path"],
+                bigramize(row["content"]),
+            )
+            connection.execute(insert, (row["rowid"], *values))
 
     def _ensure_initialized(self) -> None:
         if not self._initialized:
@@ -343,6 +436,17 @@ class EvidenceStore:
             ),
             raw_path=_parse_optional_text("raw_path", frontmatter.get("raw_path")),
             url=_parse_optional_text("url", frontmatter.get("url")),
+            retrieval_level=_parse_optional_text(
+                "retrieval_level", frontmatter.get("retrieval_level")
+            ),
+            access_level=_parse_optional_text(
+                "access_level", frontmatter.get("access_level")
+            ),
+            doi=_parse_optional_text("doi", frontmatter.get("doi")),
+            authors=_parse_text_list("authors", frontmatter.get("authors")),
+            container_title=_parse_optional_text(
+                "container_title", frontmatter.get("container_title")
+            ),
         )
         return self._upsert(entry)
 
@@ -412,6 +516,11 @@ class EvidenceStore:
             entry.extracted_via,
             entry.raw_path,
             entry.url,
+            entry.retrieval_level,
+            entry.access_level,
+            entry.doi,
+            json.dumps(list(entry.authors), ensure_ascii=False),
+            entry.container_title,
             entry.path,
             bigramize(entry.content),
         )
@@ -444,6 +553,16 @@ class EvidenceStore:
             return False
         if row["url"] != entry.url:
             return False
+        if row["retrieval_level"] != entry.retrieval_level:
+            return False
+        if row["access_level"] != entry.access_level:
+            return False
+        if row["doi"] != entry.doi:
+            return False
+        if tuple(json.loads(row["authors"])) != entry.authors:
+            return False
+        if row["container_title"] != entry.container_title:
+            return False
         return True
 
     def _upsert(self, entry: IndexEntry) -> IndexOutcome:
@@ -455,7 +574,8 @@ class EvidenceStore:
                 row = conn.execute(
                     "SELECT rowid, content_hash, title, source, published_at,"
                     " fetched_at, type, case_tags, original_format, ocr,"
-                    " extracted_via, raw_path, url, path"
+                    " extracted_via, raw_path, url, retrieval_level, access_level,"
+                    " doi, authors, container_title, path"
                     " FROM documents WHERE source_id = ?",
                     (entry.source_id,),
                 ).fetchone()
@@ -470,9 +590,10 @@ class EvidenceStore:
                     cursor = conn.execute(
                         "INSERT INTO documents (source_id, title, source,"
                         " published_at, fetched_at, type, case_tags, original_format,"
-                        " ocr, extracted_via, raw_path, url, path, content,"
+                        " ocr, extracted_via, raw_path, url, retrieval_level,"
+                        " access_level, doi, authors, container_title, path, content,"
                         " content_hash, updated_at)"
-                        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                         (
                             entry.source_id,
                             entry.title,
@@ -486,6 +607,11 @@ class EvidenceStore:
                             entry.extracted_via,
                             entry.raw_path,
                             entry.url,
+                            entry.retrieval_level,
+                            entry.access_level,
+                            entry.doi,
+                            json.dumps(list(entry.authors), ensure_ascii=False),
+                            entry.container_title,
                             entry.path,
                             entry.content,
                             entry.content_hash,
@@ -502,8 +628,10 @@ class EvidenceStore:
                 conn.execute(
                     "UPDATE documents SET title=?, source=?, published_at=?,"
                     " fetched_at=?, type=?, case_tags=?, original_format=?, ocr=?,"
-                    " extracted_via=?, raw_path=?, url=?, path=?, content=?,"
-                    " content_hash=?, updated_at=? WHERE source_id=?",
+                    " extracted_via=?, raw_path=?, url=?, retrieval_level=?,"
+                    " access_level=?, doi=?, authors=?, container_title=?,"
+                    " path=?, content=?, content_hash=?, updated_at=?"
+                    " WHERE source_id=?",
                     (
                         entry.title,
                         entry.source,
@@ -516,6 +644,11 @@ class EvidenceStore:
                         entry.extracted_via,
                         entry.raw_path,
                         entry.url,
+                        entry.retrieval_level,
+                        entry.access_level,
+                        entry.doi,
+                        json.dumps(list(entry.authors), ensure_ascii=False),
+                        entry.container_title,
                         entry.path,
                         entry.content,
                         entry.content_hash,
@@ -542,7 +675,8 @@ class EvidenceStore:
         self._ensure_initialized()
         row = self._raw_connection().execute(
             "SELECT source_id, title, source, published_at, fetched_at, type,"
-            " case_tags, original_format, ocr, extracted_via, raw_path, url, path,"
+            " case_tags, original_format, ocr, extracted_via, raw_path, url,"
+            " retrieval_level, access_level, doi, authors, container_title, path,"
             " content, content_hash FROM documents WHERE source_id = ?",
             (source_id.strip(),),
         ).fetchone()
@@ -570,7 +704,9 @@ class EvidenceStore:
         if criteria.query is not None:
             sql = (
                 "SELECT d.source_id, d.title, d.source, d.published_at, d.type,"
-                " d.case_tags, d.raw_path, d.url, d.path, d.content"
+                " d.case_tags, d.raw_path, d.url, d.retrieval_level,"
+                " d.access_level, d.doi, d.authors, d.container_title,"
+                " d.path, d.content"
                 " FROM document_fts JOIN documents AS d"
                 " ON d.rowid = document_fts.rowid"
                 f" WHERE {where}"
@@ -579,7 +715,9 @@ class EvidenceStore:
         else:
             sql = (
                 "SELECT d.source_id, d.title, d.source, d.published_at, d.type,"
-                " d.case_tags, d.raw_path, d.url, d.path, d.content"
+                " d.case_tags, d.raw_path, d.url, d.retrieval_level,"
+                " d.access_level, d.doi, d.authors, d.container_title,"
+                " d.path, d.content"
                 " FROM documents AS d"
                 f" WHERE {where}"
                 " ORDER BY d.published_at DESC, d.source_id LIMIT ? OFFSET ?"
@@ -653,6 +791,11 @@ class EvidenceStore:
             extracted_via=row["extracted_via"],
             raw_path=row["raw_path"],
             url=row["url"],
+            retrieval_level=row["retrieval_level"],
+            access_level=row["access_level"],
+            doi=row["doi"],
+            authors=tuple(json.loads(row["authors"])),
+            container_title=row["container_title"],
         )
 
     @staticmethod
@@ -668,4 +811,9 @@ class EvidenceStore:
             case_tags=tuple(json.loads(row["case_tags"])),
             url=row["url"],
             raw_path=row["raw_path"],
+            retrieval_level=row["retrieval_level"],
+            access_level=row["access_level"],
+            doi=row["doi"],
+            authors=tuple(json.loads(row["authors"])),
+            container_title=row["container_title"],
         )

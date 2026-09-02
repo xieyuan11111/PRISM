@@ -57,6 +57,49 @@ The key itself must not be placed in the JSON file. Firecrawl results are
 only discovery leads; `research` re-fetches each public URL through PRISM's
 whitelist-gated source service before ingestion.
 
+## Scholarly evidence levels
+
+PRISM does not restrict research to one discipline. Academic candidates can be
+resolved through public DOI metadata services such as Crossref and OpenAlex,
+with domain-specific indexes added as optional adapters. Evidence is labeled
+explicitly:
+
+- `fulltext`: the public article body was collected;
+- `abstract_only`: a public abstract was recovered, but not the article body;
+- `metadata_only`: title/author/venue/DOI metadata was recovered without an
+  abstract; the corpus record is a bibliographic placeholder, not full text;
+- `blocked`: access was refused, a paywall/login/captcha was encountered, or
+  the public response could not be validated.
+
+An abstract is stored as `summary` and never promoted to `content` as if it
+were full text. The bibliographic identity of a resolved work — `authors`,
+`container_title` (venue), and `doi` — is preserved end to end: it travels on
+the source item, lands in the corpus frontmatter, and is indexed so indexed
+records and search hits keep the same labels and DOI. When a DOI is present
+and the article page is blocked, the API can fall back to Crossref/OpenAlex
+metadata without credentials (bare public GETs only; OpenAlex is consulted at
+most once per DOI resolution). The result remains clearly labeled and
+traceable.
+
+When Crossref answers with metadata but no abstract, the resolver makes one
+OpenAlex enrichment request. Enrichment merges, it never replaces: Crossref
+stays authoritative for `title`, `doi`, `authors`, `container_title`, `link`
+and `published_at`, and OpenAlex contributes only the abstract plus whatever
+fields Crossref lacks — for example authors, a publication date, or a venue
+taken from OpenAlex's `primary_location.source.display_name` when Crossref has
+no `container_title`. An OpenAlex record without an abstract adds nothing, so
+the Crossref metadata-only record is kept exactly as it was; a failed
+enrichment does the same. In every path OpenAlex is requested at most once per
+DOI resolution.
+
+`blocked` page responses are detected conservatively and the boundary is part
+of the safety design: a response is treated as an access-verification wall
+(CAPTCHA, "checking your browser", ...) only when wall phrasing appears
+within the first 400 characters of visible text **and** the whole visible text
+is under 2000 characters. Long pages that merely discuss or quote such
+phrasing — a CAPTCHA usability survey, an outage report mentioning "Access
+denied" — are never blocked; only short, top-heavy interstitials are.
+
 ## Concept-level research
 
 For a long report, PRISM's research planner can extract searchable concepts

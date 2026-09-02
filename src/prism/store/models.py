@@ -38,6 +38,11 @@ class IndexEntry:
     extracted_via: str | None = None
     raw_path: str | None = None
     url: str | None = None
+    retrieval_level: str | None = None
+    access_level: str | None = None
+    doi: str | None = None
+    authors: tuple[str, ...] = ()
+    container_title: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,6 +67,11 @@ class SearchHit:
     case_tags: tuple[str, ...] = ()
     url: str | None = None
     raw_path: str | None = None
+    retrieval_level: str | None = None
+    access_level: str | None = None
+    doi: str | None = None
+    authors: tuple[str, ...] = ()
+    container_title: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

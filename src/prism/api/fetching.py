@@ -55,6 +55,18 @@ def spool_source_item(item: SourceItem, spool_dir: Path) -> Path:
         raise ValueError(f"spool path escapes its directory: {destination}")
 
     body = item.content or item.summary or ""
+    if not body.strip() and item.access_level == "metadata_only":
+        authors = getattr(item, "authors", ())
+        container_title = getattr(item, "container_title", None)
+        body = (
+            "[Scholarly metadata record]\n\n"
+            f"Title: {item.title}\n"
+            f"Source: {item.source}\n"
+            f"DOI: {getattr(item, 'doi', None) or 'unknown'}\n"
+            + (f"Authors: {', '.join(authors)}\n" if authors else "")
+            + (f"Venue: {container_title}\n" if container_title else "")
+            + "Full text was not available through the public metadata source."
+        )
     spool_dir.mkdir(parents=True, exist_ok=True)
     staging = spool_dir / f".{destination.name}.{os.getpid()}.tmp"
     try:
@@ -69,7 +81,13 @@ def spool_source_item(item: SourceItem, spool_dir: Path) -> Path:
 
 @dataclass(frozen=True, slots=True)
 class SourceItemReport:
-    """What happened to one fetched item inside the application."""
+    """What happened to one fetched item inside the application.
+
+    ``access_level`` reports the evidence level of the ingested material
+    (``fulltext``, ``abstract_only``, ``metadata_only``, or ``None`` when the
+    source carried no level) so callers can see that a scholarly fallback
+    item was only ever an abstract or bibliographic record, never full text.
+    """
 
     title: str
     source: str
@@ -79,6 +97,7 @@ class SourceItemReport:
     raw_path: Path
     corpus_path: Path
     pipeline: object | None = None  # PipelineRun when the pipeline was run
+    access_level: str | None = None
 
     def __post_init__(self) -> None:
         _require_text("title", self.title)
@@ -88,6 +107,8 @@ class SourceItemReport:
         _require_text("material_id", self.material_id)
         for name in ("spool_path", "raw_path", "corpus_path"):
             _require_path(name, getattr(self, name))
+        if self.access_level is not None:
+            _require_text("access_level", self.access_level)
 
 
 @dataclass(frozen=True, slots=True)
