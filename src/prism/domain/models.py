@@ -27,6 +27,7 @@ NODE_TYPES = frozenset(
     }
 )
 CLAIM_STANCES = frozenset({"support", "oppose", "conditional", "uncertain"})
+CLAIM_TYPES = frozenset({"interpretation", "value_judgment", "prediction"})
 ORIGINAL_FORMATS = frozenset({"md", "pdf", "html"})
 
 
@@ -305,6 +306,9 @@ class Claim:
     evidence: tuple[EvidenceLocator, ...] = ()
     # Appended optional field preserves every pre-M0 positional constructor.
     observed_at: datetime | None = None
+    provenance_type: str = "unspecified"
+    confidence: float = 1.0
+    claim_type: str = "interpretation"
 
     def __post_init__(self) -> None:
         for name in ("claim_id", "actor", "proposition"):
@@ -320,3 +324,6 @@ class Claim:
             raise ValueError("claim evidence source_id must be present in based_on")
         if self.observed_at is not None:
             _require_aware_datetime("observed_at", self.observed_at)
+        _require_text("provenance_type", self.provenance_type)
+        _require_confidence(self.confidence)
+        _require_choice("claim_type", self.claim_type, CLAIM_TYPES)

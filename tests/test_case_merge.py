@@ -219,6 +219,50 @@ def test_merger_preserves_temporal_provenance_and_evidence_fields():
     assert merged_claim.evidence == (locator,)
     assert merged.case.status_at == T2
     assert merged.case.status_observed_at == T2
+
+
+def test_merger_preserves_claim_layering_fields():
+    """The merger must not erase claim_type/provenance_type/confidence.
+
+    v0 extraction records whether a claim is an interpretation, a value
+    judgment, or a prediction, plus its provenance and confidence.  The
+    merger re-scopes claim ids but every other recorded field must survive
+    so the fact/interpretation/prediction layering stays intact.
+    """
+    source = material("mat-a")
+    locator = EvidenceLocator("mat-a", "corpus/mat-a.md", paragraph=1, quote="text")
+    extracted_claim = Claim(
+        "claim-a",
+        "Analyst",
+        "The mechanism may expand next year.",
+        "uncertain",
+        T1,
+        ("mat-a",),
+        None,
+        (locator,),
+        None,
+        "reliable_transcription",
+        0.7,
+        "prediction",
+    )
+
+    merged = CaseBundleMerger().merge(
+        case(),
+        [
+            CaseEvidence(
+                source,
+                ExtractionResult(claims=(extracted_claim,)),
+            )
+        ],
+    )
+
+    (merged_claim,) = merged.claims
+    assert merged_claim.claim_id == "mat-a::claim-a"
+    assert merged_claim.claim_type == "prediction"
+    assert merged_claim.provenance_type == "reliable_transcription"
+    assert merged_claim.confidence == 0.7
+    assert merged_claim.evidence == (locator,)
+    assert merged_claim.observed_at is None
 def test_merger_rejects_conflicting_duplicate_ids_and_unbound_sources():
     source = material("mat-a")
     first = ExtractionResult(nodes=(node("same", "mat-a"),))

@@ -238,6 +238,14 @@ class CaseBundleMerger:
                     # observed_at would let a claim recorded only by a later
                     # material appear in states that predate that material.
                     observed_at=claim.observed_at,
+                    # Preserve the extraction's assertion layering: claim_type
+                    # (interpretation/value_judgment/prediction), provenance
+                    # and confidence must survive re-scoping so downstream
+                    # reports can still tell a prediction from a confirmed
+                    # interpretation.
+                    provenance_type=claim.provenance_type,
+                    confidence=claim.confidence,
+                    claim_type=claim.claim_type,
                 )
                 self._append_by_id(
                     normalized_claim.claim_id,

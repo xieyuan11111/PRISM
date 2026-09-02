@@ -12,7 +12,7 @@ from prism.analyzer import AnalyzerService
 from prism.config import PathConfig, PrismConfig
 from prism.domain import Material
 from prism.events import EventBus
-from prism.extraction import ExtractionResult, ExtractionService
+from prism.extraction import ExtractionEvidenceGap, ExtractionResult, ExtractionService
 from prism.graph import GraphBackend, GraphEpisode, GraphService
 from prism.ingestion import IngestionService
 from prism.llm import (
@@ -76,6 +76,20 @@ class OfflineExtractor:
     async def extract(self, material: Material) -> ExtractionResult:
         return ExtractionResult(
             warnings=("no LLM router configured; structured extraction skipped",)
+        )
+
+    async def extract_material(
+        self, material: Material, *, corpus_path: str | Path | None = None
+    ) -> ExtractionResult:
+        return ExtractionResult(
+            warnings=("no LLM router configured; structured extraction skipped",),
+            evidence_gaps=(
+                ExtractionEvidenceGap(
+                    "extraction_unavailable",
+                    "no LLM router configured; no evolution candidates were produced",
+                    source_ids=(material.id,),
+                ),
+            ),
         )
 
 
@@ -256,7 +270,9 @@ async def create_runtime(
     analyzer = AnalyzerService(graph)
     report = ReportService(llm_router)
     extraction: ExtractionService | OfflineExtractor = (
-        ExtractionService(llm_router) if llm_router is not None else OfflineExtractor()
+        ExtractionService(llm_router, evidence_locator=store.locate)
+        if llm_router is not None
+        else OfflineExtractor()
     )
     pipeline = PipelineService(
         indexer=store, extraction_service=extraction, graph_service=graph
@@ -327,6 +343,7 @@ async def create_runtime(
         research_planner=research_planner,
         search_provider=effective_provider,
         scholarly_metadata_client=scholarly_metadata_client,
+        extraction_service=extraction,
     )
     if effective_provider is not None:
         research_executor = ResearchExecutor(

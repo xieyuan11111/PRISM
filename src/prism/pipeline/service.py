@@ -311,7 +311,14 @@ class PipelineService:
             )
         else:
             try:
-                extraction = await self._extraction.extract(result.material)
+                extract_material = getattr(self._extraction, "extract_material", None)
+                if callable(extract_material):
+                    extraction = await extract_material(
+                        result.material, corpus_path=result.corpus_path
+                    )
+                else:
+                    # Compatibility for injected pre-v0 extractors.
+                    extraction = await self._extraction.extract(result.material)
                 if not isinstance(extraction, ExtractionResult):
                     raise TypeError(
                         "extraction_service must return an ExtractionResult, got "

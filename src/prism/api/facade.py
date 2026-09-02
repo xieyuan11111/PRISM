@@ -110,6 +110,12 @@ class _PipelineService(Protocol):
     ) -> object: ...
 
 
+class _ExtractionService(Protocol):
+    async def extract_material(
+        self, material: Material, *, corpus_path: str | Path | None = ...
+    ) -> ExtractionResult: ...
+
+
 class _ResearchPlanner(Protocol):
     async def plan(
         self,
@@ -179,6 +185,7 @@ class PrismAPI:
         research_executor: _ResearchExecutor | None = None,
         research_intake: object | None = None,
         scholarly_metadata_client: _ScholarlyMetadataClient | None = None,
+        extraction_service: _ExtractionService | None = None,
     ) -> None:
         self._ingestion = _required_dependency(
             "ingestion_service", ingestion_service, "ingest"
@@ -228,6 +235,9 @@ class PrismAPI:
         self._scholarly = _optional_dependency(
             "scholarly_metadata_client", scholarly_metadata_client, "fetch"
         )
+        self._extraction = _optional_dependency(
+            "extraction_service", extraction_service, "extract_material"
+        )
 
     async def search(
         self,
@@ -273,6 +283,20 @@ class PrismAPI:
         )
         await self._events.publish(event)
         return result
+
+    async def extract_material(
+        self,
+        material: Material,
+        *,
+        corpus_path: str | Path | None = None,
+    ) -> ExtractionResult:
+        """Run the evidence-bound Evolution Extraction v0 public entry point."""
+
+        if self._extraction is None:
+            raise ValueError("extraction_service is required for extract_material()")
+        return await self._extraction.extract_material(
+            material, corpus_path=corpus_path
+        )
 
     async def fetch_source(
         self,

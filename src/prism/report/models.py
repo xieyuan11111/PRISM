@@ -9,7 +9,7 @@ layer can restate recorded evidence but never invent it.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 
 from prism.analyzer import (
@@ -148,6 +148,8 @@ class ReportDocument:
     citations: tuple[ReportCitation, ...]
     markdown: str
     case_status: str | None = None
+    publication_node_count: int = field(init=False)
+    substantive_node_count: int = field(init=False)
 
     def __post_init__(self) -> None:
         _require_text("case_id", self.case_id)
@@ -184,4 +186,16 @@ class ReportDocument:
             "citations",
             _typed_tuple("citations", self.citations, ReportCitation),
         )
+        publication_count = sum(
+            1
+            for stage in self.stages
+            if stage.kind == "evolution_node" and stage.node_type == "publication"
+        )
+        substantive_count = sum(
+            1
+            for stage in self.stages
+            if stage.kind == "evolution_node" and stage.node_type != "publication"
+        )
+        object.__setattr__(self, "publication_node_count", publication_count)
+        object.__setattr__(self, "substantive_node_count", substantive_count)
         _require_text("markdown", self.markdown)

@@ -181,6 +181,7 @@ class TimelineStage:
     stance: str | None = None
     happened_at: datetime | None = None
     evidence: tuple[EvidenceLocator, ...] = ()
+    claim_type: str | None = None
 
     def __post_init__(self) -> None:
         for name in ("episode_key", "kind", "layer", "summary"):
@@ -192,7 +193,7 @@ class TimelineStage:
         object.__setattr__(
             self, "source_ids", _source_tuple("source_ids", self.source_ids)
         )
-        for name in ("node_type", "provenance_type", "stance"):
+        for name in ("node_type", "provenance_type", "stance", "claim_type"):
             _optional_text(name, getattr(self, name))
         if self.happened_at is not None:
             require_aware("happened_at", self.happened_at)

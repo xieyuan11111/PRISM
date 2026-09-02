@@ -316,6 +316,8 @@ class GraphService:
             invalid_at=None,
             source_ids=claim.based_on,
             evidence=claim.evidence,
+            confidence=claim.confidence,
+            provenance_type=claim.provenance_type,
             fields={
                 "claim_id": claim.claim_id,
                 "actor": claim.actor,
@@ -324,6 +326,7 @@ class GraphService:
                 "based_on": list(claim.based_on),
                 "revised_by": claim.revised_by,
                 "observed_at": _iso(observed_at),
+                "claim_type": claim.claim_type,
             },
         )
 

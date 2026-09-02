@@ -37,6 +37,24 @@ corpus-relative path, paragraph/page and source excerpt; reports render those
 locations alongside `source_ids` and preserve fact/interpretation/provenance
 labels.
 
+## Evolution Extraction v0
+
+`ExtractionService.extract_material(material, corpus_path=...)` is the public,
+evidence-bound extraction entry point used by the pipeline. It sends the
+normalized Markdown body through the configured LLM Router's `extract` role,
+strictly validates the JSON response, and then verifies every candidate quote
+against the corpus text before producing graph-ready domain objects. A failed
+locator is retained as an explicit extraction evidence gap; it is never
+fabricated or silently written to the graph. `PrismAPI.extract_material(...)`
+exposes the same operation when an extraction service is configured.
+
+The schema keeps event occurrence (`happened_at`), effective validity
+(`valid_at`), and observation/publication (`observed_at`) separate. Forecasts
+remain uncertain claims rather than confirmed temporal facts, and contradictory
+alternatives remain reportable conflict audit items. A document publication is
+counted separately from substantive evolution in deterministic reports; a
+material with no supported change produces no padding publication node.
+
 `discover` creates a time-bounded research plan from an indexed material. To
 execute a plan, explicitly enable Firecrawl in `PRISM_HOME/config.json` and
 provide the key through the configured environment variable:

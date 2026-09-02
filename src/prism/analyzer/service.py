@@ -250,6 +250,11 @@ class AnalyzerService:
             candidate = payload.get("node_type")
             if isinstance(candidate, str) and candidate.strip():
                 node_type = candidate
+        claim_type = None
+        if entry.kind == "claim":
+            candidate = payload.get("claim_type")
+            if isinstance(candidate, str) and candidate.strip():
+                claim_type = candidate
         happened_at = None
         happened_value = payload.get("happened_at")
         if isinstance(happened_value, str):
@@ -272,6 +277,7 @@ class AnalyzerService:
             stance=entry.stance,
             happened_at=happened_at,
             evidence=entry.evidence,
+            claim_type=claim_type,
         )
         return _Staged(entry, stage, payload)
 

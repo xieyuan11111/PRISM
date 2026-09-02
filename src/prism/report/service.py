@@ -130,6 +130,7 @@ def _analysis_payload(analysis: EvolutionAnalysis) -> dict[str, Any]:
                 "reference_time": stage.reference_time.isoformat(),
                 "source_ids": list(stage.source_ids),
                 "node_type": stage.node_type,
+                "claim_type": stage.claim_type,
                 "confidence": stage.confidence,
                 "provenance_type": stage.provenance_type,
                 "stance": stage.stance,
@@ -357,7 +358,16 @@ def _evidence_bindings(analysis: EvolutionAnalysis) -> dict[str, frozenset[str]]
 
 
 def _fallback_summary(analysis: EvolutionAnalysis) -> ReportSummary:
-    node_count = sum(1 for stage in analysis.stages if stage.kind == "evolution_node")
+    publication_node_count = sum(
+        1
+        for stage in analysis.stages
+        if stage.kind == "evolution_node" and stage.node_type == "publication"
+    )
+    substantive_node_count = sum(
+        1
+        for stage in analysis.stages
+        if stage.kind == "evolution_node" and stage.node_type != "publication"
+    )
     fact_count = sum(1 for stage in analysis.stages if stage.kind == "temporal_fact")
     claim_count = sum(1 for stage in analysis.stages if stage.kind == "claim")
     stage_count = len(analysis.stages)
@@ -377,7 +387,10 @@ def _fallback_summary(analysis: EvolutionAnalysis) -> ReportSummary:
             )
             type_label = f" (node types: {parts})"
         summary = (
-            f"Case {analysis.case_id!r} recorded {node_count} evolution node(s)"
+            f"Case {analysis.case_id!r} recorded "
+            f"{substantive_node_count + publication_node_count} evolution node(s) "
+            f"({substantive_node_count} substantive evolution node(s) and "
+            f"{publication_node_count} publication node(s))"
             f"{type_label}, {fact_count} fact(s) and {claim_count} claim(s) as "
             f"of {analysis.as_of.isoformat()}, with "
             f"{len(analysis.turning_points)} turning point(s), "
@@ -575,13 +588,15 @@ def _render_markdown(
         )
         lines.append("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
         for stage in analysis.stages:
-            kind = stage.kind + (
-                f" / {stage.node_type}"
-                if stage.node_type
-                else f" / {stage.stance}"
-                if stage.stance
-                else ""
-            )
+            if stage.kind == "claim":
+                discriminator = " / ".join(
+                    part
+                    for part in (stage.claim_type, stage.stance)
+                    if part
+                )
+            else:
+                discriminator = stage.node_type or ""
+            kind = stage.kind + (f" / {discriminator}" if discriminator else "")
             lines.append(
                 f"| `{_md(stage.episode_key)}` | {_md(kind)} | {_md(stage.layer)} "
                 f"| {_iso(stage.happened_at) or '—'} | {_iso(stage.valid_at)} "
