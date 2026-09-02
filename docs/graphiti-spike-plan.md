@@ -33,7 +33,7 @@ configuration, credentials or data.
 | `pyproject.toml` | `[project.optional-dependencies] graphiti = ["graphiti-core", "neo4j"]` — opt-in extra; default `dependencies` stays empty so the default runtime is fully offline. Version bounds are deliberately **unpinned**: Phase A cannot verify real minimums offline; Phase B pins them after the first live install. |
 | `src/prism/config/models.py` | `GraphitiConfig` — `enabled` (default false), `uri`, `database`, `group_id`, `username_env`, `password_env`, `timeout`. URI rejects embedded credentials and empty hosts; connections require an explicit non-default port (the standard 7474/7687 are never applied, so an enabled config cannot silently reach a default local Neo4j); env fields store variable **names**, never values; portable JSON; old config files without a `graphiti` section still load. |
 | `src/prism/graph/backend.py` | `GraphitiBackend` — explicit `group_id`; injected `GraphEpisodeRegistry` gives write-before existence lookup for real persistent idempotency; the in-process cache is documented as non-persistent; `search` maps only episodes positively attributable to PRISM (registry/cache uuid knowledge or PRISM schema marker in the returned body); `close()` closes the client exactly once. |
-| `src/prism/graph/graphiti_client.py` | Lazy real-client construction: credentials are resolved from env **before** any graphiti-core/neo4j import; construction site is isolated and marked PHASE B VERIFY. |
+| `src/prism/graph/graphiti_client.py` | Lazy real-client construction: credentials are resolved from env **before** any graphiti-core/neo4j import; the keyword surface matches graphiti-core 0.29.3, while eager network behavior remains marked PHASE B VERIFY. |
 | `src/prism/runtime/composition.py` | Default path never imports graphiti-core/neo4j, never probes dependencies, never builds a client. `graphiti.enabled=true` attempts the real path only with an injected `graphiti_client_factory` or the optional dependencies installed; missing env/dependency fails with explicit errors; `PrismRuntime.close()` closes resources the runtime created. |
 | `deploy/graphiti-spike/` | Public deployment template (compose + env template + port preflight) — relative paths and placeholders only. |
 | `docs/graphiti-spike-plan.md` | This plan. |
@@ -53,7 +53,10 @@ configuration, credentials or data.
   the server default — unless a live Phase B run verifies the server's actual
   capabilities.  Database isolation comes from this **separate** PRISM-owned
   container (its own Neo4j home, service and data volume), never from
-  multiple database names on a shared instance.
+  multiple database names on a shared instance.  The config field remains
+  PRISM adapter metadata and a future capability; graphiti-core 0.29.3's
+  `Graphiti(uri, user, password, ...)` constructor does **not** consume a
+  database argument, and PRISM does not forward one to that constructor.
 - **Ports**: host **7475** (HTTP) and **7688** (Bolt), mapped to the
   container's standard 7474/7687.  These avoid the default local Neo4j ports
   but are only **suggested values**.
@@ -94,7 +97,7 @@ variables.
 | `PRISM_GRAPHITI_URI` | opt-in integration tests | `bolt://host:port` of the PRISM-owned Neo4j |
 | `PRISM_GRAPHITI_PASSWORD` | runtime + tests + compose | password for the PRISM-owned container user |
 | `PRISM_GRAPHITI_USERNAME` | optional | only when `graphiti.username_env` is set; otherwise PRISM uses Neo4j's standard user `neo4j` |
-| `PRISM_GRAPHITI_DATABASE` | optional | database name for the opt-in tests and the runtime config example — the Community container's single built-in database is `neo4j` |
+| `PRISM_GRAPHITI_DATABASE` | optional | database metadata for the opt-in tests and runtime config example — currently not passed to Graphiti 0.29.3; the Community container's single built-in database is `neo4j` |
 | `PRISM_GRAPHITI_HTTP_PORT` / `PRISM_GRAPHITI_BOLT_PORT` | optional | host ports published by compose (defaults 7475/7688) |
 | `PRISM_HOME` | PRISM generally | local data/config directory |
 
@@ -107,10 +110,10 @@ the first live run, isolated so fixes stay small:
 
 1. `graphiti-core` / `neo4j` minimum versions (pyproject extra is unpinned on
    purpose) — pin after the first live install.
-2. `graphiti_core.Graphiti(...)` constructor keyword surface used in
-   `src/prism/graph/graphiti_client.py` (`neo4j_uri`, `neo4j_user`,
-   `neo4j_password`, `neo4j_database`) and that construction performs no
-   eager network I/O.
+2. Whether `graphiti_core.Graphiti(...)` construction performs eager network
+   I/O.  Its graphiti-core 0.29.3 keyword surface (`uri`, `user`, `password`)
+   has been checked offline; that constructor does not accept or consume the
+   PRISM `database` metadata.
 3. `client.add_episode(...)` / `client.search(...)` accept a `group_id`
    keyword (the adapter introspects and negotiates it, but a live run must
    confirm the real signature and semantics).

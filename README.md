@@ -170,9 +170,12 @@ edition) and sets no custom default database name, so `graphiti.database`
 must be `neo4j` (or empty for the server default) unless a live run
 verifies otherwise. Database isolation comes from the separate PRISM-owned
 container (its own Neo4j home and data volume), not from multiple database
-names on a shared instance. `graphiti.uri` must also carry an explicit
-non-default port (the standard 7474/7687 are never applied), so an enabled
-config cannot silently reach a default local Neo4j.
+names on a shared instance. The `database` value is currently retained as
+PRISM adapter metadata and a future capability; graphiti-core 0.29.3's
+`Graphiti(uri, user, password, ...)` constructor does not consume it, so the
+adapter does not forward a database keyword. `graphiti.uri` must also carry
+an explicit non-default port (the standard 7474/7687 are never applied), so
+an enabled config cannot silently reach a default local Neo4j.
 
 `graphiti.uri` must not embed credentials; the config stores environment
 variable *names* (`PRISM_GRAPHITI_PASSWORD`, optional `PRISM_GRAPHITI_USERNAME`),

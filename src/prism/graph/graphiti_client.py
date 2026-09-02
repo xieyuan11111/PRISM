@@ -69,15 +69,13 @@ def resolve_episode_type_json() -> Any:
 def build_graphiti_client(config: GraphitiConfig) -> Any:
     """Build the real Graphiti client for a live Phase B spike run.
 
-    Phase A note: the exact ``graphiti_core.Graphiti`` constructor surface is
-    UNVERIFIED (this repo never installs graphiti-core offline).  Credential
-    resolution happens first so missing env vars fail before any import; the
-    construction itself is isolated here so a first live run can adjust it in
-    one place during Phase B (see docs/graphiti-spike-plan.md).
+    Graphiti 0.29.3 accepts ``uri``, ``user`` and ``password``.  PRISM keeps
+    ``config.database`` as adapter metadata/future capability, but that
+    version's constructor does not consume it.  Credential resolution happens
+    first so missing env vars fail before any import.
     """
     username, password = _resolve_credentials(config)
     uri = config.effective_uri
-    database = config.database or None
     try:
         from graphiti_core import Graphiti  # type: ignore[import-not-found]
     except ImportError as error:
@@ -86,22 +84,14 @@ def build_graphiti_client(config: GraphitiConfig) -> Any:
             "'pip install -e \".[graphiti]\"' or inject graphiti_client_factory"
         ) from error
 
-    arguments: dict[str, Any] = {
-        "neo4j_uri": uri,
-        "neo4j_user": username,
-        "neo4j_password": password,
-    }
-    if database:
-        arguments["neo4j_database"] = database
     try:
-        # PHASE B VERIFY: keyword names and eager-connection behavior of
-        # graphiti_core.Graphiti(...) are unverified offline.  The Phase B
-        # spike must confirm this constructor performs no network I/O until a
-        # first query, then adjust the keyword surface here if needed.
-        return Graphiti(**arguments)
+        # PHASE B VERIFY: confirm whether construction performs eager network
+        # I/O.  The keyword surface itself matches graphiti-core 0.29.3.
+        return Graphiti(uri=uri, user=username, password=password)
     except TypeError as error:
         raise RuntimeError(
             "could not construct the Graphiti client with the installed "
-            "graphiti-core API; Phase B must verify the constructor signature "
-            f"for uri {uri!r} and adjust prism.graph.graphiti_client"
+            "graphiti-core API; expected the 0.29.3-compatible "
+            "Graphiti(uri=..., user=..., password=...) signature "
+            f"for uri {uri!r}"
         ) from error
