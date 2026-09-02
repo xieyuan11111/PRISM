@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import datetime, timezone
 from io import StringIO
 
@@ -11,7 +12,7 @@ import pytest
 from prism.cli import main as cli_main
 from prism.config import FirecrawlConfig, PathConfig, PrismConfig, SourceConfig
 from prism.research import FirecrawlSearchProvider, ResearchExecutor
-from prism.sources import ScholarlyMetadataClient
+from prism.sources import HttpResponse, ScholarlyMetadataClient
 from prism.events import Event
 from prism.graph import GraphEpisode
 from prism.runtime import OfflineGraphBackend, PrismRuntime, create_runtime
@@ -178,6 +179,68 @@ def test_disabled_firecrawl_does_not_create_provider_or_source_network_client(
             await runtime.close()
 
     run(exercise())
+
+
+class FakeScholarlyGetter:
+    """Public transport fake: blocked publisher page, valid Crossref answer."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    async def get(self, url: str, *, timeout: float):
+        self.calls.append(url)
+        if url.startswith("https://api.crossref.org/"):
+            body = json.dumps(
+                {
+                    "message": {
+                        "title": ["Composed fallback work"],
+                        "DOI": "10.1007/s11783-021-1503-6",
+                    }
+                }
+            )
+            return HttpResponse(url, 200, body, "application/json")
+        return HttpResponse(url, 403, "")
+
+
+def test_composed_scholarly_fallback_resolves_doi_metadata(tmp_path, monkeypatch):
+    """Regression: the composed client's clock must work when fallback fires.
+
+    ``create_runtime`` wires ``ScholarlyMetadataClient`` with a real clock;
+    exercising the composed client (blocked page -> Crossref) must produce an
+    honestly labeled metadata item, not crash inside the clock callable.
+    """
+
+    home = tmp_path / "scholarly-home"
+    monkeypatch.setenv("PRISM_HOME", str(home))
+    config = PrismConfig(sources=SourceConfig(("link.springer.com",)))
+    config_path = tmp_path / "config.json"
+    config.save(config_path)
+    getter = FakeScholarlyGetter()
+
+    async def exercise():
+        runtime = await create_runtime(
+            config_path,
+            graph_backend=FakeGraphBackend(),
+            http_getter=getter,
+        )
+        try:
+            report = await runtime.api.fetch_source(
+                "https://link.springer.com/article/10.1007/s11783-021-1503-6",
+                process=False,
+            )
+            # The scholarly path reports the resolved record link (Crossref
+            # falls back to the canonical percent-encoded doi.org URL), not
+            # the blocked page.
+            assert report.url == "https://doi.org/10.1007%2Fs11783-021-1503-6"
+            assert len(report.items) == 1
+            item = report.items[0]
+            assert item.access_level == "metadata_only"
+            assert "api.crossref.org/works/" in " ".join(getter.calls)
+        finally:
+            await runtime.close()
+
+    run(exercise())
+
 def test_firecrawl_client_and_custom_provider_conflict_is_rejected(
     tmp_path, monkeypatch
 ):
