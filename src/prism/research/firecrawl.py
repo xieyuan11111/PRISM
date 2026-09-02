@@ -254,20 +254,44 @@ def _settle(items: list[SourceItem], limit: int) -> tuple[SourceItem, ...]:
 
 
 def _search_entries(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """Read Firecrawl v2 search result arrays, with legacy data compatibility."""
+    """Read Firecrawl v2 result arrays, including the current data wrapper."""
+    container: Mapping[str, Any] = payload
     arrays: list[Any] = []
     for key in ("web", "news", "images"):
-        value = payload.get(key)
+        value = container.get(key)
         if value is not None:
             if not isinstance(value, list):
-                raise FirecrawlSchemaError(f"search response field {key!r} must be a list")
+                raise FirecrawlSchemaError(
+                    f"search response field {key!r} must be a list"
+                )
             arrays.extend(value)
     if not arrays and "data" in payload:
         data = payload.get("data")
-        if not isinstance(data, list):
-            raise FirecrawlSchemaError("search response field 'data' must be a list")
-        arrays = data
-    if not arrays and not any(key in payload for key in ("web", "news", "images", "data")):
+        if isinstance(data, list):
+            arrays = data
+        elif isinstance(data, Mapping):
+            container = data
+            for key in ("web", "news", "images"):
+                value = container.get(key)
+                if value is not None:
+                    if not isinstance(value, list):
+                        raise FirecrawlSchemaError(
+                            f"search response field 'data.{key}' must be a list"
+                        )
+                    arrays.extend(value)
+            if not arrays and not any(
+                key in container for key in ("web", "news", "images")
+            ):
+                raise FirecrawlSchemaError(
+                    "search response field 'data' has no result array"
+                )
+        else:
+            raise FirecrawlSchemaError(
+                "search response field 'data' must be a list or object"
+            )
+    if not arrays and not any(
+        key in payload for key in ("web", "news", "images", "data")
+    ):
         raise FirecrawlSchemaError("search response has no result array")
     for index, raw in enumerate(arrays):
         if not isinstance(raw, dict):

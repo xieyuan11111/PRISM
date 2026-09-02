@@ -342,6 +342,16 @@ def test_search_accepts_official_v2_web_response_array():
 # --------------------------------------------------------------------------
 
 
+def test_search_accepts_current_v2_data_object_wrapper():
+    payload = {
+        "success": True,
+        "data": {"web": [entry("https://gov.example/current")]},
+    }
+    client = FakeJsonClient(ok(payload))
+
+    items = asyncio.run(make_provider(client).search(make_query()))
+
+    assert [item.link for item in items] == ["https://gov.example/current"]
 def test_search_dedups_normalized_links_keeping_first_payload():
     payload = {
         "success": True,
