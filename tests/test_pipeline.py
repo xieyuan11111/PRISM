@@ -419,6 +419,40 @@ def test_non_fulltext_materials_are_indexed_but_skip_extraction_and_graph():
     asyncio.run(main())
 
 
+def test_blocked_materials_skip_extraction_and_graph():
+    """A ``blocked`` material never reaches extraction or the graph.
+
+    Regression for the review finding: the non-fulltext skip set covered
+    only ``abstract_only``/``metadata_only``, so a material whose access
+    level is ``blocked`` fell through to the extract and graph stages.
+    """
+    async def main():
+        service, indexer, extractor, graph, order = make_service()
+        material = make_material(
+            access_level="blocked",
+            retrieval_level="blocked",
+            type="academic",
+            source="academic",
+        )
+        run = await service.run_material(make_result(material))
+
+        assert order == ["index"]
+        assert indexer.calls == [Path("corpus") / f"doc-{material.id}.md"]
+        assert extractor.calls == []
+        assert graph.calls == []
+        assert run.status == "completed"
+        assert [stage.name for stage in run.stages] == ["index", "extract", "graph"]
+        assert [stage.status for stage in run.stages] == [
+            "indexed",
+            "skipped",
+            "skipped",
+        ]
+        assert "blocked" in run.stages[1].detail
+        assert "blocked" in run.stages[2].detail
+
+    asyncio.run(main())
+
+
 def test_fulltext_materials_still_run_extraction_and_graph():
     async def main():
         service, indexer, extractor, graph, order = make_service()

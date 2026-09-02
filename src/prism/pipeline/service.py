@@ -42,11 +42,14 @@ _DETAIL_DUPLICATE_MATERIAL = "duplicate material_id"
 _DETAIL_DUPLICATE_CORRELATION = "duplicate correlation_id"
 _DETAIL_NO_CASE = "extraction produced no case"
 
-# Levels that carry evidence *about* a work (an abstract, or bibliographic
-# metadata only), never the work's full text.  Structured extraction and
-# graph writing over such bodies would treat the placeholder as the article,
-# so the pipeline indexes them but skips those stages with an audit record.
-_NON_FULLTEXT_ACCESS_LEVELS = frozenset({"abstract_only", "metadata_only"})
+# Levels that carry evidence *about* a work — an abstract, bibliographic
+# metadata only, or an access-blocked placeholder — never the work's full
+# text.  Structured extraction and graph writing over such bodies would
+# treat the placeholder as the article, so the pipeline indexes them but
+# skips those stages with an audit record.  Only ``fulltext`` materials
+# (and unlabeled materials, which are not scholarly placeholders) run the
+# extract and graph stages.
+_NON_FULLTEXT_ACCESS_LEVELS = frozenset({"abstract_only", "metadata_only", "blocked"})
 
 _STAGE_RESULT_TYPES = (IndexOutcome, ExtractionResult, GraphWriteResult)
 
@@ -220,11 +223,12 @@ class PipelineService:
     ) -> PipelineRun:
         """Run the full pipeline for one ingested material, exactly once.
 
-        Materials whose ``access_level`` is ``abstract_only`` or
-        ``metadata_only`` carry an abstract or bibliographic placeholder, not
-        the work's full text: they are still indexed (so the metadata stays
-        searchable) but the extract and graph stages are skipped and recorded
-        as such, so the placeholder is never treated as an article body.
+        Materials whose ``access_level`` is not ``fulltext`` — an abstract,
+        a bibliographic placeholder, or a blocked record — carry no full
+        text of the work: they are still indexed (so the metadata stays
+        searchable) but the extract and graph stages are skipped and
+        recorded as such, so the placeholder is never treated as an article
+        body.
         """
 
         if not isinstance(result, IngestionResult):

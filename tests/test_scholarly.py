@@ -417,3 +417,76 @@ def test_metadata_clients_make_public_gets_without_authorization_header():
     getter = FakeGetter({CROSSREF_URL: response(CROSSREF_URL, {"message": {"title": ["T"], "DOI": DOI}})})
     run(CrossrefClient(getter).fetch(DOI, retrieved_at=RETRIEVED))
     assert getter.calls == [CROSSREF_URL]
+
+
+def test_openalex_enrichment_preserves_pubmed_identifiers():
+    """An OpenAlex abstract merge keeps the PMID/PMCID the enrichment found.
+
+    Regression for the review finding: the merge dropped the PubMed
+    identifiers when it rebuilt the Crossref record around the OpenAlex
+    abstract, so an enriched item lost its PMID/PMCID.
+    """
+    crossref = FakeGetter({
+        CROSSREF_URL: response(CROSSREF_URL, {"message": {
+            "title": ["No abstract"], "container-title": ["Journal"],
+            "DOI": DOI,
+        }})
+    })
+    openalex = FakeGetter({
+        OPENALEX_URL: response(OPENALEX_URL, {
+            "title": "OA enriched",
+            "ids": {
+                "doi": "https://doi.org/" + DOI,
+                "pmid": "https://pubmed.ncbi.nlm.nih.gov/40212345/",
+                "pmcid": "https://pmc.ncbi.nlm.nih.gov/articles/PMC8880123/",
+            },
+            "abstract_inverted_index": {"evidence": [0], "Public": [1]},
+        })
+    })
+    client = ScholarlyMetadataClient(CrossrefClient(crossref), OpenAlexClient(openalex), clock=lambda: RETRIEVED)
+    item = run(client.fetch(DOI_URL))
+    assert item.title == "No abstract"  # Crossref identity survives the merge
+    assert item.pmid == "40212345"
+    assert item.pmcid == "PMC8880123"
+    assert item.summary == "evidence Public"
+    assert item.to_ingestion_metadata()["pmid"] == "40212345"
+    assert item.to_ingestion_metadata()["pmcid"] == "PMC8880123"
+
+
+def test_fetch_only_metadata_clients_do_not_need_search():
+    """A custom fetch-only MetadataClient stays usable for DOI resolution.
+
+    Regression for the review finding: the constructor forced every client
+    to implement search() because of the title-search path, so a custom
+    fetch-only client could not be injected.  search() is only required when
+    fetch_by_title() actually runs.
+    """
+    class FetchOnlyClient:
+        def __init__(self):
+            self.calls = []
+
+        async def fetch(self, doi, *, retrieved_at):
+            self.calls.append(doi)
+            return AcademicRecord(
+                title="Fetch-only record",
+                source="academic",
+                link=DOI_URL,
+                retrieved_at=retrieved_at,
+                published_at=None,
+                authors=(),
+                doi=doi,
+                abstract="A public abstract.",
+                access_level="abstract_only",
+            )
+
+    crossref = FetchOnlyClient()
+    openalex = FetchOnlyClient()
+    client = ScholarlyMetadataClient(crossref, openalex, clock=lambda: RETRIEVED)
+    item = run(client.fetch(DOI_URL))
+    assert item.title == "Fetch-only record"
+    assert item.access_level == "abstract_only"
+    assert crossref.calls == [DOI]
+    assert openalex.calls == []
+
+    with pytest.raises(TypeError, match="search"):
+        run(client.fetch_by_title("A title without a DOI"))

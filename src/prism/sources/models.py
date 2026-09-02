@@ -141,6 +141,8 @@ class SourceItem:
     doi: str | None = None
     authors: tuple[str, ...] = ()
     container_title: str | None = None
+    pmid: str | None = None
+    pmcid: str | None = None
 
     def __post_init__(self) -> None:
         for name in ("title", "source", "type"):
@@ -153,7 +155,7 @@ class SourceItem:
             if self.published_at > self.fetched_at:
                 raise ValueError("published_at must not be later than fetched_at")
         object.__setattr__(self, "case_tags", _text_tuple("case_tags", self.case_tags))
-        for name in ("retrieval_level", "access_level", "doi", "container_title"):
+        for name in ("retrieval_level", "access_level", "doi", "container_title", "pmid", "pmcid"):
             value = getattr(self, name)
             if value is not None:
                 _require_text(name, value)
@@ -187,7 +189,7 @@ class SourceItem:
             "case_tags": list(self.case_tags),
             "url": self.link,
         }
-        for name in ("retrieval_level", "access_level", "doi"):
+        for name in ("retrieval_level", "access_level", "doi", "pmid", "pmcid"):
             value = getattr(self, name)
             if value is not None:
                 metadata[name] = value

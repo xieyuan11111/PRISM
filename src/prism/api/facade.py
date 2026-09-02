@@ -20,6 +20,8 @@ from prism.sources import (
     SourceFetchError,
     SourceItem,
     extract_doi,
+    extract_pmcid,
+    extract_pmid,
 )
 from prism.store import IndexEntry, IndexOutcome, SearchFilter
 
@@ -92,6 +94,10 @@ class _SourceService(Protocol):
 
 class _ScholarlyMetadataClient(Protocol):
     async def fetch(self, value: str) -> SourceItem: ...
+
+    async def fetch_by_title(
+        self, title: str, *, link: str | None = ...
+    ) -> SourceItem: ...
 
 
 class _PipelineService(Protocol):
@@ -285,7 +291,14 @@ class PrismAPI:
         try:
             fetch_result = await source.fetch(url, kind=kind)
         except SourceFetchError:
-            if self._scholarly is None or extract_doi(url) is None:
+            # The scholarly fallback only fires for inputs that carry a real
+            # scholarly identifier (DOI, PMCID, or PMID) — never for pages
+            # that merely look academic.
+            if self._scholarly is None or (
+                extract_doi(url) is None
+                and extract_pmcid(url) is None
+                and extract_pmid(url) is None
+            ):
                 raise
             item = await self._scholarly.fetch(url)
             item_report = await self._intake_source_item(item, process=process)
@@ -345,6 +358,44 @@ class PrismAPI:
                     )
                 )
         return SourceBatchReport(tuple(reports), tuple(failures))
+
+    async def fetch_scholarly_by_title(
+        self,
+        title: str,
+        *,
+        link: str | None = None,
+        process: bool = True,
+    ) -> SourceFetchReport:
+        """Resolve one academic record by strictly matching a title.
+
+        For candidates whose URL carries no DOI/PMID/PMCID (a publisher
+        landing page that could not be fetched), the already-known title is
+        matched against public Crossref/OpenAlex bibliographic search.  The
+        scholarly client only accepts a verified title match — a DOI is never
+        guessed from a fuzzy hit.  The resolved item flows through the same
+        intake boundary as every other source: spool, ingest, optional
+        pipeline, event.
+        """
+        if self._scholarly is None:
+            raise ValueError(
+                "scholarly_metadata_client is required for title-based scholarly resolution"
+            )
+        if self._source_raw_dir is None:
+            raise ValueError(
+                "source_raw_dir is required for title-based scholarly resolution"
+            )
+        if process and self._pipeline is None:
+            raise ValueError(
+                "pipeline_service is required for title-based scholarly resolution with process=True"
+            )
+        item = await self._scholarly.fetch_by_title(title, link=link)
+        item_report = await self._intake_source_item(item, process=process)
+        return SourceFetchReport(
+            url=item.link or link or title,
+            fetched_at=item.fetched_at,
+            items=(item_report,),
+            duplicate_keys=(),
+        )
 
     def _fetch_dependencies(self, process: bool) -> _SourceService:
         if self._source is None:

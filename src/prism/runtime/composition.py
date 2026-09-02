@@ -33,6 +33,7 @@ from prism.research import (
 )
 from prism.sources import (
     CrossrefClient,
+    EuropePmcClient,
     HttpGetter,
     OpenAlexClient,
     ScholarlyMetadataClient,
@@ -296,6 +297,7 @@ async def create_runtime(
         scholarly_metadata_client = ScholarlyMetadataClient(
             CrossrefClient(effective_http_getter),
             OpenAlexClient(effective_http_getter),
+            EuropePmcClient(effective_http_getter),
             clock=lambda: datetime.now(timezone.utc),
         )
     if effective_provider is not None:

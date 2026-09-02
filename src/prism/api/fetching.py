@@ -58,11 +58,20 @@ def spool_source_item(item: SourceItem, spool_dir: Path) -> Path:
     if not body.strip() and item.access_level == "metadata_only":
         authors = getattr(item, "authors", ())
         container_title = getattr(item, "container_title", None)
+        identifiers = [
+            line
+            for line in (
+                f"DOI: {getattr(item, 'doi', None)}" if getattr(item, "doi", None) else None,
+                f"PMCID: {getattr(item, 'pmcid', None)}" if getattr(item, "pmcid", None) else None,
+                f"PMID: {getattr(item, 'pmid', None)}" if getattr(item, "pmid", None) else None,
+            )
+            if line is not None
+        ] or ["Identifier: none"]
         body = (
             "[Scholarly metadata record]\n\n"
             f"Title: {item.title}\n"
             f"Source: {item.source}\n"
-            f"DOI: {getattr(item, 'doi', None) or 'unknown'}\n"
+            + "".join(f"{line}\n" for line in identifiers)
             + (f"Authors: {', '.join(authors)}\n" if authors else "")
             + (f"Venue: {container_title}\n" if container_title else "")
             + "Full text was not available through the public metadata source."
