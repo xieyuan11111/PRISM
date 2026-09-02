@@ -19,6 +19,7 @@ from prism.analyzer import (
     TimelineStage,
     TurningPoint,
 )
+from prism.domain import EvidenceLocator
 
 SUMMARY_ORIGIN_LLM = "llm"
 SUMMARY_ORIGIN_FALLBACK = "fallback"
@@ -69,12 +70,20 @@ class ReportCitation:
 
     source_id: str
     episode_keys: tuple[str, ...] = ()
+    evidence: tuple[EvidenceLocator, ...] = ()
 
     def __post_init__(self) -> None:
         _require_text("source_id", self.source_id)
         object.__setattr__(
             self, "episode_keys", _text_tuple("episode_keys", self.episode_keys)
         )
+        object.__setattr__(
+            self,
+            "evidence",
+            _typed_tuple("evidence", self.evidence, EvidenceLocator),
+        )
+        if any(item.source_id != self.source_id for item in self.evidence):
+            raise ValueError("citation evidence must match citation source_id")
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,11 +147,13 @@ class ReportDocument:
     open_questions: tuple[OpenQuestion, ...]
     citations: tuple[ReportCitation, ...]
     markdown: str
+    case_status: str | None = None
 
     def __post_init__(self) -> None:
         _require_text("case_id", self.case_id)
         _require_aware("as_of", self.as_of)
         _optional_text("case_type", self.case_type)
+        _optional_text("case_status", self.case_status)
         if not isinstance(self.summary, ReportSummary):
             raise TypeError("summary must be a ReportSummary")
         object.__setattr__(

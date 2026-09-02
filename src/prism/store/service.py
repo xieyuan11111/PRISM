@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from prism.config import PathConfig
+from prism.domain import EvidenceLocator
 from prism.domain.models import ORIGINAL_FORMATS
 from prism.ingestion import content_hash, parse_frontmatter, stable_material_id
 
@@ -703,6 +704,83 @@ class EvidenceStore:
             (source_id.strip(),),
         ).fetchone()
         return self._row_to_entry(row) if row is not None else None
+
+    def locate(
+        self,
+        source_id: str,
+        *,
+        quote: str | None = None,
+        paragraph: int | None = None,
+        page: int | None = None,
+        max_quote_chars: int = 360,
+    ) -> EvidenceLocator:
+        """Resolve a source to a portable corpus paragraph/page and excerpt.
+
+        Paragraphs are one-based non-empty logical lines in normalized corpus
+        Markdown.  When ``quote`` is supplied it must occur in the selected
+        paragraph (ignoring whitespace differences); failure is explicit so a
+        caller cannot accidentally cite text absent from the source.
+        """
+
+        if isinstance(max_quote_chars, bool) or not isinstance(max_quote_chars, int):
+            raise TypeError("max_quote_chars must be an integer")
+        if max_quote_chars < 40:
+            raise ValueError("max_quote_chars must be at least 40")
+        entry = self.get(source_id)
+        if entry is None:
+            raise LookupError(f"material not found: {source_id}")
+        paragraphs = tuple(
+            line.strip() for line in entry.content.splitlines() if line.strip()
+        )
+        if not paragraphs:
+            raise LookupError(f"material has no locatable text: {source_id}")
+        if paragraph is not None:
+            if isinstance(paragraph, bool) or not isinstance(paragraph, int) or paragraph < 1:
+                raise ValueError("paragraph must be a positive integer")
+            if paragraph > len(paragraphs):
+                raise LookupError(
+                    f"paragraph {paragraph} is outside material {source_id}"
+                )
+            candidates = ((paragraph, paragraphs[paragraph - 1]),)
+        else:
+            candidates = tuple(enumerate(paragraphs, start=1))
+
+        requested = None
+        if quote is not None:
+            if not isinstance(quote, str) or not quote.strip():
+                raise ValueError("quote must be a non-empty string")
+            requested = re.sub(r"\s+", "", quote)
+            candidates = tuple(
+                item for item in candidates if requested in re.sub(r"\s+", "", item[1])
+            )
+            if not candidates:
+                if paragraph is not None:
+                    raise LookupError(
+                        f"quote was not found in paragraph {paragraph} of "
+                        f"material {source_id}"
+                    )
+                raise LookupError(f"quote was not found in material {source_id}")
+
+        number, text = candidates[0]
+        excerpt = text
+        if len(excerpt) > max_quote_chars:
+            if requested is None:
+                excerpt = excerpt[: max_quote_chars - 1].rstrip() + "…"
+            else:
+                compact = re.sub(r"\s+", "", excerpt)
+                start = max(0, compact.find(requested) - max_quote_chars // 4)
+                excerpt = compact[start : start + max_quote_chars]
+                if start:
+                    excerpt = "…" + excerpt
+                if start + max_quote_chars < len(compact):
+                    excerpt += "…"
+        return EvidenceLocator(
+            source_id=entry.source_id,
+            corpus_path=entry.path,
+            paragraph=number,
+            page=page,
+            quote=excerpt,
+        )
 
     def search(
         self,

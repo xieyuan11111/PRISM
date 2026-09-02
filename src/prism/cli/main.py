@@ -29,6 +29,8 @@ class PrismAPIProtocol(Protocol):
 
     async def build_timeline(self, case_id: str, as_of: datetime) -> object: ...
 
+    async def query_case_state(self, case_id: str, cutoff_at: datetime) -> object: ...
+
     async def ingest_material(
         self, path: str | Path, metadata: dict[str, Any] | None = None
     ) -> object: ...
@@ -161,6 +163,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     timeline.set_defaults(handler=handle_timeline)
 
+    state = commands.add_parser(
+        "state", help="Query auditable case state at a historical cutoff."
+    )
+    state.add_argument("case_id", type=_nonempty, metavar="CASE_ID")
+    state.add_argument(
+        "--cutoff-at",
+        required=True,
+        type=_aware_datetime,
+        metavar="TIMESTAMP",
+        help="ISO-8601 timestamp with a UTC offset.",
+    )
+    state.set_defaults(handler=handle_state)
+
     ingest = commands.add_parser("ingest", help="Ingest a Markdown or PDF file.")
     ingest.add_argument("input_path", type=Path, metavar="INPUT")
     ingest.add_argument("--metadata", type=_json_object, metavar="JSON")
@@ -279,6 +294,12 @@ async def handle_search(args: argparse.Namespace, api: PrismAPIProtocol) -> obje
 async def handle_timeline(args: argparse.Namespace, api: PrismAPIProtocol) -> object:
     """Delegate a parsed timeline command to the injected facade."""
     return await _await_api_call(api.build_timeline(args.case_id, args.as_of))
+
+
+async def handle_state(args: argparse.Namespace, api: PrismAPIProtocol) -> object:
+    """Return status, nodes, facts, interpretations and gaps at a cutoff."""
+
+    return await _await_api_call(api.query_case_state(args.case_id, args.cutoff_at))
 
 
 async def handle_ingest(args: argparse.Namespace, api: PrismAPIProtocol) -> object:
@@ -484,6 +505,7 @@ __all__ = [
     "handle_ingest",
     "handle_report",
     "handle_search",
+    "handle_state",
     "handle_timeline",
     "main",
 ]

@@ -14,6 +14,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
+from prism.domain import EvidenceLocator
+
 FACT_LAYER = "fact"
 INTERPRETATION_LAYER = "interpretation"
 PROVENANCE_LAYER = "provenance"
@@ -68,8 +70,24 @@ CLAIM_REVISED = "claim_revised"
 GAP_EMPTY_TIMELINE = "empty_timeline"
 GAP_MISSING_CASE_DEFINITION = "missing_case_definition"
 GAP_UNATTRIBUTED_ENTRY = "unattributed_entry"
+GAP_MISSING_EVIDENCE_LOCATION = "missing_evidence_location"
+# The two types below are part of the public gap taxonomy but are NOT derived
+# by the deterministic analyzer: deciding that a stage lacks its primary
+# source text, or that a prediction has no official confirmation, requires
+# knowledge the timeline record does not carry (e.g. what else exists in the
+# corpus).  They are reserved for caller-recorded case audits; the analyzer
+# never fabricates them from well-evidenced entries.
+GAP_MISSING_PRIMARY_SOURCE = "missing_primary_source"
+GAP_UNVERIFIED_PREDICTION = "unverified_prediction"
 GAP_TYPES = frozenset(
-    {GAP_EMPTY_TIMELINE, GAP_MISSING_CASE_DEFINITION, GAP_UNATTRIBUTED_ENTRY}
+    {
+        GAP_EMPTY_TIMELINE,
+        GAP_MISSING_CASE_DEFINITION,
+        GAP_UNATTRIBUTED_ENTRY,
+        GAP_MISSING_EVIDENCE_LOCATION,
+        GAP_MISSING_PRIMARY_SOURCE,
+        GAP_UNVERIFIED_PREDICTION,
+    }
 )
 
 ORIGIN_OPEN_QUESTION_NODE = "open_question_node"
@@ -161,6 +179,8 @@ class TimelineStage:
     confidence: float | None = None
     provenance_type: str | None = None
     stance: str | None = None
+    happened_at: datetime | None = None
+    evidence: tuple[EvidenceLocator, ...] = ()
 
     def __post_init__(self) -> None:
         for name in ("episode_key", "kind", "layer", "summary"):
@@ -174,7 +194,12 @@ class TimelineStage:
         )
         for name in ("node_type", "provenance_type", "stance"):
             _optional_text(name, getattr(self, name))
+        if self.happened_at is not None:
+            require_aware("happened_at", self.happened_at)
         _optional_confidence("confidence", self.confidence)
+        object.__setattr__(
+            self, "evidence", _typed_tuple("evidence", self.evidence, EvidenceLocator)
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -276,11 +301,13 @@ class EvolutionAnalysis:
     change_reasons: tuple[ChangeReason, ...]
     evidence_gaps: tuple[EvidenceGap, ...]
     open_questions: tuple[OpenQuestion, ...]
+    case_status: str | None = None
 
     def __post_init__(self) -> None:
         require_text("case_id", self.case_id)
         require_aware("as_of", self.as_of)
         _optional_text("case_type", self.case_type)
+        _optional_text("case_status", self.case_status)
         object.__setattr__(
             self, "stages", _typed_tuple("stages", self.stages, TimelineStage)
         )
@@ -320,6 +347,7 @@ class ComparisonChange:
     confidence: float | None = None
     provenance_type: str | None = None
     stance: str | None = None
+    evidence: tuple[EvidenceLocator, ...] = ()
 
     def __post_init__(self) -> None:
         for name in ("episode_key", "kind", "layer", "summary"):
@@ -333,6 +361,38 @@ class ComparisonChange:
         _optional_confidence("confidence", self.confidence)
         _optional_text("provenance_type", self.provenance_type)
         _optional_text("stance", self.stance)
+        object.__setattr__(
+            self, "evidence", _typed_tuple("evidence", self.evidence, EvidenceLocator)
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class HistoricalCaseState:
+    """Auditable state containing only knowledge available at a cutoff."""
+
+    case_id: str
+    cutoff_at: datetime
+    case_type: str | None
+    status: str | None
+    nodes: tuple[TimelineStage, ...]
+    facts: tuple[TimelineStage, ...]
+    interpretations: tuple[TimelineStage, ...]
+    evidence_gaps: tuple[EvidenceGap, ...]
+
+    def __post_init__(self) -> None:
+        require_text("case_id", self.case_id)
+        require_aware("cutoff_at", self.cutoff_at)
+        _optional_text("case_type", self.case_type)
+        _optional_text("status", self.status)
+        for name in ("nodes", "facts", "interpretations"):
+            object.__setattr__(
+                self, name, _typed_tuple(name, getattr(self, name), TimelineStage)
+            )
+        object.__setattr__(
+            self,
+            "evidence_gaps",
+            _typed_tuple("evidence_gaps", self.evidence_gaps, EvidenceGap),
+        )
 
 
 @dataclass(frozen=True, slots=True)

@@ -251,6 +251,12 @@ def test_wrong_case_id_is_rejected():
         lambda payload: payload["case"].update(
             {"start_at": "2026-08-31T09:31:00Z"}
         ),
+        lambda payload: payload["case"].update(
+            {"status_at": "2026-09-01T00:00:00Z"}
+        ),
+        lambda payload: payload["case"].update(
+            {"status_observed_at": "2026-09-01T00:00:00Z"}
+        ),
     ],
 )
 def test_future_and_invalid_time_ordering_are_rejected(mutate):

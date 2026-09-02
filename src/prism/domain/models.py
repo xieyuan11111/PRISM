@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import PurePosixPath, PureWindowsPath
 from typing import Iterable
 
 
@@ -70,6 +71,54 @@ def _require_confidence(value: float) -> None:
         raise TypeError("confidence must be a number")
     if not 0.0 <= value <= 1.0:
         raise ValueError("confidence must be between 0.0 and 1.0")
+
+
+def _typed_tuple(name: str, values: object, expected: type) -> tuple:
+    if isinstance(values, (str, bytes)):
+        raise TypeError(f"{name} must be an iterable of {expected.__name__} objects")
+    try:
+        normalized = tuple(values)  # type: ignore[arg-type]
+    except TypeError as error:
+        raise TypeError(f"{name} must be an iterable") from error
+    if any(not isinstance(value, expected) for value in normalized):
+        raise TypeError(f"{name} must contain only {expected.__name__} objects")
+    return normalized
+
+
+@dataclass(frozen=True, slots=True)
+class EvidenceLocator:
+    """A portable pointer from an assertion back to normalized corpus text."""
+
+    source_id: str
+    corpus_path: str
+    paragraph: int | None = None
+    page: int | None = None
+    quote: str | None = None
+
+    def __post_init__(self) -> None:
+        _require_text("source_id", self.source_id)
+        _require_text("corpus_path", self.corpus_path)
+        path = PurePosixPath(self.corpus_path.replace("\\", "/"))
+        if (
+            path.is_absolute()
+            or PureWindowsPath(self.corpus_path).is_absolute()
+            or PureWindowsPath(self.corpus_path).drive
+            or ".." in path.parts
+        ):
+            raise ValueError("corpus_path must be a project-relative path")
+        object.__setattr__(self, "corpus_path", path.as_posix())
+        for name in ("paragraph", "page"):
+            value = getattr(self, name)
+            if value is not None and (
+                isinstance(value, bool) or not isinstance(value, int) or value < 1
+            ):
+                raise ValueError(f"{name} must be a positive integer")
+        _validate_optional_text("quote", self.quote)
+        if self.paragraph is None and self.page is None and self.quote is None:
+            raise ValueError(
+                "corpus_path alone cannot locate evidence; provide paragraph, "
+                "page, or quote"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,6 +191,8 @@ class EvolutionCase:
     start_at: datetime
     status: str
     node_ids: tuple[str, ...] = ()
+    status_at: datetime | None = None
+    status_observed_at: datetime | None = None
 
     def __post_init__(self) -> None:
         _require_text("case_id", self.case_id)
@@ -150,6 +201,10 @@ class EvolutionCase:
         _require_aware_datetime("start_at", self.start_at)
         _require_text("status", self.status)
         object.__setattr__(self, "node_ids", _text_tuple("node_ids", self.node_ids))
+        if self.status_at is not None:
+            _require_aware_datetime("status_at", self.status_at)
+        if self.status_observed_at is not None:
+            _require_aware_datetime("status_observed_at", self.status_observed_at)
 
 
 @dataclass(frozen=True, slots=True)
@@ -163,6 +218,12 @@ class EvolutionNode:
     summary: str
     source_ids: tuple[str, ...] = ()
     claim_ids: tuple[str, ...] = ()
+    # Appended optional fields preserve every pre-M0 positional constructor.
+    valid_at: datetime | None = None
+    observed_at: datetime | None = None
+    evidence: tuple[EvidenceLocator, ...] = ()
+    change_reason: str | None = None
+    provenance_type: str | None = None
 
     def __post_init__(self) -> None:
         _require_text("id", self.id)
@@ -176,6 +237,17 @@ class EvolutionNode:
         object.__setattr__(
             self, "claim_ids", _text_tuple("claim_ids", self.claim_ids)
         )
+        if self.valid_at is not None:
+            _require_aware_datetime("valid_at", self.valid_at)
+        if self.observed_at is not None:
+            _require_aware_datetime("observed_at", self.observed_at)
+        object.__setattr__(
+            self, "evidence", _typed_tuple("evidence", self.evidence, EvidenceLocator)
+        )
+        if not {item.source_id for item in self.evidence}.issubset(set(self.source_ids)):
+            raise ValueError("node evidence source_id must be present in source_ids")
+        _validate_optional_text("change_reason", self.change_reason)
+        _validate_optional_text("provenance_type", self.provenance_type)
 
 
 @dataclass(frozen=True, slots=True)
@@ -191,6 +263,7 @@ class TemporalFact:
     source_ids: tuple[str, ...]
     confidence: float
     provenance_type: str
+    evidence: tuple[EvidenceLocator, ...] = ()
 
     def __post_init__(self) -> None:
         for name in ("subject", "predicate", "object", "provenance_type"):
@@ -205,6 +278,11 @@ class TemporalFact:
             self, "source_ids", _text_tuple("source_ids", self.source_ids)
         )
         _require_confidence(self.confidence)
+        object.__setattr__(
+            self, "evidence", _typed_tuple("evidence", self.evidence, EvidenceLocator)
+        )
+        if not {item.source_id for item in self.evidence}.issubset(set(self.source_ids)):
+            raise ValueError("fact evidence source_id must be present in source_ids")
 
 
 @dataclass(frozen=True, slots=True)
@@ -218,6 +296,7 @@ class Claim:
     stated_at: datetime
     based_on: tuple[str, ...] = ()
     revised_by: str | None = None
+    evidence: tuple[EvidenceLocator, ...] = ()
 
     def __post_init__(self) -> None:
         for name in ("claim_id", "actor", "proposition"):
@@ -226,3 +305,8 @@ class Claim:
         _require_aware_datetime("stated_at", self.stated_at)
         object.__setattr__(self, "based_on", _text_tuple("based_on", self.based_on))
         _validate_optional_text("revised_by", self.revised_by)
+        object.__setattr__(
+            self, "evidence", _typed_tuple("evidence", self.evidence, EvidenceLocator)
+        )
+        if not {item.source_id for item in self.evidence}.issubset(set(self.based_on)):
+            raise ValueError("claim evidence source_id must be present in based_on")

@@ -181,6 +181,14 @@ class CaseBundleMerger:
                         )
                         for claim_id in node.claim_ids
                     ),
+                    # Preserve the extraction's temporal and provenance record:
+                    # dropping observed_at would let a node reported only by a
+                    # later material appear in states that predate that material.
+                    valid_at=node.valid_at,
+                    observed_at=node.observed_at,
+                    evidence=node.evidence,
+                    change_reason=node.change_reason,
+                    provenance_type=node.provenance_type,
                 )
                 self._append_by_id(
                     normalized.id, normalized, node_by_id, nodes, "node"
@@ -225,6 +233,7 @@ class CaseBundleMerger:
                         if claim.revised_by is not None
                         else None
                     ),
+                    evidence=claim.evidence,
                 )
                 self._append_by_id(
                     normalized_claim.claim_id,
@@ -251,6 +260,8 @@ class CaseBundleMerger:
             start_at=case.start_at,
             status=case.status,
             node_ids=tuple(node_ids),
+            status_at=case.status_at,
+            status_observed_at=case.status_observed_at,
         )
         return MergedCaseBundle(
             case=merged_case,

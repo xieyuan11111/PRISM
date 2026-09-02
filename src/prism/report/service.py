@@ -90,6 +90,7 @@ class ReportService:
             open_questions=analysis.open_questions,
             citations=citations,
             markdown=markdown,
+            case_status=analysis.case_status,
         )
 
     async def _summarize(self, analysis: EvolutionAnalysis) -> ReportSummary:
@@ -132,6 +133,17 @@ def _analysis_payload(analysis: EvolutionAnalysis) -> dict[str, Any]:
                 "confidence": stage.confidence,
                 "provenance_type": stage.provenance_type,
                 "stance": stage.stance,
+                "happened_at": _iso(stage.happened_at),
+                "evidence": [
+                    {
+                        "source_id": item.source_id,
+                        "corpus_path": item.corpus_path,
+                        "paragraph": item.paragraph,
+                        "page": item.page,
+                        "quote": item.quote,
+                    }
+                    for item in stage.evidence
+                ],
             }
             for stage in analysis.stages
         ],
@@ -422,6 +434,7 @@ def _document_citations(
     analysis: EvolutionAnalysis, summary: ReportSummary
 ) -> tuple[ReportCitation, ...]:
     merged: dict[str, set[str]] = {}
+    locations: dict[str, set] = {}
 
     def add(source_ids: tuple[str, ...], episode_key: str) -> None:
         for source_id in source_ids:
@@ -429,6 +442,8 @@ def _document_citations(
 
     for stage in analysis.stages:
         add(stage.source_ids, stage.episode_key)
+        for item in stage.evidence:
+            locations.setdefault(item.source_id, set()).add(item)
     for point in analysis.turning_points:
         add(point.source_ids, point.episode_key)
     for reason in analysis.change_reasons:
@@ -442,7 +457,21 @@ def _document_citations(
         merged.setdefault(citation.source_id, set()).update(citation.episode_keys)
 
     return tuple(
-        ReportCitation(source_id, tuple(sorted(episode_keys)))
+        ReportCitation(
+            source_id,
+            tuple(sorted(episode_keys)),
+            tuple(
+                sorted(
+                    locations.get(source_id, ()),
+                    key=lambda item: (
+                        item.corpus_path,
+                        item.paragraph or 0,
+                        item.page or 0,
+                        item.quote or "",
+                    ),
+                )
+            ),
+        )
         for source_id, episode_keys in sorted(merged.items())
     )
 
@@ -481,6 +510,7 @@ def _render_markdown(
     lines.append("")
     lines.append(f"- Case ID: {analysis.case_id}")
     lines.append(f"- Case type: {analysis.case_type or 'unknown'}")
+    lines.append(f"- Recorded status: {analysis.case_status or 'unknown'}")
     lines.append(f"- As of: {analysis.as_of.isoformat()}")
     lines.append("")
 
@@ -513,18 +543,31 @@ def _render_markdown(
 
     lines.append("## Timeline Stages")
     lines.append("")
+    lines.append(
+        "_Classification: `fact` is a recorded event/fact; `interpretation` is "
+        "an actor's or analyst's claim; provenance labels such as `model_inference` "
+        "remain inference rather than source-stated fact._"
+    )
+    lines.append("")
     if analysis.stages:
         lines.append(
-            "| Episode | Kind | Layer | Valid from | Valid until | Summary | Sources |"
+            "| Episode | Kind | Layer | Happened | Valid from | Valid until | "
+            "Observed | Provenance | Summary | Sources |"
         )
-        lines.append("| --- | --- | --- | --- | --- | --- | --- |")
+        lines.append("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
         for stage in analysis.stages:
             kind = stage.kind + (
-                f" / {stage.node_type}" if stage.node_type else f" / {stage.stance}" if stage.stance else ""
+                f" / {stage.node_type}"
+                if stage.node_type
+                else f" / {stage.stance}"
+                if stage.stance
+                else ""
             )
             lines.append(
                 f"| `{_md(stage.episode_key)}` | {_md(kind)} | {_md(stage.layer)} "
-                f"| {_iso(stage.valid_at)} | {_iso(stage.invalid_at) or 'open-ended'} "
+                f"| {_iso(stage.happened_at) or '—'} | {_iso(stage.valid_at)} "
+                f"| {_iso(stage.invalid_at) or 'open-ended'} | {_iso(stage.reference_time)} "
+                f"| {_md(stage.provenance_type or 'recorded')} "
                 f"| {_md(stage.summary)} | {_sources_label(stage.source_ids)} |"
             )
     else:
@@ -594,6 +637,15 @@ def _render_markdown(
                 f"- `{_md(citation.source_id)}` — cited by episodes: "
                 f"{episodes or '—'}"
             )
+            for item in citation.evidence:
+                position = f"paragraph {item.paragraph}" if item.paragraph else "paragraph —"
+                if item.page is not None:
+                    position += f", page {item.page}"
+                lines.append(
+                    f"  - `{_md(item.corpus_path)}` ({position})"
+                )
+                if item.quote:
+                    lines.append(f"    - Source excerpt: “{_md(item.quote)}”")
     else:
         lines.append(f"- {_EMPTY_SECTION}")
     lines.append("")

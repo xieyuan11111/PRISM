@@ -10,6 +10,7 @@ from .main import (
     handle_research,
     handle_report,
     handle_search,
+    handle_state,
     handle_timeline,
     main,
 )
@@ -24,6 +25,7 @@ __all__ = [
     "handle_research",
     "handle_report",
     "handle_search",
+    "handle_state",
     "handle_timeline",
     "main",
 ]

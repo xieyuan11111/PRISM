@@ -12,6 +12,7 @@ from prism.cli import (
     build_parser,
     handle_ingest,
     handle_search,
+    handle_state,
     handle_timeline,
     main,
 )
@@ -46,6 +47,10 @@ class FakeAPI:
         self.calls.append(("build_timeline", (case_id, as_of), {}))
         return {"entries": (), "as_of": as_of, "case_id": case_id}
 
+    async def query_case_state(self, case_id, cutoff_at):
+        self.calls.append(("query_case_state", (case_id, cutoff_at), {}))
+        return {"case_id": case_id, "cutoff_at": cutoff_at, "nodes": ()}
+
     async def ingest_material(self, path, metadata=None):
         self.calls.append(("ingest_material", (path, metadata), {}))
         return {
@@ -62,10 +67,14 @@ def test_build_parser_exposes_three_small_subcommands_and_public_handlers():
     timeline = parser.parse_args(
         ["timeline", "case-1", "--as-of", "2026-09-01T09:30:00+00:00"]
     )
+    state = parser.parse_args(
+        ["state", "case-1", "--cutoff-at", "2026-09-01T09:30:00+00:00"]
+    )
     ingest = parser.parse_args(["ingest", "input.md"])
 
     assert search.handler is handle_search
     assert timeline.handler is handle_timeline
+    assert state.handler is handle_state
     assert ingest.handler is handle_ingest
 
 
@@ -142,6 +151,21 @@ def test_search_defaults_are_explicit_at_the_api_boundary():
             },
         )
     ]
+
+
+def test_state_requires_and_delegates_an_aware_cutoff_timestamp():
+    api = FakeAPI()
+
+    status, stdout, stderr = run_cli(
+        ["state", "case-1", "--cutoff-at", "2026-09-01T17:30:00+08:00"],
+        api,
+    )
+
+    expected = datetime.fromisoformat("2026-09-01T17:30:00+08:00")
+    assert status == 0
+    assert stderr == ""
+    assert api.calls == [("query_case_state", ("case-1", expected), {})]
+    assert '"nodes":[]' in stdout
 
 
 def test_timeline_requires_and_delegates_an_aware_iso_timestamp():

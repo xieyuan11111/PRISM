@@ -27,7 +27,15 @@ opens a network client:
 ```console
 python -m prism.cli ingest input.md
 python -m prism.cli discover MATERIAL_ID
+python -m prism.cli state CASE_ID --cutoff-at 2026-09-01T00:00:00+00:00
 ```
+
+Historical state queries apply both validity time and observation/publication
+time, so later retrospective material does not leak into an earlier cutoff.
+Nodes, facts and claims may carry portable evidence locators containing a
+corpus-relative path, paragraph/page and source excerpt; reports render those
+locations alongside `source_ids` and preserve fact/interpretation/provenance
+labels.
 
 `discover` creates a time-bounded research plan from an indexed material. To
 execute a plan, explicitly enable Firecrawl in `PRISM_HOME/config.json` and

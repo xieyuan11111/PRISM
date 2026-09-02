@@ -26,6 +26,7 @@ from .models import (
     FACT_SUPERSEDED,
     GAP_EMPTY_TIMELINE,
     GAP_MISSING_CASE_DEFINITION,
+    GAP_MISSING_EVIDENCE_LOCATION,
     GAP_UNATTRIBUTED_ENTRY,
     INTERPRETATION_CHANGE,
     ORIGIN_OPEN_QUESTION_NODE,
@@ -38,6 +39,7 @@ from .models import (
     EvidenceGap,
     EvolutionAnalysis,
     EvolutionComparison,
+    HistoricalCaseState,
     OpenQuestion,
     TimelineStage,
     TurningPoint,
@@ -111,7 +113,7 @@ class AnalyzerService:
             require_aware("as_of", as_of)
 
         timeline = await self._fetch(case_id, as_of)
-        case_type = self._case_type(timeline.entries)
+        case_type, case_status = self._case_metadata(timeline.entries, as_of)
         staged = self._staged(self._visible(timeline, kind_filter))
 
         return EvolutionAnalysis(
@@ -123,6 +125,32 @@ class AnalyzerService:
             change_reasons=self._change_reasons(staged),
             evidence_gaps=self._evidence_gaps(case_id, as_of, staged, kind_filter),
             open_questions=self._open_questions(staged),
+            case_status=case_status,
+        )
+
+    async def state(
+        self, case_id: str, cutoff_at: datetime
+    ) -> HistoricalCaseState:
+        """Return the auditable node/fact/interpretation state at a cutoff."""
+
+        require_text("case_id", case_id)
+        require_aware("cutoff_at", cutoff_at)
+        analysis = await self.analyze(case_id, cutoff_at)
+        return HistoricalCaseState(
+            case_id=case_id,
+            cutoff_at=cutoff_at,
+            case_type=analysis.case_type,
+            status=analysis.case_status,
+            nodes=tuple(
+                stage for stage in analysis.stages if stage.kind == "evolution_node"
+            ),
+            facts=tuple(
+                stage for stage in analysis.stages if stage.kind == "temporal_fact"
+            ),
+            interpretations=tuple(
+                stage for stage in analysis.stages if stage.kind == "claim"
+            ),
+            evidence_gaps=analysis.evidence_gaps,
         )
 
     async def compare(
@@ -222,6 +250,13 @@ class AnalyzerService:
             candidate = payload.get("node_type")
             if isinstance(candidate, str) and candidate.strip():
                 node_type = candidate
+        happened_at = None
+        happened_value = payload.get("happened_at")
+        if isinstance(happened_value, str):
+            try:
+                happened_at = datetime.fromisoformat(happened_value)
+            except ValueError:
+                happened_at = None
         stage = TimelineStage(
             episode_key=entry.episode_key,
             kind=entry.kind,
@@ -235,6 +270,8 @@ class AnalyzerService:
             confidence=entry.confidence,
             provenance_type=entry.provenance_type,
             stance=entry.stance,
+            happened_at=happened_at,
+            evidence=entry.evidence,
         )
         return _Staged(entry, stage, payload)
 
@@ -273,13 +310,21 @@ class AnalyzerService:
         for item in staged:
             stage = item.stage
             if stage.kind == "evolution_node" and stage.node_type in REASON_NODE_TYPES:
+                reason_summary = cls._payload_text(item.payload, "change_reason")
+                # v2 does not infer causality from a node type or summary.
+                # Legacy episodes retain their historical projection behavior.
+                if (
+                    reason_summary is None
+                    and item.payload.get("schema") == "prism.graph.episode.v2"
+                ):
+                    continue
                 reasons.append(
                     ChangeReason(
                         stage.episode_key,
                         f"node:{stage.node_type}",
                         FACT_CHANGE,
                         stage.valid_at,
-                        stage.summary,
+                        reason_summary or stage.summary,
                         stage.source_ids,
                     )
                 )
@@ -353,6 +398,20 @@ class AnalyzerService:
                         stage.episode_key,
                     )
                 )
+            elif (
+                stage.kind in SUBSTANTIVE_KINDS
+                and "evidence" in item.payload
+                and not item.entry.evidence
+            ):
+                gaps.append(
+                    EvidenceGap(
+                        GAP_MISSING_EVIDENCE_LOCATION,
+                        f"{stage.kind} entry {stage.episode_key!r} has source_ids "
+                        "but no corpus paragraph/page or excerpt",
+                        stage.episode_key,
+                        stage.source_ids,
+                    )
+                )
         return tuple(
             sorted(gaps, key=lambda gap: (gap.gap_type, gap.episode_key or ""))
         )
@@ -405,6 +464,7 @@ class AnalyzerService:
                 confidence=entry.confidence,
                 provenance_type=entry.provenance_type,
                 stance=entry.stance,
+                evidence=entry.evidence,
             )
             for entry in entries
         ]
@@ -413,15 +473,32 @@ class AnalyzerService:
         )
 
     @staticmethod
-    def _case_type(entries: tuple[TimelineEntry, ...]) -> str | None:
+    def _case_metadata(
+        entries: tuple[TimelineEntry, ...], as_of: datetime
+    ) -> tuple[str | None, str | None]:
+        case_type = None
+        status = None
         for entry in entries:
             if entry.kind == "evolution_case":
                 payload = AnalyzerService._payload(entry)
-                value = payload.get("case_type")
-                if isinstance(value, str) and value.strip():
-                    return value
-                return None
-        return None
+                type_value = payload.get("case_type")
+                if case_type is None and isinstance(type_value, str) and type_value.strip():
+                    case_type = type_value
+                status_value = payload.get("status")
+                status_at = AnalyzerService._payload_datetime(
+                    payload, "status_at", entry.valid_at
+                )
+                observed_at = AnalyzerService._payload_datetime(
+                    payload, "status_observed_at", entry.reference_time
+                )
+                if (
+                    isinstance(status_value, str)
+                    and status_value.strip()
+                    and status_at <= as_of
+                    and observed_at <= as_of
+                ):
+                    status = status_value
+        return case_type, status
 
     @staticmethod
     def _kind_filter(kinds: Iterable[str] | None) -> frozenset[str] | None:
@@ -453,6 +530,20 @@ class AnalyzerService:
         if isinstance(value, str) and value.strip():
             return value
         return None
+
+    @staticmethod
+    def _payload_datetime(
+        payload: dict[str, Any], key: str, fallback: datetime
+    ) -> datetime:
+        value = payload.get(key)
+        if isinstance(value, str):
+            try:
+                parsed = datetime.fromisoformat(value)
+                if parsed.tzinfo is not None and parsed.utcoffset() is not None:
+                    return parsed
+            except ValueError:
+                pass
+        return fallback
 
     def _now(self) -> datetime:
         value = self._clock()

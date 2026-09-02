@@ -8,7 +8,14 @@ from datetime import datetime
 from typing import Any
 from uuid import NAMESPACE_URL, uuid5
 
-from prism.domain import Claim, EvolutionCase, EvolutionNode, Material, TemporalFact
+from prism.domain import (
+    Claim,
+    EvidenceLocator,
+    EvolutionCase,
+    EvolutionNode,
+    Material,
+    TemporalFact,
+)
 
 from .backend import GraphBackend
 from .models import (
@@ -21,7 +28,7 @@ from .models import (
 )
 
 
-SCHEMA = "prism.graph.episode.v1"
+SCHEMA = "prism.graph.episode.v2"
 
 
 def _iso(value: datetime | None) -> str | None:
@@ -30,6 +37,19 @@ def _iso(value: datetime | None) -> str | None:
 
 def _json(payload: dict[str, Any]) -> str:
     return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _evidence_payload(evidence: tuple[EvidenceLocator, ...]) -> list[dict[str, Any]]:
+    return [
+        {
+            "source_id": item.source_id,
+            "corpus_path": item.corpus_path,
+            "paragraph": item.paragraph,
+            "page": item.page,
+            "quote": item.quote,
+        }
+        for item in evidence
+    ]
 
 
 class GraphService:
@@ -71,14 +91,20 @@ class GraphService:
         return GraphWriteResult(tuple(episodes), tuple(added), tuple(skipped))
 
     async def timeline(self, case_id: str, as_of: datetime) -> GraphTimeline:
-        """Return entries valid at ``as_of`` using ``[valid_at, invalid_at)``."""
+        """Return facts both known and valid at ``as_of``.
+
+        ``reference_time`` is the observation/publication boundary.  Filtering
+        it as well as ``valid_at`` prevents a later retrospective source from
+        leaking into an earlier historical state.
+        """
         require_text("case_id", case_id)
         require_aware("as_of", as_of)
         results = await self.backend.search(f"PRISM timeline for case_id={case_id}")
         entries = [
-            self._timeline_entry(episode)
+            self._timeline_entry(episode, as_of=as_of)
             for episode in results
             if episode.case_id == case_id
+            and episode.reference_time <= as_of
             and episode.valid_at <= as_of
             and (episode.invalid_at is None or as_of < episode.invalid_at)
         ]
@@ -105,6 +131,7 @@ class GraphService:
         fields: dict[str, Any],
         confidence: float | None = None,
         provenance_type: str | None = None,
+        evidence: tuple[EvidenceLocator, ...] = (),
     ) -> GraphEpisode:
         payload: dict[str, Any] = {
             "schema": SCHEMA,
@@ -114,6 +141,7 @@ class GraphService:
             "valid_at": _iso(valid_at),
             "invalid_at": _iso(invalid_at),
             "source_ids": list(source_ids),
+            "evidence": _evidence_payload(evidence),
             **fields,
         }
         if confidence is not None:
@@ -135,6 +163,7 @@ class GraphService:
             source_ids=source_ids,
             confidence=confidence,
             provenance_type=provenance_type,
+            evidence=evidence,
         )
 
     def _case_episode(self, case: EvolutionCase) -> GraphEpisode:
@@ -150,23 +179,34 @@ class GraphService:
                 "case_type": case.case_type,
                 "canonical_name": case.canonical_name,
                 "status": case.status,
+                "status_at": _iso(case.status_at or case.start_at),
+                "status_observed_at": _iso(
+                    case.status_observed_at or case.status_at or case.start_at
+                ),
                 "node_ids": list(case.node_ids),
             },
         )
 
     def _node_episode(self, node: EvolutionNode) -> GraphEpisode:
+        valid_at = node.valid_at or node.happened_at
+        observed_at = node.observed_at or node.happened_at
         return self._make_episode(
             case_id=node.case_id,
             kind="evolution_node",
             identity=node.id,
-            reference_time=node.happened_at,
-            valid_at=node.happened_at,
+            reference_time=observed_at,
+            valid_at=valid_at,
             invalid_at=None,
             source_ids=node.source_ids,
+            evidence=node.evidence,
+            provenance_type=node.provenance_type,
             fields={
                 "node_id": node.id,
                 "node_type": node.node_type,
+                "happened_at": _iso(node.happened_at),
+                "observed_at": _iso(observed_at),
                 "summary": node.summary,
+                "change_reason": node.change_reason,
                 "claim_ids": list(node.claim_ids),
             },
         )
@@ -183,6 +223,7 @@ class GraphService:
             source_ids=fact.source_ids,
             confidence=fact.confidence,
             provenance_type=fact.provenance_type,
+            evidence=fact.evidence,
             fields={
                 "subject": fact.subject,
                 "predicate": fact.predicate,
@@ -200,6 +241,7 @@ class GraphService:
             valid_at=claim.stated_at,
             invalid_at=None,
             source_ids=claim.based_on,
+            evidence=claim.evidence,
             fields={
                 "claim_id": claim.claim_id,
                 "actor": claim.actor,
@@ -237,8 +279,22 @@ class GraphService:
         )
 
     @staticmethod
-    def _timeline_entry(episode: GraphEpisode) -> TimelineEntry:
+    def _timeline_entry(
+        episode: GraphEpisode, *, as_of: datetime | None = None
+    ) -> TimelineEntry:
         payload = json.loads(episode.episode_body)
+        if episode.kind == "evolution_case" and as_of is not None:
+            status_at = payload.get("status_at")
+            status_observed_at = payload.get("status_observed_at")
+            try:
+                status_visible = (
+                    datetime.fromisoformat(status_at) <= as_of
+                    and datetime.fromisoformat(status_observed_at) <= as_of
+                )
+            except (TypeError, ValueError):
+                status_visible = True
+            if not status_visible:
+                payload["status"] = None
         summaries = {
             "evolution_case": payload.get("canonical_name"),
             "evolution_node": payload.get("summary"),
@@ -262,5 +318,6 @@ class GraphService:
             confidence=episode.confidence,
             provenance_type=episode.provenance_type,
             stance=payload.get("stance"),
-            payload=episode.episode_body,
+            payload=_json(payload),
+            evidence=episode.evidence,
         )

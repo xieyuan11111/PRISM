@@ -8,7 +8,14 @@ from pathlib import Path
 import pytest
 
 from prism.cases import CaseBundleMerger, CaseEvidence, MergedCaseBundle
-from prism.domain import Claim, EvolutionCase, EvolutionNode, Material, TemporalFact
+from prism.domain import (
+    Claim,
+    EvidenceLocator,
+    EvolutionCase,
+    EvolutionNode,
+    Material,
+    TemporalFact,
+)
 from prism.extraction import ExtractionResult
 
 UTC = timezone.utc
@@ -144,6 +151,74 @@ def test_node_claim_references_are_scoped_and_resolved_across_materials():
     )
 
     assert merged.nodes[0].claim_ids == ("mat-b::claim-x",)
+
+
+def test_merger_preserves_temporal_provenance_and_evidence_fields():
+    """The merger must not erase extraction times or evidence locators.
+
+    Dropping ``observed_at`` here would let a node that was only reported by a
+    later material leak into historical states that predate that material.
+    """
+    source = material("mat-a")
+    locator = EvidenceLocator("mat-a", "corpus/mat-a.md", paragraph=2, quote="text")
+    extracted_node = EvolutionNode(
+        "node-a",
+        CASE_ID,
+        "publication",
+        T0,
+        "Published.",
+        ("mat-a",),
+        (),
+        T0,
+        T1,
+        (locator,),
+        "The ministry revised the plan.",
+        "reliable_transcription",
+    )
+    extracted_claim = Claim(
+        "claim-a",
+        "Agency",
+        "The mechanism may stabilize the market.",
+        "conditional",
+        T1,
+        ("mat-a",),
+        None,
+        (locator,),
+    )
+    authored_case = EvolutionCase(
+        CASE_ID,
+        "policy",
+        "Housing provident fund",
+        T1,
+        "implemented",
+        status_at=T2,
+        status_observed_at=T2,
+    )
+
+    merged = CaseBundleMerger().merge(
+        authored_case,
+        [
+            CaseEvidence(
+                source,
+                ExtractionResult(
+                    case=case(),
+                    nodes=(extracted_node,),
+                    claims=(extracted_claim,),
+                ),
+            )
+        ],
+    )
+
+    (merged_node,) = merged.nodes
+    assert merged_node.valid_at == T0
+    assert merged_node.observed_at == T1
+    assert merged_node.evidence == (locator,)
+    assert merged_node.change_reason == "The ministry revised the plan."
+    assert merged_node.provenance_type == "reliable_transcription"
+    (merged_claim,) = merged.claims
+    assert merged_claim.evidence == (locator,)
+    assert merged.case.status_at == T2
+    assert merged.case.status_observed_at == T2
 def test_merger_rejects_conflicting_duplicate_ids_and_unbound_sources():
     source = material("mat-a")
     first = ExtractionResult(nodes=(node("same", "mat-a"),))

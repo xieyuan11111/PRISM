@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
+from prism.domain import EvidenceLocator
+
 
 def require_text(name: str, value: str) -> str:
     if not isinstance(value, str) or not value.strip():
@@ -36,6 +38,15 @@ def source_tuple(values: tuple[str, ...]) -> tuple[str, ...]:
     return result
 
 
+def evidence_tuple(values: object) -> tuple[EvidenceLocator, ...]:
+    if isinstance(values, (str, bytes)):
+        raise TypeError("evidence must be an iterable of EvidenceLocator objects")
+    result = tuple(values)  # type: ignore[arg-type]
+    if any(not isinstance(value, EvidenceLocator) for value in result):
+        raise TypeError("evidence must contain only EvidenceLocator objects")
+    return result
+
+
 @dataclass(frozen=True, slots=True)
 class GraphEpisode:
     """One explicit, deterministic ingestion unit for a graph backend."""
@@ -51,6 +62,7 @@ class GraphEpisode:
     source_ids: tuple[str, ...]
     confidence: float | None = None
     provenance_type: str | None = None
+    evidence: tuple[EvidenceLocator, ...] = ()
 
     def __post_init__(self) -> None:
         for name in ("episode_key", "name", "case_id", "kind", "episode_body"):
@@ -67,6 +79,9 @@ class GraphEpisode:
                 raise ValueError("confidence must be between 0.0 and 1.0")
         if self.provenance_type is not None:
             require_text("provenance_type", self.provenance_type)
+        object.__setattr__(self, "evidence", evidence_tuple(self.evidence))
+        if not {item.source_id for item in self.evidence}.issubset(set(self.source_ids)):
+            raise ValueError("evidence source_id must be present in source_ids")
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,6 +100,7 @@ class TimelineEntry:
     provenance_type: str | None
     stance: str | None
     payload: str
+    evidence: tuple[EvidenceLocator, ...] = ()
 
     def __post_init__(self) -> None:
         for name in ("episode_key", "case_id", "kind", "summary", "payload"):
@@ -94,6 +110,9 @@ class TimelineEntry:
         object.__setattr__(self, "source_ids", source_tuple(self.source_ids))
         if self.stance is not None:
             require_text("stance", self.stance)
+        object.__setattr__(self, "evidence", evidence_tuple(self.evidence))
+        if not {item.source_id for item in self.evidence}.issubset(set(self.source_ids)):
+            raise ValueError("evidence source_id must be present in source_ids")
 
 
 @dataclass(frozen=True, slots=True)

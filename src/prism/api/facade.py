@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 from uuid import uuid4
 
-from prism.analyzer import EvolutionAnalysis
+from prism.analyzer import EvolutionAnalysis, HistoricalCaseState
 from prism.domain import Claim, EvolutionCase, EvolutionNode, Material, TemporalFact
 from prism.events import Event
 from prism.graph import GraphTimeline, GraphWriteResult
@@ -82,6 +82,10 @@ class _AnalyzerService(Protocol):
         *,
         kinds: Iterable[str] | None = None,
     ) -> EvolutionAnalysis: ...
+
+    async def state(
+        self, case_id: str, cutoff_at: datetime
+    ) -> HistoricalCaseState: ...
 
 
 class _ReportService(Protocol):
@@ -529,6 +533,18 @@ class PrismAPI:
     async def query_history(self, case_id: str, as_of: datetime) -> GraphTimeline:
         """Explicit historical-query entry point, equivalent to a timeline build."""
         return await self._graph.timeline(case_id, as_of)
+
+    async def query_case_state(
+        self, case_id: str, cutoff_at: datetime
+    ) -> HistoricalCaseState:
+        """Return status, nodes, facts, interpretations and gaps at a cutoff."""
+
+        if self._analyzer is None:
+            raise ValueError("analyzer_service is required for query_case_state()")
+        state = getattr(self._analyzer, "state", None)
+        if not callable(state):
+            raise TypeError("analyzer_service must provide state()")
+        return await state(case_id, cutoff_at)
 
     async def add_case_bundle(
         self,
