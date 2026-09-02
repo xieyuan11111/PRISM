@@ -273,6 +273,8 @@ class IngestionService:
             doi=merged.get("doi"),
             authors=merged.get("authors", ()),
             container_title=merged.get("container_title"),
+            pmid=merged.get("pmid"),
+            pmcid=merged.get("pmcid"),
         )
         frontmatter = {
             "source_id": material.id,
@@ -292,6 +294,8 @@ class IngestionService:
             "doi": material.doi,
             "authors": material.authors,
             "container_title": material.container_title,
+            "pmid": material.pmid,
+            "pmcid": material.pmcid,
         }
         lines = (
             ["---"]

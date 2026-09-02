@@ -24,6 +24,7 @@ from prism.events import Event
 from prism.extraction import ExtractionResult
 from prism.graph import GraphWriteResult
 from prism.ingestion import IngestionResult
+from prism.sources import redact_audit_text
 from prism.store import IndexOutcome
 
 
@@ -369,7 +370,9 @@ class PipelineService:
         exc: Exception,
     ) -> PipelineError:
         return PipelineError(
-            f"pipeline stage {stage!r} failed for material {material_id!r}: {exc}",
+            "pipeline stage "
+            f"{stage!r} failed for material {redact_audit_text(material_id)!r}: "
+            f"{redact_audit_text(str(exc))}",
             stage=stage,
             material_id=material_id,
             stages=stages,

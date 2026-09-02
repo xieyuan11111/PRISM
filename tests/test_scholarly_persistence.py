@@ -14,6 +14,7 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
+from prism.api.fetching import spool_source_item
 from prism.config import PathConfig
 from prism.ingestion import IngestionService
 from prism.pipeline import PipelineService
@@ -23,6 +24,8 @@ from prism.store import EvidenceStore, SearchFilter
 NOW = datetime(2026, 9, 2, tzinfo=timezone.utc)
 DOI = "10.5555/example.123"
 DOI_URL = "https://doi.org/10.5555/example.123"
+PMID = "40212345"
+PMCID = "PMC8880123"
 
 # The schema as the previous release created it: neither ``documents`` nor
 # ``document_fts`` carried the scholarly evidence columns.
@@ -97,6 +100,8 @@ def write_paper(paths: PathConfig, name: str = "paper") -> Path:
         f'retrieval_level: "abstract_only"\n'
         f'access_level: "abstract_only"\n'
         f'doi: "{DOI}"\n'
+        f'pmid: "{PMID}"\n'
+        f'pmcid: "{PMCID}"\n'
         'authors: ["Ada Lovelace", "Grace Hopper"]\n'
         'container_title: "Journal of Evidence"\n'
         "---\n"
@@ -115,6 +120,8 @@ def test_levels_and_doi_round_trip_across_reopen(tmp_path):
     assert outcome.status == "indexed"
     assert outcome.entry.authors == ("Ada Lovelace", "Grace Hopper")
     assert outcome.entry.container_title == "Journal of Evidence"
+    assert outcome.entry.pmid == PMID
+    assert outcome.entry.pmcid == PMCID
     store.close()
 
     reopened = EvidenceStore(paths)
@@ -125,6 +132,8 @@ def test_levels_and_doi_round_trip_across_reopen(tmp_path):
     assert entry.doi == DOI
     assert entry.authors == ("Ada Lovelace", "Grace Hopper")
     assert entry.container_title == "Journal of Evidence"
+    assert entry.pmid == PMID
+    assert entry.pmcid == PMCID
 
     hits = reopened.search(SearchFilter(query="quantum"))
     assert [hit.source_id for hit in hits] == [outcome.entry.source_id]
@@ -133,6 +142,8 @@ def test_levels_and_doi_round_trip_across_reopen(tmp_path):
     assert hits[0].doi == DOI
     assert hits[0].authors == ("Ada Lovelace", "Grace Hopper")
     assert hits[0].container_title == "Journal of Evidence"
+    assert hits[0].pmid == PMID
+    assert hits[0].pmcid == PMCID
     reopened.close()
 
 
@@ -143,6 +154,46 @@ def test_reindexing_scholarly_document_is_unchanged(tmp_path):
     try:
         assert store.index_file(doc).status == "indexed"
         assert store.index_file(doc).status == "unchanged"
+    finally:
+        store.close()
+
+
+def test_no_doi_pubmed_identifiers_round_trip_end_to_end(tmp_path):
+    paths = make_paths(tmp_path)
+    item = SourceItem(
+        title="A PubMed-only work",
+        source="academic",
+        fetched_at=NOW,
+        published_at=datetime(2024, 3, 4, tzinfo=timezone.utc),
+        link=f"https://pmc.ncbi.nlm.nih.gov/articles/{PMCID}/",
+        summary="A public abstract without a DOI.",
+        type="academic",
+        retrieval_level="abstract_only",
+        access_level="abstract_only",
+        pmid=PMID,
+        pmcid=PMCID,
+        authors=["Ada Lovelace"],
+    )
+    spool = spool_source_item(item, paths.raw_dir / "spool")
+    ingested = IngestionService(paths).ingest(spool, item.to_ingestion_metadata())
+    assert ingested.material.doi is None
+    assert ingested.material.pmid == PMID
+    assert ingested.material.pmcid == PMCID
+    assert ingested.material.authors == ("Ada Lovelace",)
+    corpus = ingested.corpus_path.read_text(encoding="utf-8")
+    assert f'pmid: "{PMID}"' in corpus
+    assert f'pmcid: "{PMCID}"' in corpus
+
+    store = EvidenceStore(paths)
+    try:
+        outcome = store.index_file(ingested.corpus_path)
+        assert outcome.entry.doi is None
+        assert outcome.entry.pmid == PMID
+        assert outcome.entry.pmcid == PMCID
+        hit = store.search(SearchFilter(query="abstract"))[0]
+        assert hit.doi is None
+        assert hit.pmid == PMID
+        assert hit.pmcid == PMCID
     finally:
         store.close()
 
@@ -215,6 +266,8 @@ def test_legacy_database_is_migrated_and_keeps_legacy_rows(tmp_path):
         assert legacy.access_level is None
         assert legacy.authors == ()
         assert legacy.container_title is None
+        assert legacy.pmid is None
+        assert legacy.pmcid is None
 
         assert [hit.source_id for hit in store.search(SearchFilter(query="legacy"))] == [
             "mat_legacy"
@@ -222,6 +275,8 @@ def test_legacy_database_is_migrated_and_keeps_legacy_rows(tmp_path):
         legacy_hit = store.search(SearchFilter(query="legacy"))[0]
         assert legacy_hit.authors == ()
         assert legacy_hit.container_title is None
+        assert legacy_hit.pmid is None
+        assert legacy_hit.pmcid is None
 
         outcome = store.index_file(write_paper(paths))
         assert outcome.status == "indexed"
@@ -229,6 +284,8 @@ def test_legacy_database_is_migrated_and_keeps_legacy_rows(tmp_path):
         assert stored.doi == DOI
         assert stored.authors == ("Ada Lovelace", "Grace Hopper")
         assert stored.container_title == "Journal of Evidence"
+        assert stored.pmid == PMID
+        assert stored.pmcid == PMCID
     finally:
         store.close()
 

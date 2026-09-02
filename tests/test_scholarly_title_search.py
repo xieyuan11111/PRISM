@@ -124,6 +124,78 @@ def test_crossref_search_skips_non_matching_items_until_the_verified_match():
     assert record.doi == DOI
 
 
+def test_crossref_search_rejects_multiple_distinct_exact_title_matches():
+    getter = FakeGetter({
+        CROSSREF_SEARCH_URL: response(
+            CROSSREF_SEARCH_URL,
+            crossref_search([
+                crossref_item(TITLE, DOI="10.1000/first"),
+                crossref_item(TITLE, DOI="10.1000/second"),
+            ]),
+        ),
+    })
+    with pytest.raises(SourceFetchError, match="ambiguous bibliographic title match"):
+        run(CrossrefClient(getter).search(TITLE, retrieved_at=RETRIEVED))
+
+
+def test_title_context_disambiguates_and_requires_candidate_fields():
+    first = crossref_item(TITLE, DOI="10.1000/first")
+    second = crossref_item(
+        TITLE,
+        DOI="10.1000/second",
+        author=[{"given": "Grace", "family": "Hopper"}],
+        **{"container-title": ["Another Journal"]},
+    )
+    getter = FakeGetter({
+        CROSSREF_SEARCH_URL: response(
+            CROSSREF_SEARCH_URL, crossref_search([first, second])
+        ),
+    })
+    record = run(
+        CrossrefClient(getter).search(
+            TITLE,
+            retrieved_at=RETRIEVED,
+            authors=("Lovelace A",),
+            container_title="Journal of Public Evidence",
+            year=2024,
+        )
+    )
+    assert record is not None and record.doi == "10.1000/first"
+
+    missing_fields = crossref_item(TITLE, DOI="10.1000/missing")
+    missing_fields.pop("author")
+    missing_fields.pop("published")
+    getter = FakeGetter({
+        CROSSREF_SEARCH_URL: response(
+            CROSSREF_SEARCH_URL, crossref_search([missing_fields])
+        ),
+    })
+    assert run(
+        CrossrefClient(getter).search(
+            TITLE, retrieved_at=RETRIEVED, authors=("Ada Lovelace",), year=2024
+        )
+    ) is None
+
+
+def test_fetch_by_title_does_not_fallback_after_ambiguous_crossref_result():
+    client, crossref, openalex = client_with(
+        {
+            CROSSREF_SEARCH_URL: response(
+                CROSSREF_SEARCH_URL,
+                crossref_search([
+                    crossref_item(TITLE, DOI="10.1000/first"),
+                    crossref_item(TITLE, DOI="10.1000/second"),
+                ]),
+            )
+        },
+        {},
+    )
+    with pytest.raises(SourceFetchError, match="ambiguous bibliographic title match"):
+        run(client.fetch_by_title(TITLE))
+    assert crossref.calls == [CROSSREF_SEARCH_URL]
+    assert openalex.calls == []
+
+
 def test_crossref_search_returns_none_when_only_similar_titles_come_back():
     near_miss = crossref_item(
         "Machine learning approaches for qualitative review of public health "
@@ -135,12 +207,12 @@ def test_crossref_search_returns_none_when_only_similar_titles_come_back():
     assert run(CrossrefClient(getter).search(TITLE, retrieved_at=RETRIEVED)) is None
 
 
-def test_search_accepts_typo_level_differences_on_long_titles():
+def test_search_rejects_typo_level_differences_on_long_titles():
     typo = TITLE.replace("forecasting", "firecasting")
     assert typo != TITLE
     getter = FakeGetter({CROSSREF_SEARCH_URL: response(CROSSREF_SEARCH_URL, crossref_search([crossref_item(typo)]))})
     record = run(CrossrefClient(getter).search(TITLE, retrieved_at=RETRIEVED))
-    assert record is not None  # a one-character typo is not a different work
+    assert record is None  # strict normalized equality never guesses
 
 
 def test_search_item_without_any_identifier_is_not_accepted():
@@ -271,3 +343,36 @@ def test_fetch_by_title_item_is_never_fulltext():
     assert item.summary is None
     assert item.access_level == "metadata_only"
     assert extract_doi(item.link) == DOI
+
+
+def test_fetch_by_title_keeps_legacy_search_client_signature_compatible():
+    class LegacySearchClient:
+        def __init__(self, answer):
+            self.answer = answer
+            self.calls = []
+
+        async def fetch(self, doi, *, retrieved_at):
+            raise AssertionError("not used")
+
+        async def search(self, title, *, retrieved_at):
+            self.calls.append((title, retrieved_at))
+            return self.answer
+
+    answer = run(
+        CrossrefClient(
+            FakeGetter({
+                CROSSREF_SEARCH_URL: response(
+                    CROSSREF_SEARCH_URL, crossref_search([crossref_item(TITLE)])
+                )
+            })
+        ).search(TITLE, retrieved_at=RETRIEVED)
+    )
+    crossref = LegacySearchClient(answer)
+    openalex = LegacySearchClient(None)
+    client = ScholarlyMetadataClient(
+        crossref, openalex, clock=lambda: RETRIEVED
+    )
+    item = run(client.fetch_by_title(TITLE))
+    assert item.doi == DOI
+    assert crossref.calls == [(TITLE, RETRIEVED)]
+    assert openalex.calls == []

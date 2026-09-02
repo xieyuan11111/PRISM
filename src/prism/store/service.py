@@ -57,6 +57,8 @@ _FTS_COLUMNS = (
     "retrieval_level",
     "access_level",
     "doi",
+    "pmid",
+    "pmcid",
     "authors",
     "container_title",
     "path",
@@ -69,6 +71,8 @@ _EXTRA_COLUMNS = {
     "retrieval_level": "TEXT",
     "access_level": "TEXT",
     "doi": "TEXT",
+    "pmid": "TEXT",
+    "pmcid": "TEXT",
     "authors": "TEXT NOT NULL DEFAULT '[]'",
     "container_title": "TEXT",
 }
@@ -90,6 +94,8 @@ CREATE VIRTUAL TABLE IF NOT EXISTS document_fts USING fts5(
     retrieval_level UNINDEXED,
     access_level UNINDEXED,
     doi UNINDEXED,
+    pmid UNINDEXED,
+    pmcid UNINDEXED,
     authors UNINDEXED,
     container_title UNINDEXED,
     path UNINDEXED,
@@ -115,6 +121,8 @@ CREATE TABLE IF NOT EXISTS documents (
     retrieval_level TEXT,
     access_level TEXT,
     doi TEXT,
+    pmid TEXT,
+    pmcid TEXT,
     authors TEXT NOT NULL DEFAULT '[]',
     container_title TEXT,
     path TEXT NOT NULL,
@@ -321,7 +329,7 @@ class EvidenceStore:
         rows = connection.execute(
             "SELECT rowid, source_id, title, source, published_at, fetched_at,"
             " type, case_tags, original_format, ocr, extracted_via, raw_path,"
-            " url, retrieval_level, access_level, doi, authors, container_title,"
+            " url, retrieval_level, access_level, doi, pmid, pmcid, authors, container_title,"
             " path, content"
             " FROM documents"
         ).fetchall()
@@ -347,6 +355,8 @@ class EvidenceStore:
                 row["retrieval_level"],
                 row["access_level"],
                 row["doi"],
+                row["pmid"],
+                row["pmcid"],
                 row["authors"],
                 row["container_title"],
                 row["path"],
@@ -443,6 +453,8 @@ class EvidenceStore:
                 "access_level", frontmatter.get("access_level")
             ),
             doi=_parse_optional_text("doi", frontmatter.get("doi")),
+            pmid=_parse_optional_text("pmid", frontmatter.get("pmid")),
+            pmcid=_parse_optional_text("pmcid", frontmatter.get("pmcid")),
             authors=_parse_text_list("authors", frontmatter.get("authors")),
             container_title=_parse_optional_text(
                 "container_title", frontmatter.get("container_title")
@@ -519,6 +531,8 @@ class EvidenceStore:
             entry.retrieval_level,
             entry.access_level,
             entry.doi,
+            entry.pmid,
+            entry.pmcid,
             json.dumps(list(entry.authors), ensure_ascii=False),
             entry.container_title,
             entry.path,
@@ -559,6 +573,10 @@ class EvidenceStore:
             return False
         if row["doi"] != entry.doi:
             return False
+        if row["pmid"] != entry.pmid:
+            return False
+        if row["pmcid"] != entry.pmcid:
+            return False
         if tuple(json.loads(row["authors"])) != entry.authors:
             return False
         if row["container_title"] != entry.container_title:
@@ -575,7 +593,7 @@ class EvidenceStore:
                     "SELECT rowid, content_hash, title, source, published_at,"
                     " fetched_at, type, case_tags, original_format, ocr,"
                     " extracted_via, raw_path, url, retrieval_level, access_level,"
-                    " doi, authors, container_title, path"
+                    " doi, pmid, pmcid, authors, container_title, path"
                     " FROM documents WHERE source_id = ?",
                     (entry.source_id,),
                 ).fetchone()
@@ -591,9 +609,9 @@ class EvidenceStore:
                         "INSERT INTO documents (source_id, title, source,"
                         " published_at, fetched_at, type, case_tags, original_format,"
                         " ocr, extracted_via, raw_path, url, retrieval_level,"
-                        " access_level, doi, authors, container_title, path, content,"
+                        " access_level, doi, pmid, pmcid, authors, container_title, path, content,"
                         " content_hash, updated_at)"
-                        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                         (
                             entry.source_id,
                             entry.title,
@@ -610,6 +628,8 @@ class EvidenceStore:
                             entry.retrieval_level,
                             entry.access_level,
                             entry.doi,
+                            entry.pmid,
+                            entry.pmcid,
                             json.dumps(list(entry.authors), ensure_ascii=False),
                             entry.container_title,
                             entry.path,
@@ -629,7 +649,7 @@ class EvidenceStore:
                     "UPDATE documents SET title=?, source=?, published_at=?,"
                     " fetched_at=?, type=?, case_tags=?, original_format=?, ocr=?,"
                     " extracted_via=?, raw_path=?, url=?, retrieval_level=?,"
-                    " access_level=?, doi=?, authors=?, container_title=?,"
+                    " access_level=?, doi=?, pmid=?, pmcid=?, authors=?, container_title=?,"
                     " path=?, content=?, content_hash=?, updated_at=?"
                     " WHERE source_id=?",
                     (
@@ -647,6 +667,8 @@ class EvidenceStore:
                         entry.retrieval_level,
                         entry.access_level,
                         entry.doi,
+                        entry.pmid,
+                        entry.pmcid,
                         json.dumps(list(entry.authors), ensure_ascii=False),
                         entry.container_title,
                         entry.path,
@@ -676,7 +698,7 @@ class EvidenceStore:
         row = self._raw_connection().execute(
             "SELECT source_id, title, source, published_at, fetched_at, type,"
             " case_tags, original_format, ocr, extracted_via, raw_path, url,"
-            " retrieval_level, access_level, doi, authors, container_title, path,"
+            " retrieval_level, access_level, doi, pmid, pmcid, authors, container_title, path,"
             " content, content_hash FROM documents WHERE source_id = ?",
             (source_id.strip(),),
         ).fetchone()
@@ -705,7 +727,7 @@ class EvidenceStore:
             sql = (
                 "SELECT d.source_id, d.title, d.source, d.published_at, d.type,"
                 " d.case_tags, d.raw_path, d.url, d.retrieval_level,"
-                " d.access_level, d.doi, d.authors, d.container_title,"
+                " d.access_level, d.doi, d.pmid, d.pmcid, d.authors, d.container_title,"
                 " d.path, d.content"
                 " FROM document_fts JOIN documents AS d"
                 " ON d.rowid = document_fts.rowid"
@@ -716,7 +738,7 @@ class EvidenceStore:
             sql = (
                 "SELECT d.source_id, d.title, d.source, d.published_at, d.type,"
                 " d.case_tags, d.raw_path, d.url, d.retrieval_level,"
-                " d.access_level, d.doi, d.authors, d.container_title,"
+                " d.access_level, d.doi, d.pmid, d.pmcid, d.authors, d.container_title,"
                 " d.path, d.content"
                 " FROM documents AS d"
                 f" WHERE {where}"
@@ -794,6 +816,8 @@ class EvidenceStore:
             retrieval_level=row["retrieval_level"],
             access_level=row["access_level"],
             doi=row["doi"],
+            pmid=row["pmid"],
+            pmcid=row["pmcid"],
             authors=tuple(json.loads(row["authors"])),
             container_title=row["container_title"],
         )
@@ -814,6 +838,8 @@ class EvidenceStore:
             retrieval_level=row["retrieval_level"],
             access_level=row["access_level"],
             doi=row["doi"],
+            pmid=row["pmid"],
+            pmcid=row["pmcid"],
             authors=tuple(json.loads(row["authors"])),
             container_title=row["container_title"],
         )

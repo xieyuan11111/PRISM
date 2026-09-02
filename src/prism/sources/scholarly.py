@@ -7,7 +7,6 @@ an abstract is evidence about a work, not the work's full text.
 
 from __future__ import annotations
 
-import difflib
 import json
 import re
 from collections.abc import Mapping
@@ -16,6 +15,7 @@ from datetime import date, datetime, timezone
 from html.parser import HTMLParser
 from typing import Protocol
 from urllib.parse import quote, unquote, urlsplit, urlunsplit
+from xml.etree import ElementTree
 
 from .http import HttpGetter, HttpResponse
 from .models import FailureKind, SourceFetchError, SourceItem
@@ -69,15 +69,13 @@ _SENSITIVE_QUERY_VALUE_PATTERN = re.compile(
     r"([&;]|^)(" + "|".join(re.escape(key) for key in _SENSITIVE_QUERY_KEYS) + r")(=)[^&;]*",
     re.IGNORECASE,
 )
+_SENSITIVE_INLINE_PATTERN = re.compile(
+    r"(?i)\b(authorization|api[_-]?key|access[_-]?token|refresh[_-]?token|"
+    r"client[_-]?secret|password|passwd|secret|token)\s*([:=])\s*"
+    r"([^\s&;,]+)"
+)
+_BEARER_PATTERN = re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/-]+")
 _API_HOSTS = frozenset({"api.crossref.org", "api.openalex.org", "www.ebi.ac.uk"})
-# Bibliographic title search must never guess: a Crossref/OpenAlex hit is
-# only accepted when its normalized title equals the queried title exactly,
-# or is a near-identical long title (a one-character typo is not a different
-# work; a rephrased or truncated title is never the same work).
-_TITLE_SIMILARITY_THRESHOLD = 0.95
-_TITLE_MIN_NORMALIZED_CHARS = 40
-
-
 def _normalize_title(value: str) -> str:
     """Casefold and collapse a title to comparable word characters."""
     folded = value.casefold().replace("_", " ")
@@ -89,17 +87,87 @@ def _titles_match(query: str, candidate: str) -> bool:
     normalized_candidate = _normalize_title(candidate)
     if not normalized_query or not normalized_candidate:
         return False
-    if normalized_query == normalized_candidate:
-        return True
-    if (
-        len(normalized_query) < _TITLE_MIN_NORMALIZED_CHARS
-        or len(normalized_candidate) < _TITLE_MIN_NORMALIZED_CHARS
-    ):
-        return False
-    return (
-        difflib.SequenceMatcher(None, normalized_query, normalized_candidate).ratio()
-        >= _TITLE_SIMILARITY_THRESHOLD
-    )
+    return normalized_query == normalized_candidate
+
+
+def _author_key(value: str) -> str:
+    """Return a conservative family-name-like key for author comparison."""
+    tokens = _normalize_title(value).split()
+    if not tokens:
+        return ""
+    # Initials are weak evidence.  The longest token is stable across common
+    # ``Given Family`` and ``Family G`` metadata forms without making the
+    # title search itself fuzzy.
+    return max(tokens, key=lambda token: (len(token), token))
+
+
+def _record_matches_context(
+    record: "AcademicRecord",
+    *,
+    authors: tuple[str, ...],
+    container_title: str | None,
+    year: int | None,
+) -> bool:
+    if authors:
+        if not record.authors:
+            return False
+        expected = {_author_key(author) for author in authors}
+        observed = {_author_key(author) for author in record.authors}
+        if not (expected - {""}) & (observed - {""}):
+            return False
+    if container_title is not None:
+        if record.container_title is None:
+            return False
+        if _normalize_title(container_title) != _normalize_title(record.container_title):
+            return False
+    if year is not None:
+        if record.published_at is None or record.published_at.year != year:
+            return False
+    return True
+
+
+class _AmbiguousTitleMatch(Exception):
+    """More than one distinct record satisfies every strict constraint."""
+
+
+def _select_title_record(
+    records: list["AcademicRecord"],
+    *,
+    authors: tuple[str, ...],
+    container_title: str | None,
+    year: int | None,
+) -> "AcademicRecord | None":
+    matching = [
+        record
+        for record in records
+        if _record_matches_context(
+            record, authors=authors, container_title=container_title, year=year
+        )
+    ]
+    unique: dict[tuple[str | None, str | None, str | None], AcademicRecord] = {}
+    for record in matching:
+        unique[(record.doi, record.pmid, record.pmcid)] = record
+    if len(unique) > 1:
+        raise _AmbiguousTitleMatch
+    return next(iter(unique.values()), None)
+
+
+def _title_context(
+    authors: object,
+    container_title: object,
+    year: object,
+) -> tuple[tuple[str, ...], str | None, int | None]:
+    if isinstance(authors, str):
+        raise TypeError("authors must be an iterable of strings")
+    try:
+        normalized_authors = tuple(_text(author, "author") for author in authors)
+    except TypeError as error:
+        raise TypeError("authors must be an iterable of strings") from error
+    normalized_container = _optional_text(container_title, "container_title")
+    if year is not None:
+        if isinstance(year, bool) or not isinstance(year, int) or not 1000 <= year <= 9999:
+            raise ValueError("year must be a four-digit integer or null")
+    return normalized_authors, normalized_container, year
 
 
 def _text(value: object, name: str) -> str:
@@ -148,6 +216,23 @@ def _split_http_url(value: str):
     return parts
 
 
+def _redact_inline(value: str) -> str:
+    redacted = _BEARER_PATTERN.sub("Bearer <redacted>", value)
+    redacted = _SENSITIVE_INLINE_PATTERN.sub(
+        lambda match: f"{match.group(1)}{match.group(2)}<redacted>", redacted
+    )
+    return redacted
+
+
+def redact_audit_text(value: str) -> str:
+    """Remove common credentials from URLs and free-form audit text."""
+    if not isinstance(value, str):
+        raise TypeError("audit text must be a string")
+    if _split_http_url(value) is not None:
+        return _safe_error_url(value)
+    return _redact_inline(value)
+
+
 def _safe_error_url(value: str) -> str:
     """Fit a caller-supplied URL for an exception or audit context.
 
@@ -160,7 +245,7 @@ def _safe_error_url(value: str) -> str:
         return value
     parts = _split_http_url(value)
     if parts is None:
-        return value
+        return _redact_inline(value)
     netloc = parts.netloc
     if parts.username is not None or parts.password is not None:
         netloc = netloc.rsplit("@", 1)[-1]
@@ -168,8 +253,14 @@ def _safe_error_url(value: str) -> str:
         lambda match: f"{match.group(1)}{match.group(2)}{match.group(3)}<redacted>",
         parts.query,
     )
+    fragment = _SENSITIVE_QUERY_VALUE_PATTERN.sub(
+        lambda match: f"{match.group(1)}{match.group(2)}{match.group(3)}<redacted>",
+        parts.fragment,
+    )
     try:
-        return urlunsplit((parts.scheme, netloc, parts.path, query, parts.fragment))
+        return urlunsplit(
+            (parts.scheme, netloc, _redact_inline(parts.path), query, fragment)
+        )
     except ValueError:
         return value
 
@@ -562,7 +653,7 @@ class _ApiClient:
         self._timeout = float(timeout)
         self._max_response_bytes = max_response_bytes
 
-    async def _json(self, url: str) -> Mapping[str, object]:
+    async def _response(self, url: str) -> HttpResponse:
         try:
             response = await self._getter.get(url, timeout=self._timeout)
         except TimeoutError as error:
@@ -587,8 +678,16 @@ class _ApiClient:
             raise SourceFetchError(FailureKind.HTTP_STATUS, url, f"metadata HTTP status {response.status}")
         if len(response.body.encode("utf-8")) > self._max_response_bytes:
             raise SourceFetchError(FailureKind.PARSE, url, "metadata response exceeds size limit")
+        return response
+
+    async def _json(self, url: str) -> Mapping[str, object]:
+        response = await self._response(url)
+        return self._decode_json(response.body, url)
+
+    @staticmethod
+    def _decode_json(body: str, url: str) -> Mapping[str, object]:
         try:
-            decoded = json.loads(response.body)
+            decoded = json.loads(body)
         except (TypeError, ValueError) as error:
             raise SourceFetchError(FailureKind.PARSE, url, "metadata response is not valid JSON") from error
         if not isinstance(decoded, Mapping):
@@ -645,16 +744,27 @@ class CrossrefClient(_ApiClient):
             raise SourceFetchError(FailureKind.PARSE, url, "Crossref message must be an object")
         return _crossref_record(message, url, retrieved_at, fallback_doi=normalized_doi)
 
-    async def search(self, title: str, *, retrieved_at: datetime) -> AcademicRecord | None:
+    async def search(
+        self,
+        title: str,
+        *,
+        retrieved_at: datetime,
+        authors: tuple[str, ...] = (),
+        container_title: str | None = None,
+        year: int | None = None,
+    ) -> AcademicRecord | None:
         """Find one work by strictly verifying its title; never guess a DOI.
 
         Crossref's bibliographic query returns ranked guesses; every hit is
-        therefore checked against the queried title (normalized equality, or
-        a near-identical long title) before its record is accepted.  Items
+        therefore checked for normalized title equality before a record is
+        accepted.  Similar, truncated, or typo-bearing titles are unresolved. Items
         that fail verification — or carry no identifier — are skipped.
         """
         retrieved_at = _aware(retrieved_at, "retrieved_at")
         query = _text(title, "title")
+        authors, container_title, year = _title_context(
+            authors, container_title, year
+        )
         url = f"https://api.crossref.org/works?query.bibliographic={quote(query, safe='')}&rows=5"
         root = await self._json(url)
         message = root.get("message")
@@ -663,6 +773,7 @@ class CrossrefClient(_ApiClient):
         items = message.get("items")
         if not isinstance(items, list):
             raise SourceFetchError(FailureKind.PARSE, url, "Crossref message.items must be a list")
+        records: list[AcademicRecord] = []
         for item in items:
             if not isinstance(item, Mapping):
                 continue
@@ -672,10 +783,22 @@ class CrossrefClient(_ApiClient):
             if not _titles_match(query, values[0]):
                 continue
             try:
-                return _crossref_record(item, url, retrieved_at, fallback_doi=None)
+                records.append(
+                    _crossref_record(item, url, retrieved_at, fallback_doi=None)
+                )
             except SourceFetchError:
                 continue
-        return None
+        try:
+            return _select_title_record(
+                records,
+                authors=authors,
+                container_title=container_title,
+                year=year,
+            )
+        except _AmbiguousTitleMatch as error:
+            raise SourceFetchError(
+                FailureKind.PARSE, url, "ambiguous bibliographic title match"
+            ) from error
 
 
 def _openalex_record(
@@ -746,7 +869,15 @@ class OpenAlexClient(_ApiClient):
         root = await self._json(url)
         return _openalex_record(root, url, retrieved_at, fallback_doi=normalized_doi)
 
-    async def search(self, title: str, *, retrieved_at: datetime) -> AcademicRecord | None:
+    async def search(
+        self,
+        title: str,
+        *,
+        retrieved_at: datetime,
+        authors: tuple[str, ...] = (),
+        container_title: str | None = None,
+        year: int | None = None,
+    ) -> AcademicRecord | None:
         """Find one work by strictly verifying its title; never guess a DOI.
 
         Mirrors :meth:`CrossrefClient.search`: OpenAlex's ``title.search``
@@ -755,6 +886,9 @@ class OpenAlexClient(_ApiClient):
         """
         retrieved_at = _aware(retrieved_at, "retrieved_at")
         query = _text(title, "title")
+        authors, container_title, year = _title_context(
+            authors, container_title, year
+        )
         url = (
             "https://api.openalex.org/works?filter="
             + quote(f"title.search:{query}", safe="")
@@ -764,6 +898,7 @@ class OpenAlexClient(_ApiClient):
         results = root.get("results")
         if not isinstance(results, list):
             raise SourceFetchError(FailureKind.PARSE, url, "OpenAlex results must be a list")
+        records: list[AcademicRecord] = []
         for item in results:
             if not isinstance(item, Mapping):
                 continue
@@ -773,10 +908,22 @@ class OpenAlexClient(_ApiClient):
             if not isinstance(display, str) or not _titles_match(query, display):
                 continue
             try:
-                return _openalex_record(item, url, retrieved_at, fallback_doi=None)
+                records.append(
+                    _openalex_record(item, url, retrieved_at, fallback_doi=None)
+                )
             except SourceFetchError:
                 continue
-        return None
+        try:
+            return _select_title_record(
+                records,
+                authors=authors,
+                container_title=container_title,
+                year=year,
+            )
+        except _AmbiguousTitleMatch as error:
+            raise SourceFetchError(
+                FailureKind.PARSE, url, "ambiguous bibliographic title match"
+            ) from error
 
 
 def _parse_europepmc_date(value: object, name: str) -> datetime:
@@ -824,6 +971,51 @@ def _europepmc_link(doi: str | None, pmcid: str | None, pmid: str | None) -> str
     raise ValueError("record carries no identifier for a link")
 
 
+_EUROPEPMC_XML_FIELDS = (
+    "pmid",
+    "pmcid",
+    "title",
+    "authorString",
+    "journalTitle",
+    "pubYear",
+    "firstPublicationDate",
+    "doi",
+    "abstractText",
+)
+
+
+def _xml_local_name(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1]
+
+
+def _europepmc_xml(body: str, url: str) -> Mapping[str, object]:
+    """Convert the public Europe PMC XML shape to the JSON-equivalent map."""
+    if "<!DOCTYPE" in body.upper() or "<!ENTITY" in body.upper():
+        raise SourceFetchError(
+            FailureKind.PARSE, url, "Europe PMC XML declarations are not allowed"
+        )
+    try:
+        root = ElementTree.fromstring(body)
+    except ElementTree.ParseError as error:
+        raise SourceFetchError(
+            FailureKind.PARSE, url, "metadata response is not valid XML"
+        ) from error
+    results: list[dict[str, object]] = []
+    for element in root.iter():
+        if _xml_local_name(element.tag) != "result":
+            continue
+        record: dict[str, object] = {}
+        for child in element:
+            name = _xml_local_name(child.tag)
+            if name not in _EUROPEPMC_XML_FIELDS:
+                continue
+            value = " ".join("".join(child.itertext()).split())
+            if value:
+                record[name] = value
+        results.append(record)
+    return {"resultList": {"result": results}}
+
+
 class EuropePmcClient(_ApiClient):
     """Read public Europe PMC (PubMed/PMC) metadata without credentials.
 
@@ -839,25 +1031,44 @@ class EuropePmcClient(_ApiClient):
     async def fetch(self, value: str, *, retrieved_at: datetime) -> AcademicRecord:
         retrieved_at = _aware(retrieved_at, "retrieved_at")
         url, requested_kind, requested_id = self._search_url(value)
-        root = await self._json(url)
+        response = await self._response(url)
+        content_type = (response.content_type or "").casefold()
+        if "json" in content_type or response.body.lstrip().startswith(("{", "[")):
+            root = self._decode_json(response.body, url)
+        else:
+            root = _europepmc_xml(response.body, url)
         results = root.get("resultList")
         if not isinstance(results, Mapping):
             raise SourceFetchError(FailureKind.PARSE, url, "Europe PMC resultList must be an object")
         entries = results.get("result")
         if not isinstance(entries, list) or not entries:
             raise SourceFetchError(FailureKind.PARSE, url, "no Europe PMC record matched the identifier")
-        first = entries[0]
-        if not isinstance(first, Mapping):
-            raise SourceFetchError(FailureKind.PARSE, url, "Europe PMC result entries must be objects")
-        try:
-            record = self._record(first, retrieved_at)
-        except (TypeError, ValueError, KeyError) as error:
-            raise SourceFetchError(FailureKind.PARSE, url, "Europe PMC metadata schema is invalid") from error
-        if requested_kind == "pmid" and record.pmid != requested_id:
-            raise SourceFetchError(FailureKind.PARSE, url, "Europe PMC record does not match the requested PMID")
-        if requested_kind == "pmcid" and record.pmcid != requested_id:
-            raise SourceFetchError(FailureKind.PARSE, url, "Europe PMC record does not match the requested PMCID")
-        return record
+        matching: list[AcademicRecord] = []
+        for entry in entries:
+            if not isinstance(entry, Mapping):
+                continue
+            try:
+                record = self._record(entry, retrieved_at)
+            except (TypeError, ValueError, KeyError):
+                continue
+            observed = record.pmid if requested_kind == "pmid" else record.pmcid
+            if observed == requested_id:
+                matching.append(record)
+        unique = {
+            (record.doi, record.pmid, record.pmcid): record for record in matching
+        }
+        if not unique:
+            label = "PMID" if requested_kind == "pmid" else "PMCID"
+            raise SourceFetchError(
+                FailureKind.PARSE,
+                url,
+                f"Europe PMC record does not match the requested {label}",
+            )
+        if len(unique) > 1:
+            raise SourceFetchError(
+                FailureKind.PARSE, url, "ambiguous Europe PMC identifier match"
+            )
+        return next(iter(unique.values()))
 
     def _search_url(self, value: str) -> tuple[str, str, str]:
         pmcid = None
@@ -908,7 +1119,7 @@ class EuropePmcClient(_ApiClient):
                 if not year_text.isdigit():
                     raise ValueError("pubYear is not a valid year")
                 published = datetime(int(year_text), 1, 1, tzinfo=timezone.utc)
-        abstract = _optional_text(payload.get("abstractText"), "abstractText")
+        abstract = _strip_jats(payload.get("abstractText"))
         return AcademicRecord(
             title=_text(payload.get("title"), "title"),
             source="academic",
@@ -957,6 +1168,28 @@ def _merge_openalex_abstract(record: AcademicRecord, enriched: AcademicRecord) -
         ),
         pmid=record.pmid if record.pmid is not None else enriched.pmid,
         pmcid=record.pmcid if record.pmcid is not None else enriched.pmcid,
+    )
+
+
+async def _search_metadata_client(
+    client: object,
+    query: str,
+    *,
+    retrieved_at: datetime,
+    authors: tuple[str, ...],
+    container_title: str | None,
+    year: int | None,
+) -> AcademicRecord | None:
+    """Call legacy search clients without new optional keyword arguments."""
+    search = getattr(client, "search")
+    if not authors and container_title is None and year is None:
+        return await search(query, retrieved_at=retrieved_at)
+    return await search(
+        query,
+        retrieved_at=retrieved_at,
+        authors=authors,
+        container_title=container_title,
+        year=year,
     )
 
 
@@ -1038,7 +1271,15 @@ class ScholarlyMetadataClient:
             )
         return await self._europepmc.fetch(identifier, retrieved_at=retrieved_at)
 
-    async def fetch_by_title(self, title: str, *, link: str | None = None) -> SourceItem:
+    async def fetch_by_title(
+        self,
+        title: str,
+        *,
+        link: str | None = None,
+        authors: tuple[str, ...] = (),
+        container_title: str | None = None,
+        year: int | None = None,
+    ) -> SourceItem:
         """Resolve a bibliographic record by strictly matching ``title``.
 
         For candidates whose URL carries no identifier, the already-known
@@ -1050,6 +1291,9 @@ class ScholarlyMetadataClient:
         """
         try:
             query = _text(title, "title")
+            authors, container_title, year = _title_context(
+                authors, container_title, year
+            )
         except (TypeError, ValueError) as error:
             raise SourceFetchError(
                 FailureKind.PARSE, "scholarly title search", "title must be a non-empty string"
@@ -1068,12 +1312,28 @@ class ScholarlyMetadataClient:
         crossref_error: SourceFetchError | None = None
         record: AcademicRecord | None = None
         try:
-            record = await self._crossref.search(query, retrieved_at=retrieved_at)
+            record = await _search_metadata_client(
+                self._crossref,
+                query,
+                retrieved_at=retrieved_at,
+                authors=authors,
+                container_title=container_title,
+                year=year,
+            )
         except SourceFetchError as error:
+            if error.detail == "ambiguous bibliographic title match":
+                raise error from None
             crossref_error = error
         if record is None:
             try:
-                record = await self._openalex.search(query, retrieved_at=retrieved_at)
+                record = await _search_metadata_client(
+                    self._openalex,
+                    query,
+                    retrieved_at=retrieved_at,
+                    authors=authors,
+                    container_title=container_title,
+                    year=year,
+                )
             except SourceFetchError as openalex_error:
                 raise (crossref_error or openalex_error) from None
         if record is None:
@@ -1099,4 +1359,5 @@ __all__ = [
     "normalize_doi",
     "normalize_pmcid",
     "normalize_pmid",
+    "redact_audit_text",
 ]

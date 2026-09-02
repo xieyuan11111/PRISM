@@ -39,12 +39,19 @@ from .scholarly import (
     normalize_doi,
     normalize_pmcid,
     normalize_pmid,
+    redact_audit_text,
 )
 from .service import (
     KIND_AUTO,
     FetchBatch,
     SourceService,
     validate_public_url,
+)
+from .reprocess import (
+    CLASSIFICATIONS,
+    ReprocessCandidate,
+    ReprocessRun,
+    run_identifier_reprocess,
 )
 from .urls import host_rejection_reason, normalize_url
 
@@ -72,16 +79,21 @@ __all__ = [
     "normalize_doi",
     "normalize_pmcid",
     "normalize_pmid",
+    "redact_audit_text",
     "KIND_AUTO",
+    "CLASSIFICATIONS",
     "PageFetcher",
     "SourceFetchError",
     "SourceFetcher",
     "SourceItem",
+    "ReprocessCandidate",
+    "ReprocessRun",
     "SourceService",
     "extract_page",
     "host_rejection_reason",
     "normalize_url",
     "parse_feed",
     "validate_public_url",
+    "run_identifier_reprocess",
     "UrllibHttpGetter",
 ]

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Iterable
 
 
 def _require_aware(name: str, value: datetime) -> None:
@@ -17,6 +18,18 @@ def _require_text(name: str, value: str | None) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{name} must be a non-empty string")
     return value.strip()
+
+
+def _text_tuple(name: str, values: Iterable[str]) -> tuple[str, ...]:
+    if isinstance(values, str):
+        raise TypeError(f"{name} must be an iterable of strings, not a string")
+    try:
+        normalized = tuple(values)
+    except TypeError as error:
+        raise TypeError(f"{name} must be an iterable of strings") from error
+    for value in normalized:
+        _require_text(name, value)
+    return normalized
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,6 +56,14 @@ class IndexEntry:
     doi: str | None = None
     authors: tuple[str, ...] = ()
     container_title: str | None = None
+    pmid: str | None = None
+    pmcid: str | None = None
+
+    def __post_init__(self) -> None:
+        _require_aware("published_at", self.published_at)
+        _require_aware("fetched_at", self.fetched_at)
+        object.__setattr__(self, "case_tags", _text_tuple("case_tags", self.case_tags))
+        object.__setattr__(self, "authors", _text_tuple("authors", self.authors))
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,6 +93,13 @@ class SearchHit:
     doi: str | None = None
     authors: tuple[str, ...] = ()
     container_title: str | None = None
+    pmid: str | None = None
+    pmcid: str | None = None
+
+    def __post_init__(self) -> None:
+        _require_aware("published_at", self.published_at)
+        object.__setattr__(self, "case_tags", _text_tuple("case_tags", self.case_tags))
+        object.__setattr__(self, "authors", _text_tuple("authors", self.authors))
 
 
 @dataclass(frozen=True, slots=True)

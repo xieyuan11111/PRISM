@@ -94,6 +94,8 @@ class Material:
     doi: str | None = None
     authors: tuple[str, ...] = ()
     container_title: str | None = None
+    pmid: str | None = None
+    pmcid: str | None = None
 
     def __post_init__(self) -> None:
         for name in ("id", "title", "source", "type", "content"):
@@ -108,7 +110,17 @@ class Material:
             )
         if not isinstance(self.ocr, bool):
             raise TypeError("ocr must be a bool")
-        for name in ("extracted_via", "raw_path", "url", "retrieval_level", "access_level", "doi", "container_title"):
+        for name in (
+            "extracted_via",
+            "raw_path",
+            "url",
+            "retrieval_level",
+            "access_level",
+            "doi",
+            "container_title",
+            "pmid",
+            "pmcid",
+        ):
             _validate_optional_text(name, getattr(self, name))
         if self.access_level is not None and self.access_level not in {
             "fulltext", "abstract_only", "metadata_only", "blocked"

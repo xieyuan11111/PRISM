@@ -213,6 +213,42 @@ def test_europepmc_pmcid_record_without_doi_uses_pmc_link():
     assert "doi" not in metadata
 
 
+def test_europepmc_xml_record_without_doi_is_parsed_offline():
+    xml = f"""<?xml version="1.0" encoding="UTF-8"?>
+    <responseWrapper><resultList><result>
+      <pmid>{PMID}</pmid><pmcid>{PMCID}</pmcid>
+      <title>Public XML evidence</title>
+      <authorString>Lovelace A, Hopper G.</authorString>
+      <journalTitle>Journal of XML Evidence</journalTitle>
+      <firstPublicationDate>2024-03-04</firstPublicationDate>
+      <abstractText><p>A public <b>XML</b> abstract.</p></abstractText>
+    </result></resultList></responseWrapper>"""
+    getter = FakeGetter({
+        EUROPEPMC_PMID_URL: HttpResponse(
+            EUROPEPMC_PMID_URL, 200, xml, "application/xml"
+        )
+    })
+    rec = run(EuropePmcClient(getter).fetch(PMID, retrieved_at=RETRIEVED))
+    assert rec.title == "Public XML evidence"
+    assert rec.abstract == "A public XML abstract."
+    assert rec.doi is None
+    assert rec.pmid == PMID
+    assert rec.pmcid == PMCID
+    assert rec.access_level == "abstract_only"
+
+
+def test_europepmc_xml_rejects_entity_declarations():
+    xml = "<!DOCTYPE x [<!ENTITY secret SYSTEM 'file:///private'>]><x/>"
+    getter = FakeGetter({
+        EUROPEPMC_PMID_URL: HttpResponse(
+            EUROPEPMC_PMID_URL, 200, xml, "application/xml"
+        )
+    })
+    with pytest.raises(SourceFetchError) as caught:
+        run(EuropePmcClient(getter).fetch(PMID, retrieved_at=RETRIEVED))
+    assert caught.value.kind is FailureKind.PARSE
+
+
 def test_europepmc_pubyear_fallback_dates_to_january_first():
     payload = europepmc_payload(firstPublicationDate=None, pubYear="2023")
     getter = FakeGetter({EUROPEPMC_PMID_URL: response(EUROPEPMC_PMID_URL, payload)})

@@ -382,6 +382,22 @@ def test_graph_failure_reports_index_and_extract_stages():
     asyncio.run(main())
 
 
+def test_pipeline_error_audit_message_redacts_credentials_but_keeps_cause():
+    async def main():
+        secret = "pipeline-test-secret"
+        boom = RuntimeError(f"api_key={secret} Bearer {secret}")
+        service, *_ = make_service(extraction_exc=boom)
+
+        with pytest.raises(PipelineError) as info:
+            await service.run_material(make_result())
+        assert secret not in str(info.value)
+        assert "api_key=<redacted>" in str(info.value)
+        assert "Bearer <redacted>" in str(info.value)
+        assert info.value.__cause__ is boom
+
+    asyncio.run(main())
+
+
 def test_non_fulltext_materials_are_indexed_but_skip_extraction_and_graph():
     async def main():
         for level in ("abstract_only", "metadata_only"):
