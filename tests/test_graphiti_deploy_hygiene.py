@@ -201,8 +201,13 @@ def test_spike_plan_covers_names_ports_preflight_side_effects_rollback_acceptanc
 def test_readme_is_honest_about_real_graphiti_validation_boundary():
     readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
 
-    assert "passed three live tests" in readme
+    # The README records the live spike result AND the remaining boundary:
+    # the three live tests passed with deterministic model clients, so real
+    # Neo4j/Graphiti behavior was exercised without an external provider,
+    # while real-provider extraction stays a not-yet-verified item.
+    assert "three live tests" in readme
     assert "not-yet-verified" in readme
+    assert "embedding provider is called" in readme
     assert "deploy/graphiti-spike/" in readme
     assert "docs/graphiti-spike-plan.md" in readme
     assert "PRISM_GRAPHITI_URI" in readme

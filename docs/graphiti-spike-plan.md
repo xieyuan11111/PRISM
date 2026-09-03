@@ -145,8 +145,12 @@ as remaining:
 1. **Resolved for this environment**: `graphiti-core==0.29.3`,
    `neo4j==6.3.0`, and `httpx==0.28.1` were installed and exercised.
 2. **Resolved for this environment**: `graphiti_core.Graphiti(...)` construction
-   completed with the configured live client; the deterministic provider hooks
-   prevented external model calls.
+   completed with the configured live client and performs no eager database
+   I/O (the Neo4j driver is lazy); the deterministic provider hooks
+   prevented external model calls.  Graphiti 0.29.3 fires its own anonymous
+   telemetry event at construction by default (outside pytest), so PRISM's
+   builder sets `GRAPHITI_TELEMETRY_ENABLED=false` unless the operator
+   explicitly exported `true`.
 3. `add_episode`/`search` signature semantics — **verified by the
    0.29.3 live tests (2026-09-03)**:
    Its graphiti-core 0.29.3 keyword surface (`uri`, `user`, `password`)
@@ -168,12 +172,15 @@ as remaining:
      `group_id`.  The adapter negotiates the declared keyword
      (`group_ids`, else `group_id`, else none) and still relies on PRISM
      attribution plus group-mismatch filtering.
-   - **Remaining**: production-scale pagination beyond the exercised synthetic
-     fixture is not validated; the default search limit needs a separate
-     design decision for large timelines.
+   - **Remaining**: production-scale pagination.  graphiti 0.29.3's `search`
+     default window is 10 results over ALL entity edges in the group, so the
+     real-client adapter forces an explicit 100-result window (a bounded
+     spike safeguard).  All three live cases (≤ 8 episodes each) came back
+     complete at the exercised cumulative graph size; timelines are NOT an
+     exhaustive graph scan, so a case (or cumulative group) beyond ~100
+     entity edges needs a real pagination design decision.
 4. **Resolved for this environment**: `graphiti_core.nodes.EpisodeType.json`
-   exists and is accepted for JSON episodes.
-   value for JSON episodes.
+   exists and is accepted as the `source` value for JSON episodes.
 5. **Resolved for this test path**: add/search exercised extraction and
    embedding hooks using deterministic injected clients. Real provider calls,
    their cost and production configuration remain unvalidated.
@@ -189,13 +196,18 @@ as remaining:
    then registry knowledge of a referenced PRISM key, and bodies (with the
    PRISM schema marker) only when a result carries one.  The offline suite
    covers every one of these paths (incl. body-less attribution after a
-   registry close/reopen); a live run must confirm which results are
-   uuid really matches the server's nodes — all confirmed by the three live
-   tests for the exercised synthetic episodes.
-7. **Resolved for this environment**: the isolated Neo4j Community server
-   uses the built-in `neo4j` database and the configured ports.
-8. **Not exercised**: Docker Compose healthcheck syntax; Docker was not
-   installed, so the existing local Neo4j/JDK spike launcher was used instead.
+   registry close/reopen); the live run confirmed which results are
+   actually attributable after a restart and that the registry's recorded
+   uuid really matches the server's nodes — for the exercised synthetic
+   episodes.
+7. **Resolved for this environment**: the isolated PRISM-owned Neo4j
+   Community 5.26 server uses the built-in `neo4j` database; HTTP and Bolt
+   stayed bound to 127.0.0.1 (ports 7475/7688), loopback-only.
+8. **Not exercised**: the Docker Compose variant (compose/healthcheck
+   syntax); Docker was not installed on the spike machine, so the
+   standalone PRISM-owned native Neo4j launcher (own JDK, data dir and
+   venv under the spike area) was started and used instead.  The deploy
+   template remains the documented way to reproduce the spike elsewhere.
 
 ---
 
@@ -221,10 +233,27 @@ as remaining:
 8. Run the full offline suite again to prove the live spike did not break the
    default offline behavior.
 
-For the 2026-09-03 run Docker was unavailable, so the documented acceptance
-steps were executed with the pre-existing PRISM-owned local Neo4j Community
-5.26 process and its isolated JDK/venv equivalent. The service remained
-loopback-only; no other Neo4j instance was used.
+**Executed variant and run record (2026-09-03)**. Docker was unavailable on
+the spike machine, so the steps above were executed against the standalone
+PRISM-owned native Neo4j Community 5.26 server under the spike area (its own
+JDK, data directory and venv), started for this run; the service stayed bound
+to 127.0.0.1 only (HTTP 7475 / Bolt 7688).  The spike connected exclusively
+to that server and never to any other Neo4j on the machine.  Environment:
+Python 3.12, `graphiti-core==0.29.3`, `neo4j==6.3.0`, `httpx==0.28.1`,
+pytest in the isolated venv; credentials supplied by the environment (names
+only — see section 4), `OPENAI_API_KEY` absent, Graphiti telemetry disabled.
+
+Result: all three opt-in integration tests in
+`tests/test_graphiti_integration.py` passed (live write/read/restart
+idempotent rewrite; historical cutoffs excluding invalidated/unobserved;
+M1 facts + relations + portable evidence surviving cutoffs and a registry
+restart).  Every case/material/fact id in those tests carries a random
+per-run suffix, so reruns never collide with data left by earlier runs in
+the persistent spike database.  The tests injected deterministic in-process
+Graphiti LLM/embedder/reranker clients (see
+`tests/graphiti_live_deterministic.py`), so no real model provider was
+called; the full offline suite was re-run afterwards and stayed green with
+the pinned extra installed.
 
 ## 7. Phase B side effects (explicit)
 
@@ -243,7 +272,11 @@ Running Phase B on a machine:
   Community instance are not possible, so no second group is ever written);
 - may invoke Graphiti's embedding/extraction pipeline during `add_episode` /
   `search`, which can call external LLM/embedding APIs and incur cost or rate
-  limits (verify item 5 in section 5 before assuming none);
+  limits (verify item 5 in section 5 before assuming none).  The executed
+  2026-09-03 run replaced all three providers (LLM, embedder, reranker) with
+  deterministic in-process clients, so it never called an external model API;
+  Graphiti's anonymous telemetry was disabled by PRISM's builder
+  (`GRAPHITI_TELEMETRY_ENABLED=false`) and by pytest itself;
 - creates/extends the PRISM SQLite file (`index.db` under `data_dir`) with
   the additive `graphiti_episode_registry` table: each successful first
   write records its PRISM key, real Graphiti uuid, group/database and
@@ -310,5 +343,13 @@ credential reads of any existing GTI/Neo4j setup.
 - [x] `PrismRuntime.close()` closes the client/driver exactly once without
       error, and the offline suite (`python -m pytest -q`) still passes with
       the optional extra installed.
-- [x] Port preflight ran before startup; occupied ports were handled by
-      changing `.env`, not by touching other services.
+- [x] Port preflight: the spike server binds loopback-only on the PRISM-owned
+      ports (HTTP 127.0.0.1:7475 / Bolt 127.0.0.1:7688); occupied
+      default-port services on the machine were never touched — the spike
+      connected only to its own PRISM-owned instance.
+
+Scope of the 2026-09-03 acceptance: every marked item above was confirmed by
+the live run (deterministic provider clients; no external model API) and/or
+the offline suite. Real-provider extraction, reruns over real case corpus
+material and production-scale search pagination are NOT part of this
+acceptance and remain open (section 5).

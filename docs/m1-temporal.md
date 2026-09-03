@@ -1,7 +1,9 @@
 # M1 Temporal Core Acceptance Boundary
 
-This document states what the repository can verify offline. It does not
-claim that a real Graphiti or Neo4j deployment has passed live acceptance.
+This document states what the repository can verify offline and what the
+Phase B live spike (2026-09-03) confirmed with deterministic model clients
+(see the Live Graphiti boundary section). It does not claim that
+real-provider extraction or a real case has passed live acceptance.
 
 ## Implemented semantics
 
@@ -52,10 +54,18 @@ database or model provider.
 
 ## Live Graphiti boundary
 
-The Graphiti adapter and durable episode registry are implemented, but this
-M1 slice does not start or probe a real Graphiti/Neo4j service. Until the
-opt-in live suite is run against a dedicated PRISM-owned instance, database
-write/search behavior, server-side temporal edge materialization and restart
-behavior remain live-validation items. The offline timeline semantics are
-PRISM service-layer guarantees; they must not be described as proof of an
-external Graphiti deployment.
+The M1 live slice was exercised on 2026-09-03 by the Phase B spike
+(`tests/test_graphiti_integration.py`'s third test) against the isolated
+PRISM-owned Neo4j Community 5.26 server: M1 facts with `invalid_at`,
+`supersedes`/`contradicts` relation episodes, portable evidence locators,
+two-cutoff exclusion and registry-restart readback all passed with
+deterministic injected Graphiti model clients (no external LLM/embedding
+API).  That run used synthetic fixtures, never real corpus material.
+
+What remains unverified on a live server: extraction through a real LLM
+provider (real model calls, cost, prompt drift), the resulting
+real-entity/edge graph, and an end-to-end rerun over a real policy/news
+case.  The offline timeline semantics are PRISM service-layer guarantees;
+the deterministic live run proves Graphiti 0.29.3 persists and returns the
+M1 episodes exactly as PRISM writes them, not that real-provider extraction
+produces correct M1 structure.
