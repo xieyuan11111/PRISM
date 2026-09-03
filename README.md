@@ -230,10 +230,13 @@ diverged before a ledger write completed. The CLI exposes the same
 operations (`ingest --process`, `process`, `merge-case`) over the identical
 API surface.
 
-PRISM is not a human-in-the-loop system yet: this pipeline is deliberately
-**automatic-only**. Human arbitration — reviewing adopted case records,
-resolving conflicts, adopting foreign-case materials explicitly, curating
-nodes — is a planned later capability, not part of this loop.
+PRISM is deliberately **LLM-automatic** at the candidate level: the pipeline
+automatically compares evidence, resolves or preserves conflicts, binds
+materials to an explicitly supplied target case when available, and records
+its reasoning and uncertainty. Users add materials, ask questions, choose a
+target case, or request a rebuild; they do not need to review candidates one
+by one. Deterministic validation still rejects unsupported quotes, timestamps,
+cross-material citations, and unsafe model output.
 
 `discover` creates a time-bounded research plan from an indexed material. To
 execute a plan, explicitly enable Firecrawl in `PRISM_HOME/config.json` and
