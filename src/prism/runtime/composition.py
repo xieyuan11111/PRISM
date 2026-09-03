@@ -15,7 +15,7 @@ from prism.analyzer import AnalyzerService
 from prism.cases import CaseBundleMerger, CaseService
 from prism.cases.ledger import CaseExtractionLedger
 from prism.config import GraphitiConfig, PathConfig, PrismConfig
-from prism.domain import Material
+from prism.domain import EvolutionCase, Material
 from prism.events import EventBus
 from prism.extraction import ExtractionEvidenceGap, ExtractionResult, ExtractionService
 from prism.graph import (
@@ -96,7 +96,11 @@ class OfflineExtractor:
         )
 
     async def extract_material(
-        self, material: Material, *, corpus_path: str | Path | None = None
+        self,
+        material: Material,
+        *,
+        corpus_path: str | Path | None = None,
+        target_case: EvolutionCase | None = None,
     ) -> ExtractionResult:
         return ExtractionResult(
             warnings=("no LLM router configured; structured extraction skipped",),

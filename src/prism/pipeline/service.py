@@ -86,6 +86,14 @@ class _Indexer(Protocol):
 class _Extractor(Protocol):
     async def extract(self, material: Material) -> ExtractionResult: ...
 
+    async def extract_material(
+        self,
+        material: Material,
+        *,
+        corpus_path: str | Path | None = ...,
+        target_case: EvolutionCase | None = ...,
+    ) -> ExtractionResult: ...
+
 
 class _GraphWriter(Protocol):
     async def add_case(
@@ -348,9 +356,20 @@ class PipelineService:
                 self._outcomes[outcome.material_id] = outcome
 
     async def run_material(
-        self, result: IngestionResult, *, correlation_id: str | None = None
+        self,
+        result: IngestionResult,
+        *,
+        correlation_id: str | None = None,
+        target_case: EvolutionCase | None = None,
     ) -> PipelineRun:
         """Run the full pipeline for one ingested material, exactly once.
+
+        ``target_case`` is the caller-declared evolution case this material
+        belongs to; when supplied it is forwarded verbatim to the extractor's
+        ``extract_material(..., target_case=...)`` so the completion is
+        anchored to that real case.  The extractor must support the keyword
+        (the auditable failure isolates the material); an extractor with only
+        the legacy ``extract()`` entry point cannot process a target case.
 
         Materials whose ``access_level`` is not ``fulltext`` — an abstract,
         a bibliographic placeholder, or a blocked record — carry no full
@@ -370,6 +389,8 @@ class PipelineService:
             raise TypeError("result must be an IngestionResult")
         if correlation_id is not None:
             _require_text("correlation_id", correlation_id)
+        if target_case is not None and not isinstance(target_case, EvolutionCase):
+            raise TypeError("target_case must be an EvolutionCase or None")
         async with self._lock:
             material_id = result.material.id
             previous = self._completed.get(material_id)
@@ -394,7 +415,9 @@ class PipelineService:
                 material_id, PENDING, started_at
             )
             try:
-                run = await self._run_locked(result, correlation_id, started_at)
+                run = await self._run_locked(
+                    result, correlation_id, started_at, target_case
+                )
             except Exception as exc:
                 self._record_failure(material_id, exc)
                 raise
@@ -501,7 +524,11 @@ class PipelineService:
         return True
 
     async def _run_locked(
-        self, result: IngestionResult, correlation_id: str | None, started_at: datetime
+        self,
+        result: IngestionResult,
+        correlation_id: str | None,
+        started_at: datetime,
+        target_case: EvolutionCase | None = None,
     ) -> PipelineRun:
         material_id = result.material.id
         stages: list[PipelineStage] = []
@@ -539,7 +566,19 @@ class PipelineService:
         else:
             try:
                 extract_material = getattr(self._extraction, "extract_material", None)
-                if callable(extract_material):
+                if target_case is not None:
+                    if not callable(extract_material):
+                        raise TypeError(
+                            "extraction_service must provide "
+                            "extract_material(target_case=...) when a target "
+                            "case is declared"
+                        )
+                    extraction = await extract_material(
+                        result.material,
+                        corpus_path=result.corpus_path,
+                        target_case=target_case,
+                    )
+                elif callable(extract_material):
                     extraction = await extract_material(
                         result.material, corpus_path=result.corpus_path
                     )

@@ -14,6 +14,8 @@ import re
 import sys
 from typing import Any, Protocol, TextIO
 
+from prism.domain import EvolutionCase
+
 
 DEFAULT_SEARCH_LIMIT = 50
 
@@ -36,7 +38,10 @@ class PrismAPIProtocol(Protocol):
     ) -> object: ...
 
     async def process_material(
-        self, source: str, metadata: dict[str, Any] | None = None
+        self,
+        source: str,
+        metadata: dict[str, Any] | None = None,
+        target_case: object | None = None,
     ) -> object: ...
 
     async def merge_case(
@@ -136,6 +141,65 @@ def _json_object(value: str) -> dict[str, Any]:
     return parsed
 
 
+def _case_from_json(value: dict[str, Any]) -> EvolutionCase:
+    """Build one caller-declared EvolutionCase from parsed ``--case-json``.
+
+    The mapping mirrors the domain model's fields; timestamps must be
+    timezone-aware ISO 8601 strings.  Invalid shapes fail with an explicit
+    error before any API call.
+    """
+    required = {"case_id", "case_type", "canonical_name", "start_at", "status"}
+    allowed = required | {"node_ids", "status_at", "status_observed_at"}
+    missing = sorted(required - value.keys())
+    if missing:
+        raise ValueError(
+            "--case-json missing required field(s): " + ", ".join(missing)
+        )
+    extra = sorted(set(value) - allowed)
+    if extra:
+        raise ValueError(
+            "--case-json contains unexpected field(s): " + ", ".join(extra)
+        )
+    node_ids = value.get("node_ids") or []
+    if not isinstance(node_ids, list) or any(
+        not isinstance(item, str) or not item.strip() for item in node_ids
+    ):
+        raise ValueError(
+            "--case-json field node_ids must be a JSON array of non-empty strings"
+        )
+    start_at = value["start_at"]
+    if not isinstance(start_at, str):
+        raise ValueError(
+            "--case-json field start_at must be an ISO-8601 "
+            "timezone-aware timestamp"
+        )
+
+    def timestamp(name: str) -> datetime | None:
+        item = value.get(name)
+        if item is None:
+            return None
+        if not isinstance(item, str):
+            raise ValueError(
+                f"--case-json field {name} must be an ISO-8601 "
+                "timezone-aware timestamp"
+            )
+        return _aware_datetime(item)
+
+    try:
+        return EvolutionCase(
+            case_id=value["case_id"],
+            case_type=value["case_type"],
+            canonical_name=value["canonical_name"],
+            start_at=_aware_datetime(start_at),
+            status=value["status"],
+            node_ids=tuple(node_ids),
+            status_at=timestamp("status_at"),
+            status_observed_at=timestamp("status_observed_at"),
+        )
+    except (TypeError, ValueError, argparse.ArgumentTypeError) as error:
+        raise ValueError(f"--case-json is not a valid evolution case: {error}") from error
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build and return the public PRISM command-line parser."""
     parser = _ArgumentParser(prog="prism", description="Query and ingest PRISM data.")
@@ -221,6 +285,28 @@ def build_parser() -> argparse.ArgumentParser:
         help="An indexed material id, or a path to a Markdown/PDF input.",
     )
     process.add_argument("--metadata", type=_json_object, metavar="JSON")
+    process_target = process.add_mutually_exclusive_group()
+    process_target.add_argument(
+        "--case-id",
+        type=_nonempty,
+        metavar="CASE_ID",
+        help=(
+            "Process this material as part of an already recorded evolution "
+            "case: the case is loaded from the durable ledger and any "
+            "extraction drift or case: null fails the material auditably."
+        ),
+    )
+    process_target.add_argument(
+        "--case-json",
+        type=_json_object,
+        metavar="JSON",
+        help=(
+            "Declare the target evolution case inline as a JSON object with "
+            "case_id, case_type, canonical_name, start_at (timezone-aware "
+            "ISO 8601) and status (optionally node_ids, status_at, "
+            "status_observed_at)."
+        ),
+    )
     process.set_defaults(handler=handle_process)
 
     merge_case = commands.add_parser(
@@ -388,7 +474,16 @@ async def handle_ingest(args: argparse.Namespace, api: PrismAPIProtocol) -> obje
 
 async def handle_process(args: argparse.Namespace, api: PrismAPIProtocol) -> object:
     """Delegate a parsed process command to the injected facade."""
-    return await _await_api_call(api.process_material(args.source, args.metadata))
+    target_case = None
+    if args.case_id is not None:
+        target_case = args.case_id
+    elif args.case_json is not None:
+        target_case = _case_from_json(args.case_json)
+    if target_case is None:
+        return await _await_api_call(api.process_material(args.source, args.metadata))
+    return await _await_api_call(
+        api.process_material(args.source, args.metadata, target_case=target_case)
+    )
 
 
 async def handle_merge_case(args: argparse.Namespace, api: PrismAPIProtocol) -> object:

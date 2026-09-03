@@ -6,6 +6,7 @@ import os
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import inspect
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 from uuid import uuid4
@@ -157,7 +158,11 @@ class _ScholarlyMetadataClient(Protocol):
 
 class _PipelineService(Protocol):
     async def run_material(
-        self, result: IngestionResult, *, correlation_id: str | None = ...
+        self,
+        result: IngestionResult,
+        *,
+        correlation_id: str | None = ...,
+        target_case: EvolutionCase | None = ...,
     ) -> object: ...
 
     def run_for(self, material_id: str) -> object | None: ...
@@ -182,6 +187,8 @@ class _CaseService(Protocol):
 
     def case_for_material(self, material_id: str) -> str | None: ...
 
+    def load_case(self, case_id: str) -> EvolutionCase: ...
+
 
 class _MaterialResolver(Protocol):
     def resolve(self, material_id: str) -> IngestionResult: ...
@@ -191,7 +198,11 @@ class _MaterialResolver(Protocol):
 
 class _ExtractionService(Protocol):
     async def extract_material(
-        self, material: Material, *, corpus_path: str | Path | None = ...
+        self,
+        material: Material,
+        *,
+        corpus_path: str | Path | None = ...,
+        target_case: EvolutionCase | None = ...,
     ) -> ExtractionResult: ...
 
 
@@ -413,19 +424,26 @@ class PrismAPI:
         material: Material,
         *,
         corpus_path: str | Path | None = None,
+        target_case: EvolutionCase | None = None,
     ) -> ExtractionResult:
-        """Run the evidence-bound Evolution Extraction v0 public entry point."""
+        """Run the evidence-bound Evolution Extraction v0 public entry point.
+
+        ``target_case`` is forwarded to the extraction service: when supplied,
+        the completion must anchor every candidate to that declared case.
+        """
 
         if self._extraction is None:
             raise ValueError("extraction_service is required for extract_material()")
         return await self._extraction.extract_material(
-            material, corpus_path=corpus_path
+            material, corpus_path=corpus_path, target_case=target_case
         )
 
     async def process_material(
         self,
         source: str | os.PathLike[str],
         metadata: dict[str, Any] | None = None,
+        *,
+        target_case: EvolutionCase | str | None = None,
     ) -> ProcessMaterialResult:
         """Run one material through the automatic pipeline, end to end.
 
@@ -434,6 +452,22 @@ class PrismAPI:
         document (which is ingested and indexed first).  The API returns only
         after the material's pipeline run — and, when a case was produced,
         its accumulated case merge/write outcome — has completed.
+
+        ``target_case`` is the explicit case context the caller declares for
+        this material.  It may be a real :class:`~prism.domain.EvolutionCase`
+        object or the id of an already recorded case; an id is loaded through
+        the case service's durable ledger — never guessed from a title, tag,
+        or vector — and an unknown id raises :class:`LookupError` before
+        anything is ingested or run.  The resolved case is forwarded to the
+        pipeline, whose extractor anchors the completion to it; a completion
+        that refuses the anchor or drifts from it fails the material
+        auditably instead of being silently rewritten.  Because the automatic
+        path already refuses re-binding a material that the durable ledger
+        binds to another case, processing a material under a second target
+        case surfaces the typed
+        :class:`~prism.cases.MaterialCaseConflict` whenever the pipeline
+        actually re-executes (a fresh process); in-process repeats stay
+        idempotent replays of the completed run.
 
         Semantics are explicit and idempotent within one process:
         * a material whose run has not yet started is executed now (a path
@@ -472,6 +506,7 @@ class PrismAPI:
         """
         if self._pipeline is None:
             raise ValueError("pipeline_service is required for process_material()")
+        resolved_target = self._resolve_target_case(target_case)
         if _is_pathlike_input(source):
             ingested, index_outcome = self._ingest_and_index(source, metadata)
             material_id = ingested.material.id
@@ -493,7 +528,18 @@ class PrismAPI:
             index_outcome = None
 
         try:
-            attempt = await self._pipeline.run_material(ingestion_result)
+            if resolved_target is None:
+                attempt = await self._pipeline.run_material(ingestion_result)
+            else:
+                run_material = self._pipeline.run_material
+                if not self._accepts_kwarg(run_material, "target_case"):
+                    raise TypeError(
+                        "pipeline_service.run_material must accept target_case "
+                        "to process with a declared target case"
+                    )
+                attempt = await run_material(
+                    ingestion_result, target_case=resolved_target
+                )
         except PipelineError as error:
             # A case-binding refusal raised by the automatic accumulator
             # inside the pipeline surfaces as the typed, structured conflict
@@ -603,6 +649,58 @@ class PrismAPI:
         if not callable(bind):
             raise TypeError("case_service must provide bind_material_to_case()")
         return await bind(material_id, case_id)
+
+    @staticmethod
+    def _accepts_kwarg(method: object, name: str) -> bool:
+        try:
+            parameters = inspect.signature(method).parameters.values()
+        except (TypeError, ValueError):
+            return False
+        return any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD
+            or parameter.name == name
+            for parameter in parameters
+        )
+
+    def _resolve_target_case(
+        self, target_case: EvolutionCase | str | None
+    ) -> EvolutionCase | None:
+        """Normalize the declared target-case argument to a real case.
+
+        An ``EvolutionCase`` is used as-is; an id string is resolved through
+        the case service's durable ledger (:meth:`CaseService.load_case`) so
+        only a real recorded case is ever used — an unknown id raises
+        :class:`LookupError`, and nothing here guesses a case from titles,
+        tags, or vectors.
+        """
+        if target_case is None:
+            return None
+        if isinstance(target_case, EvolutionCase):
+            return target_case
+        if isinstance(target_case, str):
+            case_id = target_case.strip()
+            if not case_id:
+                raise ValueError("target_case case id must be a non-empty string")
+            if self._case_service is None:
+                raise ValueError(
+                    "case_service is required to resolve a target_case case id"
+                )
+            load = getattr(self._case_service, "load_case", None)
+            if not callable(load):
+                raise TypeError(
+                    "case_service must provide load_case() to resolve a "
+                    "target_case case id"
+                )
+            loaded = load(case_id)
+            if loaded is None or not isinstance(loaded, EvolutionCase):
+                raise LookupError(
+                    f"no recorded evolution case {case_id!r}; record a material "
+                    "under the case first or declare the case explicitly"
+                )
+            return loaded
+        raise TypeError(
+            "target_case must be an EvolutionCase or a recorded case id string"
+        )
 
     @staticmethod
     def _audit_warnings(run: object) -> list[str]:

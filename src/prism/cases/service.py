@@ -282,6 +282,26 @@ class CaseService:
         """
         return self._ledger.case_for_material(material_id)
 
+    def load_case(self, case_id: str) -> EvolutionCase:
+        """Load the real recorded evolution case for ``case_id``.
+
+        The case record is the identity of the first accumulated material's
+        extraction (the same template a merge keeps); ``node_ids`` is derived
+        data and is returned empty.  This loader never synthesizes a case
+        from a title, tag, or embedding: an unknown ``case_id`` raises
+        :class:`LookupError` so the caller can fail explicitly instead of
+        guessing.
+        """
+        if not isinstance(case_id, str) or not case_id.strip():
+            raise ValueError("case_id must be a non-empty string")
+        entries = self._ledger.entries(case_id)
+        if not entries:
+            raise LookupError(
+                f"no recorded evolution case {case_id!r}; record a material "
+                "under the case first or declare the case explicitly"
+            )
+        return self._template_case(case_id, entries)
+
     # ------------------------------------------------------------- internals
 
     async def _record_bound_locked(

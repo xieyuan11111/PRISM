@@ -248,6 +248,8 @@ revised_by: claim_yyy
 | FR-3.10 | 图谱事实必须可回溯到 corpus 的 `source_id` 和原文位置 | P0 |
 | FR-3.11 | 对抽取不确定、来源冲突或时间不明的事实标记不确定性，不强行合并 | P0 |
 
+> **设计说明（显式目标案例上下文）**：抽取默认允许模型自行判断材料归属哪个演变案例，但真实材料流中同一批材料可能被模型写成 `case: null` 或各自不同的 case_id，导致 review/synthesis 材料中合法的二手证据（`cited_prior_research`/`current_synthesis`）无法跨材料累积。因此调用方应先显式声明一个 `EvolutionCase`（CLI `process --case-id/--case-json`、`PrismAPI.process_material(target_case=...)`、`PipelineService.run_material(target_case=...)`、`ExtractionService.extract_material(target_case=...)`），LLM 只负责抽取内容并挂到该案例：目标案例的 `case_id/case_type/canonical_name/start_at/status` 不可改写，`case: null`、case_id 漂移或字段漂移抛出可审计错误而非被静默改写；case id 一律通过 CaseService/ledger 加载真实案例记录，未知 id 报错，绝不按标题、标签或向量猜测。review/synthesis 中引用的前人研究结果属于目标知识对象演变的一部分，可作为二手证据进入图谱（保留 `evidence_role`/`cited_source_ref`），但引用不等于自动 supersedes/contradicts。未声明目标案例时保持既有行为：无案例候选进入 `awaiting_case_binding`，等待显式绑定；同材料跨案例绑定继续被拒绝。
+
 ### FR-4 演变过程分析
 
 | 编号 | 需求 | 优先级 |
