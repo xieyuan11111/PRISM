@@ -56,6 +56,14 @@ class PrismAPIProtocol(Protocol):
         self, case_id: str, as_of: datetime | None = None, use_llm: bool = True
     ) -> object: ...
 
+    async def debate_case(
+        self,
+        case_id: str,
+        question: str,
+        as_of: datetime | None = None,
+        perspectives: Sequence[str] | None = None,
+    ) -> object: ...
+
     async def fetch_source(
         self, url: str, *, kind: str = "auto", process: bool = True
     ) -> object: ...
@@ -129,6 +137,17 @@ def _aware_datetime(value: str) -> datetime:
             "must be an ISO-8601 timezone-aware timestamp"
         )
     return parsed
+
+
+def _perspective_ids(value: str) -> list[str]:
+    ids = [part.strip() for part in value.split(",") if part.strip()]
+    if not ids:
+        raise argparse.ArgumentTypeError(
+            "must be a comma-separated list of perspective ids"
+        )
+    if len(set(ids)) != len(ids):
+        raise argparse.ArgumentTypeError("must not repeat perspective ids")
+    return ids
 
 
 def _json_object(value: str) -> dict[str, Any]:
@@ -363,6 +382,33 @@ def build_parser() -> argparse.ArgumentParser:
     )
     report.set_defaults(handler=handle_report)
 
+    debate = commands.add_parser(
+        "debate", help="Run automatic multi-perspective debate for a case."
+    )
+    debate.add_argument("case_id", type=_nonempty, metavar="CASE_ID")
+    debate.add_argument(
+        "--question",
+        required=True,
+        type=_nonempty,
+        metavar="TEXT",
+        help="Question the perspectives must interpret from recorded evidence.",
+    )
+    debate.add_argument(
+        "--as-of",
+        required=False,
+        type=_aware_datetime,
+        metavar="TIMESTAMP",
+        help="ISO-8601 timestamp with a UTC offset; defaults to now.",
+    )
+    debate.add_argument(
+        "--perspectives",
+        required=False,
+        type=_perspective_ids,
+        metavar="A,B",
+        help="Optional comma-separated perspective ids; defaults are selected by case type.",
+    )
+    debate.set_defaults(handler=handle_debate)
+
     adjudication = commands.add_parser(
         "adjudication-history", help="Read LLM automatic-adjudication audit records."
     )
@@ -514,6 +560,18 @@ async def handle_report(args: argparse.Namespace, api: PrismAPIProtocol) -> obje
     """Delegate a parsed report command to the injected facade."""
     return await _await_api_call(
         api.report_case(args.case_id, args.as_of, use_llm=not args.no_llm)
+    )
+
+
+async def handle_debate(args: argparse.Namespace, api: PrismAPIProtocol) -> object:
+    """Delegate an automatic debate command to the injected facade."""
+    return await _await_api_call(
+        api.debate_case(
+            args.case_id,
+            args.question,
+            args.as_of,
+            perspectives=args.perspectives,
+        )
     )
 
 
@@ -759,6 +817,7 @@ __all__ = [
     "handle_research",
     "handle_ingest",
     "handle_report",
+    "handle_debate",
     "handle_adjudication_history",
     "handle_search",
     "handle_state",

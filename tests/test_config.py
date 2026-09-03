@@ -153,3 +153,39 @@ def test_relative_prism_home_is_resolved_from_current_working_directory(tmp_path
     resolved = PathConfig().resolve()
 
     assert resolved.data_dir == (tmp_path / "workspace/prism/data").resolve()
+
+
+def test_debate_profiles_must_be_known_ids_in_range():
+    from prism.config import DebateConfig
+
+    assert DebateConfig().profiles == ()
+    assert DebateConfig(
+        profiles=("institutional_regulatory", "affected_groups", "academic_observer")
+    ).profiles == ("institutional_regulatory", "affected_groups", "academic_observer")
+
+    with pytest.raises(TypeError, match="iterable of profile ids"):
+        DebateConfig(profiles="institutional_regulatory")
+    with pytest.raises(ValueError, match="3 or 4"):
+        DebateConfig(
+            profiles=("institutional_regulatory", "affected_groups")
+        )
+    with pytest.raises(ValueError, match="duplicates"):
+        DebateConfig(
+            profiles=("institutional_regulatory",) * 3
+        )
+    with pytest.raises(ValueError, match="unknown profile id"):
+        DebateConfig(
+            profiles=("institutional_regulatory", "affected_groups", "bogus")
+        )
+
+    config = PrismConfig.from_dict(
+        {"debate": {"profiles": ["evidence_quality", "research_history", "experimental_methods"]}}
+    )
+    assert config.debate.profiles == (
+        "evidence_quality",
+        "research_history",
+        "experimental_methods",
+    )
+    assert config.to_dict()["debate"] == {
+        "profiles": ["evidence_quality", "research_history", "experimental_methods"]
+    }

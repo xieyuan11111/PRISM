@@ -16,6 +16,7 @@ from prism.adjudication import AdjudicationLedger, AdjudicationService
 from prism.cases import CaseBundleMerger, CaseService
 from prism.cases.ledger import CaseExtractionLedger
 from prism.config import GraphitiConfig, PathConfig, PrismConfig
+from prism.debate import DebateLedger, DebateService
 from prism.domain import EvolutionCase, Material
 from prism.events import EventBus
 from prism.extraction import ExtractionEvidenceGap, ExtractionResult, ExtractionService
@@ -310,6 +311,8 @@ class PrismRuntime:
     # closed by :meth:`close`.  None on runtimes that injected no pipeline.
     pipeline_outcome_ledger: PipelineOutcomeLedger | None = None
     adjudicator: AdjudicationService | None = None
+    debate_service: DebateService | None = None
+    debate_ledger: DebateLedger | None = None
     _closed: bool = field(default=False, init=False, repr=False)
 
     @property
@@ -394,6 +397,8 @@ class PrismRuntime:
                                 ledger = getattr(self.adjudicator, "_ledger", None)
                                 if ledger is not None and callable(getattr(ledger, "close", None)):
                                     ledger.close()
+                            if self.debate_ledger is not None:
+                                self.debate_ledger.close()
 
     async def __aenter__(self) -> PrismRuntime:
         return self
@@ -486,6 +491,13 @@ async def create_runtime(
     graph = GraphService(backend)
     analyzer = AnalyzerService(graph)
     report = ReportService(llm_router)
+    debate_ledger = DebateLedger(paths)
+    debate = DebateService(
+        analyzer,
+        llm_router,
+        ledger=debate_ledger,
+        profiles=config.debate.profiles or None,
+    )
     extraction: ExtractionService | OfflineExtractor = (
         extraction_service
         if extraction_service is not None
@@ -586,6 +598,7 @@ async def create_runtime(
             owned_registry.close()
         case_ledger.close()
         pipeline_outcome_ledger.close()
+        debate_ledger.close()
         await events.stop()
         store.close()
         raise
@@ -597,6 +610,7 @@ async def create_runtime(
         events,
         analyzer_service=analyzer,
         report_service=report,
+        debate_service=debate,
         source_service=source_service,
         pipeline_service=pipeline,
         source_raw_dir=paths.raw_dir,
@@ -624,6 +638,8 @@ async def create_runtime(
         analyzer_service=analyzer,
         report_service=report,
         api=api,
+        debate_service=debate,
+        debate_ledger=debate_ledger,
         extraction_service=extraction,
         pipeline_service=pipeline,
         research_planner=research_planner,

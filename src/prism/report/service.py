@@ -20,6 +20,7 @@ import re
 from typing import Any, Protocol
 
 from prism.analyzer import EvolutionAnalysis
+from prism.debate import DebateResult
 
 from .models import (
     SUMMARY_ORIGIN_FALLBACK,
@@ -69,15 +70,25 @@ class ReportService:
             raise TypeError("router must provide an async complete method")
         self._router = router
 
-    async def report(self, analysis: EvolutionAnalysis) -> ReportDocument:
+    async def report(
+        self, analysis: EvolutionAnalysis, *, debate_result: DebateResult | None = None
+    ) -> ReportDocument:
         """Return the fully rendered report for one analysis result."""
 
         if not isinstance(analysis, EvolutionAnalysis):
             raise TypeError("analysis must be an EvolutionAnalysis")
+        if debate_result is not None:
+            if not isinstance(debate_result, DebateResult):
+                raise TypeError("debate_result must be a DebateResult")
+            if (
+                debate_result.case_id != analysis.case_id
+                or debate_result.as_of != analysis.as_of
+            ):
+                raise ValueError("debate_result must match the analysis case and cutoff")
 
         summary = await self._summarize(analysis)
         citations = _document_citations(analysis, summary)
-        markdown = _render_markdown(analysis, summary, citations)
+        markdown = _render_markdown(analysis, summary, citations, debate_result)
         return ReportDocument(
             case_id=analysis.case_id,
             as_of=analysis.as_of,
@@ -92,6 +103,7 @@ class ReportService:
             markdown=markdown,
             case_status=analysis.case_status,
             invalidated_stages=analysis.invalidated_stages,
+            debate=debate_result,
         )
 
     async def _summarize(self, analysis: EvolutionAnalysis) -> ReportSummary:
@@ -591,6 +603,7 @@ def _render_markdown(
     analysis: EvolutionAnalysis,
     summary: ReportSummary,
     citations: tuple[ReportCitation, ...],
+    debate_result: DebateResult | None,
 ) -> str:
     lines: list[str] = []
     lines.append(f"# Evolution Report: {analysis.case_id}")
@@ -628,6 +641,49 @@ def _render_markdown(
     )
     lines.append(f"Summary citations: {summary_sources}")
     lines.append("")
+
+    if debate_result is not None:
+        lines.append("## Debate Interpretation")
+        lines.append("")
+        lines.append("_Automatic debate output is interpretation, not structured facts._")
+        lines.append("")
+        lines.append(f"- Question: {_md(debate_result.question)}")
+        lines.append(f"- Debate status: {_md(debate_result.status)}")
+        lines.append("- Perspectives: " + _sources_label(debate_result.profiles))
+        if debate_result.fallback_reason:
+            lines.append(f"- Safety fallback: {_md(debate_result.fallback_reason)}")
+        lines.append("")
+        if debate_result.synthesis is None:
+            lines.append("- No debate conclusion is asserted.")
+        else:
+            synthesis = debate_result.synthesis
+            for title, items in (
+                ("Consensus", synthesis.consensus),
+                ("Disagreements", synthesis.disagreements),
+                ("Sources of disagreement", synthesis.sources_of_disagreement),
+                ("Unresolved questions", synthesis.unresolved_questions),
+                ("Falsification conditions", synthesis.falsification_conditions),
+            ):
+                lines.append(f"### {title}")
+                lines.append("")
+                if items:
+                    for item in items:
+                        lines.append(
+                            f"- {_md(item.text)} (evidence: {_sources_label(item.evidence_ids)})"
+                        )
+                else:
+                    lines.append("- None.")
+                lines.append("")
+            lines.append("### Key Evidence")
+            lines.append("")
+            if synthesis.key_evidence:
+                for item in synthesis.key_evidence:
+                    lines.append(
+                        f"- `{_md(item.evidence_id)}`: {_md(item.rationale)}"
+                    )
+            else:
+                lines.append("- None.")
+            lines.append("")
 
     lines.append("## Timeline Stages")
     lines.append("")

@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 from uuid import uuid4
 
 from prism.analyzer import EvolutionAnalysis, HistoricalCaseState
+from prism.debate import DebateResult
 from prism.domain import (
     Claim,
     EvolutionCase,
@@ -140,6 +141,16 @@ class _AnalyzerService(Protocol):
     ) -> HistoricalCaseState: ...
 
 
+class _DebateService(Protocol):
+    async def debate(
+        self,
+        case_id: str,
+        question: str,
+        as_of: datetime | None = None,
+        perspectives: Iterable[str] | None = None,
+    ) -> DebateResult: ...
+
+
 class _ReportService(Protocol):
     async def report(self, analysis: EvolutionAnalysis) -> ReportDocument: ...
 
@@ -266,6 +277,7 @@ class PrismAPI:
         event_bus: _EventBus,
         *,
         analyzer_service: _AnalyzerService | None = None,
+        debate_service: _DebateService | None = None,
         report_service: _ReportService | None = None,
         source_service: _SourceService | None = None,
         pipeline_service: _PipelineService | None = None,
@@ -294,6 +306,9 @@ class PrismAPI:
         self._events = _required_dependency("event_bus", event_bus, "publish")
         self._analyzer = _optional_dependency(
             "analyzer_service", analyzer_service, "analyze"
+        )
+        self._debate = _optional_dependency(
+            "debate_service", debate_service, "debate"
         )
         self._report = _optional_dependency(
             "report_service", report_service, "report"
@@ -1050,6 +1065,21 @@ class PrismAPI:
             raise ValueError("analyzer_service is required for report_case()")
         analysis = await self._analyzer.analyze(case_id, as_of)
         return await self._report_service_for(use_llm).report(analysis)
+
+    async def debate_case(
+        self,
+        case_id: str,
+        question: str,
+        as_of: datetime | None = None,
+        perspectives: Iterable[str] | None = None,
+    ) -> DebateResult:
+        """Run automatic multi-perspective debate over one case snapshot."""
+
+        if self._debate is None:
+            raise ValueError("debate_service is required for debate_case()")
+        return await self._debate.debate(
+            case_id, question, as_of, perspectives=perspectives
+        )
 
     def adjudication_history(self, material_id: str | None = None) -> tuple:
         """Read durable LLM automatic-adjudication audit records."""

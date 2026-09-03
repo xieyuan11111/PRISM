@@ -20,6 +20,7 @@ from prism.analyzer import (
     TurningPoint,
 )
 from prism.domain import EvidenceLocator
+from prism.debate import DebateResult
 
 SUMMARY_ORIGIN_LLM = "llm"
 SUMMARY_ORIGIN_FALLBACK = "fallback"
@@ -149,6 +150,7 @@ class ReportDocument:
     markdown: str
     case_status: str | None = None
     invalidated_stages: tuple[TimelineStage, ...] = ()
+    debate: DebateResult | None = None
     publication_node_count: int = field(init=False)
     substantive_node_count: int = field(init=False)
 
@@ -194,6 +196,8 @@ class ReportDocument:
                 "invalidated_stages", self.invalidated_stages, TimelineStage
             ),
         )
+        if self.debate is not None and not isinstance(self.debate, DebateResult):
+            raise TypeError("debate must be a DebateResult")
         publication_count = sum(
             1
             for stage in self.stages

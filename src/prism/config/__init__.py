@@ -6,11 +6,13 @@ from .models import (
     LLMConfig,
     LLMProviderConfig,
     PathConfig,
+    DebateConfig,
     PrismConfig,
     SourceConfig,
 )
 
 __all__ = [
+    "DebateConfig",
     "FirecrawlConfig",
     "GraphitiConfig",
     "LLMConfig",

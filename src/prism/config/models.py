@@ -472,6 +472,44 @@ class GraphitiConfig:
         return self.uri
 
 
+_DEBATE_PROFILE_IDS = frozenset(
+    {
+        "institutional_regulatory",
+        "industry_execution",
+        "affected_groups",
+        "academic_observer",
+        "experimental_methods",
+        "mechanism_explanation",
+        "evidence_quality",
+        "research_history",
+    }
+)
+
+
+@dataclass(frozen=True, slots=True)
+class DebateConfig:
+    """Optional override of the 3-4 built-in debate perspectives."""
+
+    profiles: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if isinstance(self.profiles, str):
+            raise TypeError("debate.profiles must be an iterable of profile ids")
+        normalized = tuple(self.profiles)
+        for profile_id in normalized:
+            _require_text("debate.profiles", profile_id)
+        if normalized and not 3 <= len(normalized) <= 4:
+            raise ValueError("debate.profiles must contain 3 or 4 perspectives")
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("debate.profiles must not contain duplicates")
+        unknown = sorted(set(normalized) - _DEBATE_PROFILE_IDS)
+        if unknown:
+            raise ValueError(
+                "debate.profiles contains unknown profile id(s): " + ", ".join(unknown)
+            )
+        object.__setattr__(self, "profiles", normalized)
+
+
 @dataclass(frozen=True, slots=True)
 class PrismConfig:
     """Root configuration object for the PRISM foundation module."""
@@ -481,6 +519,7 @@ class PrismConfig:
     sources: SourceConfig = field(default_factory=SourceConfig)
     firecrawl: FirecrawlConfig = field(default_factory=FirecrawlConfig)
     graphiti: GraphitiConfig = field(default_factory=GraphitiConfig)
+    debate: DebateConfig = field(default_factory=DebateConfig)
 
     def __post_init__(self) -> None:
         if not isinstance(self.paths, PathConfig):
@@ -493,6 +532,8 @@ class PrismConfig:
             raise TypeError("firecrawl must be a FirecrawlConfig")
         if not isinstance(self.graphiti, GraphitiConfig):
             raise TypeError("graphiti must be a GraphitiConfig")
+        if not isinstance(self.debate, DebateConfig):
+            raise TypeError("debate must be a DebateConfig")
 
     def resolved_paths(self, home: Path | None = None) -> PathConfig:
         return self.paths.resolve(home)
@@ -536,13 +577,16 @@ class PrismConfig:
                 "password_env": self.graphiti.password_env,
                 "timeout": self.graphiti.timeout,
             },
+            "debate": {"profiles": list(self.debate.profiles)},
         }
 
     @classmethod
     def from_dict(cls, raw: Mapping[str, Any]) -> PrismConfig:
         data = _require_mapping("config", raw)
         _reject_unknown(
-            data, {"paths", "llm", "sources", "firecrawl", "graphiti"}, "config"
+            data,
+            {"paths", "llm", "sources", "firecrawl", "graphiti", "debate"},
+            "config",
         )
 
         paths_data = _require_mapping("paths", data.get("paths", {}))
@@ -596,12 +640,17 @@ class PrismConfig:
         )
         graphiti = GraphitiConfig(**graphiti_data)
 
+        debate_data = _require_mapping("debate", data.get("debate", {}))
+        _reject_unknown(debate_data, {"profiles"}, "debate")
+        debate = DebateConfig(profiles=debate_data.get("profiles", ()))
+
         return cls(
             paths=paths,
             llm=llm,
             sources=sources,
             firecrawl=firecrawl,
             graphiti=graphiti,
+            debate=debate,
         )
 
     def save(self, path: str | os.PathLike[str]) -> None:
