@@ -317,12 +317,19 @@ before authoritative re-fetching. A concept may return fewer results because
 of source availability, duplicate URLs, timeouts, or failed body extraction;
 PRISM records those outcomes rather than padding the count with duplicates.
 
-## Graphiti/GTI spike (Phase A + A.5 registry)
+## Graphiti/GTI spike (live Phase B verified)
 
-PRISM's graph layer is a PRISM-owned Graphiti/Neo4j instance (FR-3), but the
-real integration is **not yet validated**: Phase A implemented the code,
-configuration and offline tests only, and Phase A.5 added the offline-verified
-persistent episode registry described below. Nothing in the default runtime imports
+PRISM's graph layer is a PRISM-owned Graphiti/Neo4j instance (FR-3). Phase A
+implemented the code, configuration and offline tests; the Phase B live spike
+passed its three opt-in integration tests on 2026-09-03 against the isolated,
+loopback-only PRISM-owned Neo4j Community 5.26 server (HTTP 7475 / Bolt 7688)
+with `graphiti-core==0.29.3`, the `neo4j` Python driver 6.3.0 and
+`httpx==0.28.1` — the exact versions pinned in the `[graphiti]` extra below.
+The live tests inject deterministic Graphiti model clients, so real
+Neo4j/Graphiti persistence, search, cutoff, relation and registry behavior
+were exercised WITHOUT any external LLM/embedding/rerank call (no provider
+key is needed or read); real-provider extraction and reruns over real case
+material remain unverified. Nothing in the default runtime imports
 `graphiti-core`/`neo4j`, builds a client, probes for the optional packages or
 reads Graphiti credentials. To opt in, enable the extra and the config:
 
@@ -385,7 +392,7 @@ override that creates no registry.
 
 A PRISM-owned deployment template (service `prism-graphiti-spike`, host
 ports 7475/7688) and the full spike plan — side effects, acceptance
-criteria, rollback, and the list of API surfaces the live spike must verify —
+criteria, rollback, and the list of API surfaces verified by the live spike —
 live in `deploy/graphiti-spike/` and `docs/graphiti-spike-plan.md`.
 
 Live integration tests are opt-in and never part of a default CI run: they
@@ -396,5 +403,9 @@ the environment:
 python -m pytest tests/test_graphiti_integration.py -v
 ```
 
-Until a live Phase B spike passes those tests, treat every claim about the
-real Graphiti/Neo4j behavior in this repository as unverified.
+The Phase B spike and its full scope are recorded in
+`docs/graphiti-spike-plan.md`. The three live tests verify real
+Neo4j/Graphiti persistence, search, cutoff, relation and registry behavior
+using deterministic injected Graphiti model clients — no external LLM or
+embedding provider is called. Real-provider extraction and rerunning real
+case corpus material remain separate, not-yet-verified acceptance items.

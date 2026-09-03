@@ -19,22 +19,37 @@ item: isolation is the PRISM-dedicated instance itself plus PRISM schema
 marker gating on search mapping (both exercised offline as pure adapter
 contracts in test_graphiti_backend.py).
 
-Phase A honesty note: the real Graphiti integration has NOT been verified
-yet.  A first live run is expected to surface API mismatches (the plan doc
-keeps a PHASE B VERIFY list); treat failures here as spike findings to
-reconcile, not as evidence the adapter is broken by itself.
+Phase B live status (2026-09-03, standalone local machine spike): the three
+tests in this module passed against the PRISM-owned Neo4j Community 5.26
+instance (HTTP 127.0.0.1:7475 / Bolt 127.0.0.1:7688, local-only) with
+graphiti-core 0.29.3 and the neo4j Python driver 6.3.0.  They run through the
+deterministic provider clients in ``graphiti_live_deterministic.py`` so no
+real LLM/embedding/rerank API is ever called (``OPENAI_API_KEY`` is removed
+from the environment below); a real-model extraction and a real-case
+end-to-end rerun remain unverified.  Every case/material/fact id in this
+module carries a random per-run suffix, so reruns never collide with data
+left by earlier runs in the persistent spike database.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from datetime import datetime, timedelta, timezone
+from uuid import uuid4
 
 import pytest
 
 from prism.config import GraphitiConfig, PrismConfig
-from prism.domain import EvolutionCase, EvolutionNode, Material, TemporalFact
+from prism.domain import (
+    EvidenceLocator,
+    EvolutionCase,
+    EvolutionNode,
+    Material,
+    TemporalFact,
+    TemporalRelation,
+)
 from prism.runtime import create_runtime
 
 _REQUIRED_ENV = ("PRISM_GRAPHITI_URI", "PRISM_GRAPHITI_PASSWORD")
@@ -45,6 +60,7 @@ if _LIVE:
     # live run; the default (skipped) path never imports them.
     pytest.importorskip("graphiti_core")
     pytest.importorskip("neo4j")
+    from graphiti_live_deterministic import DeterministicGraphitiClientFactory
 
 pytestmark = pytest.mark.skipif(
     not _LIVE,
@@ -59,6 +75,11 @@ T0 = datetime.now(timezone.utc).replace(microsecond=0) - timedelta(days=2)
 
 def run(coro):
     return asyncio.run(coro)
+
+
+def live_run_suffix() -> str:
+    """Return a secret-free run marker that remains recognizable in Neo4j."""
+    return uuid4().hex[:12]
 
 
 def live_config(tmp_path) -> tuple[PrismConfig, object]:
@@ -94,21 +115,25 @@ def live_config(tmp_path) -> tuple[PrismConfig, object]:
 
 
 def fixtures():
+    suffix = live_run_suffix()
+    case_id = f"live-spike-case-{suffix}"
+    node_id = f"live-node-publish-{suffix}"
+    material_id = f"live-material-a-{suffix}"
     case = EvolutionCase(
-        "live-spike-case",
+        case_id,
         "policy",
         "Live spike housing policy",
         T0,
         "active",
-        ["live-node-publish"],
+        [node_id],
     )
     node = EvolutionNode(
-        "live-node-publish",
+        node_id,
         case.case_id,
         "publication",
         T0 + timedelta(hours=1),
         "The live spike policy was published.",
-        ["live-material-a"],
+        [material_id],
     )
     fact = TemporalFact(
         "Agency",
@@ -117,12 +142,12 @@ def fixtures():
         T0 + timedelta(hours=2),
         None,
         T0 + timedelta(hours=2),
-        ["live-material-a"],
+        [material_id],
         0.9,
         "document",
     )
     material = Material(
-        id="live-material-a",
+        id=material_id,
         title="Live spike notice",
         source="example.gov",
         published_at=T0 - timedelta(hours=1),
@@ -136,11 +161,16 @@ def fixtures():
 
 def test_live_write_read_restart_and_idempotent_rewrite(tmp_path, monkeypatch):
     monkeypatch.setenv("PRISM_HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("GRAPHITI_TELEMETRY_ENABLED", "false")
     _, config_path = live_config(tmp_path)
     case, node, fact, material = fixtures()
+    factory = DeterministicGraphitiClientFactory()
 
     async def exercise():
-        first = await create_runtime(config_path)
+        first = await create_runtime(
+            config_path, graphiti_client_factory=factory
+        )
         try:
             result = await first.graph.add_case(
                 case, nodes=[node], facts=[fact], materials=[material]
@@ -158,12 +188,19 @@ def test_live_write_read_restart_and_idempotent_rewrite(tmp_path, monkeypatch):
 
         # Restart: a fresh runtime and driver must reconstruct the same state
         # from the live graph (PRISM schema bodies or registry mapping).
-        second = await create_runtime(config_path)
+        second = await create_runtime(
+            config_path, graphiti_client_factory=factory
+        )
         try:
             after = await second.graph.timeline(case.case_id, T0 + timedelta(days=1))
             assert [entry.episode_key for entry in after.entries] == [
                 entry.episode_key for entry in before.entries
             ]
+            assert factory.calls == [first.config.graphiti, second.config.graphiti]
+            # The restarted runtime only reads, so its LLM is correctly idle;
+            # both clients still use the deterministic embedder for search.
+            assert factory.llm_clients[0].response_models
+            assert all(embedder.calls for embedder in factory.embedders)
         finally:
             await second.close()
 
@@ -174,9 +211,18 @@ def test_live_historical_cutoffs_exclude_invalidated_and_unobserved(
     tmp_path, monkeypatch
 ):
     monkeypatch.setenv("PRISM_HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("GRAPHITI_TELEMETRY_ENABLED", "false")
     _, config_path = live_config(tmp_path)
+    factory = DeterministicGraphitiClientFactory()
+    suffix = live_run_suffix()
+    case_id = f"live-spike-cutoffs-{suffix}"
+    material_a_id = f"live-cutoff-material-a-{suffix}"
+    material_b_id = f"live-cutoff-material-b-{suffix}"
+    old_fact_id = f"live-cutoff-fact-old-{suffix}"
+    new_fact_id = f"live-cutoff-fact-new-{suffix}"
     case = EvolutionCase(
-        "live-spike-cutoffs", "policy", "Cutoff policy", T0, "active", ()
+        case_id, "policy", "Cutoff policy", T0, "active", ()
     )
     fact_v1 = TemporalFact(
         "Agency",
@@ -185,9 +231,10 @@ def test_live_historical_cutoffs_exclude_invalidated_and_unobserved(
         T0,
         T0 + timedelta(days=3),
         T0,
-        ("live-cutoff-material-a",),
+        (material_a_id,),
         0.9,
         "document",
+        fact_id=old_fact_id,
     )
     fact_v2 = TemporalFact(
         "Agency",
@@ -196,12 +243,13 @@ def test_live_historical_cutoffs_exclude_invalidated_and_unobserved(
         T0 + timedelta(days=3),
         None,
         T0 + timedelta(days=2),
-        ("live-cutoff-material-b",),
+        (material_b_id,),
         0.9,
         "document",
+        fact_id=new_fact_id,
     )
     material_a = Material(
-        id="live-cutoff-material-a",
+        id=material_a_id,
         title="Cutoff notice A",
         source="example.gov",
         published_at=T0 - timedelta(hours=1),
@@ -211,7 +259,7 @@ def test_live_historical_cutoffs_exclude_invalidated_and_unobserved(
         original_format="md",
     )
     material_b = Material(
-        id="live-cutoff-material-b",
+        id=material_b_id,
         title="Cutoff notice B",
         source="example.gov",
         published_at=T0 + timedelta(days=2),
@@ -222,7 +270,9 @@ def test_live_historical_cutoffs_exclude_invalidated_and_unobserved(
     )
 
     async def exercise():
-        runtime = await create_runtime(config_path)
+        runtime = await create_runtime(
+            config_path, graphiti_client_factory=factory
+        )
         try:
             await runtime.graph.add_case(
                 case,
@@ -245,5 +295,261 @@ def test_live_historical_cutoffs_exclude_invalidated_and_unobserved(
             if entry.kind == "temporal_fact"
         }
         assert early_keys and early_keys.isdisjoint(late_keys)
+        assert {
+            json.loads(entry.payload).get("fact_id")
+            for entry in early.entries
+            if entry.kind == "temporal_fact"
+        } == {old_fact_id}
+        assert {
+            json.loads(entry.payload).get("fact_id")
+            for entry in late.entries
+            if entry.kind == "temporal_fact"
+        } == {new_fact_id}
+        assert {
+            json.loads(entry.payload).get("fact_id")
+            for entry in late.invalidated_entries
+            if entry.kind == "temporal_fact"
+        } == {old_fact_id}
+        assert factory.calls == [runtime.config.graphiti]
+        assert factory.llm_clients[0].response_models
+        assert factory.embedders[0].calls
+
+    run(exercise())
+
+
+def test_live_m1_relations_survive_cutoffs_and_registry_restart(
+    tmp_path, monkeypatch
+):
+    """Real Graphiti preserves M1 facts, relations and portable evidence."""
+    monkeypatch.setenv("PRISM_HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("GRAPHITI_TELEMETRY_ENABLED", "false")
+    _, config_path = live_config(tmp_path)
+    factory = DeterministicGraphitiClientFactory()
+    suffix = live_run_suffix()
+    case_id = f"live-m1-case-{suffix}"
+    old_material_id = f"live-m1-material-old-{suffix}"
+    new_material_id = f"live-m1-material-new-{suffix}"
+    old_fact_id = f"live-m1-fact-old-{suffix}"
+    new_fact_id = f"live-m1-fact-new-{suffix}"
+    supersedes_id = f"live-m1-supersedes-{suffix}"
+    contradicts_id = f"live-m1-contradicts-{suffix}"
+    revision_at = T0 + timedelta(days=3)
+    early_cutoff = revision_at - timedelta(seconds=1)
+    late_cutoff = revision_at + timedelta(days=1)
+    old_evidence = EvidenceLocator(
+        old_material_id,
+        f"corpus/live/{old_material_id}.md",
+        paragraph=1,
+        quote="The synthetic rate is three percent.",
+    )
+    new_evidence = EvidenceLocator(
+        new_material_id,
+        f"corpus/live/{new_material_id}.md",
+        paragraph=2,
+        quote="The synthetic rate is four percent.",
+    )
+    case = EvolutionCase(case_id, "policy", "Live M1 policy", T0, "active")
+    old_fact = TemporalFact(
+        "Synthetic Agency",
+        "sets rate",
+        "3%",
+        T0,
+        revision_at,
+        T0,
+        (old_material_id,),
+        0.91,
+        "source_explicit",
+        (old_evidence,),
+        old_fact_id,
+    )
+    new_fact = TemporalFact(
+        "Synthetic Agency",
+        "sets rate",
+        "4%",
+        revision_at,
+        None,
+        revision_at,
+        (new_material_id,),
+        0.93,
+        "source_explicit",
+        (new_evidence,),
+        new_fact_id,
+    )
+    supersedes = TemporalRelation(
+        supersedes_id,
+        "supersedes",
+        new_fact_id,
+        old_fact_id,
+        revision_at,
+        None,
+        revision_at,
+        (new_material_id,),
+        (new_evidence,),
+        0.93,
+        "source_explicit",
+    )
+    contradicts = TemporalRelation(
+        contradicts_id,
+        "contradicts",
+        new_fact_id,
+        old_fact_id,
+        revision_at,
+        None,
+        revision_at,
+        (old_material_id, new_material_id),
+        (old_evidence, new_evidence),
+        0.91,
+        "source_explicit",
+    )
+    materials = (
+        Material(
+            id=old_material_id,
+            title="Live M1 original notice",
+            source="example.gov",
+            published_at=T0,
+            fetched_at=T0,
+            type="policy",
+            content="Synthetic original notice.",
+            original_format="md",
+        ),
+        Material(
+            id=new_material_id,
+            title="Live M1 revision notice",
+            source="example.gov",
+            published_at=revision_at,
+            fetched_at=revision_at,
+            type="policy",
+            content="Synthetic revision notice.",
+            original_format="md",
+        ),
+    )
+
+    def payloads(timeline, kind):
+        return {
+            json.loads(entry.payload).get(
+                "fact_id" if kind == "temporal_fact" else "relation_id"
+            ): (entry, json.loads(entry.payload))
+            for entry in timeline.entries
+            if entry.kind == kind
+        }
+
+    def evidence_payload(locator):
+        return {
+            "source_id": locator.source_id,
+            "corpus_path": locator.corpus_path,
+            "paragraph": locator.paragraph,
+            "page": locator.page,
+            "quote": locator.quote,
+        }
+
+    async def exercise():
+        first = await create_runtime(
+            config_path, graphiti_client_factory=factory
+        )
+        try:
+            write = await first.graph.add_case(
+                case,
+                facts=(old_fact, new_fact),
+                relations=(supersedes, contradicts),
+                materials=materials,
+            )
+            assert len(write.added_keys) == 7
+            duplicate = await first.graph.add_case(
+                case,
+                facts=(old_fact, new_fact),
+                relations=(supersedes, contradicts),
+                materials=materials,
+            )
+            assert duplicate.added_keys == ()
+            assert set(duplicate.skipped_keys) == set(write.added_keys)
+            early = await first.graph.timeline(case_id, early_cutoff)
+            late = await first.graph.timeline(case_id, late_cutoff)
+        finally:
+            await first.close()
+
+        early_facts = payloads(early, "temporal_fact")
+        assert set(early_facts) == {old_fact_id}
+        assert payloads(early, "temporal_relation") == {}
+        assert not early.invalidated_entries
+
+        late_facts = payloads(late, "temporal_fact")
+        late_relations = payloads(late, "temporal_relation")
+        invalidated_facts = {
+            json.loads(entry.payload).get("fact_id"): (
+                entry,
+                json.loads(entry.payload),
+            )
+            for entry in late.invalidated_entries
+            if entry.kind == "temporal_fact"
+        }
+        assert set(late_facts) == {new_fact_id}
+        assert set(invalidated_facts) == {old_fact_id}
+        assert set(late_relations) == {supersedes_id, contradicts_id}
+        assert late_facts[new_fact_id][0].source_ids == (new_material_id,)
+        assert late_facts[new_fact_id][0].evidence == (new_evidence,)
+        assert late_facts[new_fact_id][1]["source_ids"] == [new_material_id]
+        assert late_facts[new_fact_id][1]["evidence"] == [
+            evidence_payload(new_evidence)
+        ]
+        assert invalidated_facts[old_fact_id][0].source_ids == (old_material_id,)
+        assert invalidated_facts[old_fact_id][0].evidence == (old_evidence,)
+        assert invalidated_facts[old_fact_id][1]["source_ids"] == [
+            old_material_id
+        ]
+        assert invalidated_facts[old_fact_id][1]["evidence"] == [
+            evidence_payload(old_evidence)
+        ]
+        assert late_relations[supersedes_id][0].source_ids == (new_material_id,)
+        assert late_relations[supersedes_id][0].evidence == (new_evidence,)
+        assert late_relations[supersedes_id][1]["source_ids"] == [
+            new_material_id
+        ]
+        assert late_relations[supersedes_id][1]["evidence"] == [
+            evidence_payload(new_evidence)
+        ]
+        assert late_relations[contradicts_id][0].source_ids == (
+            old_material_id,
+            new_material_id,
+        )
+        assert late_relations[contradicts_id][0].evidence == (
+            old_evidence,
+            new_evidence,
+        )
+        assert late_relations[contradicts_id][1]["source_ids"] == [
+            old_material_id,
+            new_material_id,
+        ]
+        assert late_relations[contradicts_id][1]["evidence"] == [
+            evidence_payload(old_evidence),
+            evidence_payload(new_evidence),
+        ]
+
+        second = await create_runtime(
+            config_path, graphiti_client_factory=factory
+        )
+        try:
+            restarted = await second.graph.timeline(case_id, late_cutoff)
+            rewrite = await second.graph.add_case(
+                case,
+                facts=(old_fact, new_fact),
+                relations=(supersedes, contradicts),
+                materials=materials,
+            )
+            assert rewrite.added_keys == ()
+            assert set(rewrite.skipped_keys) == set(write.added_keys)
+        finally:
+            await second.close()
+
+        assert [entry.episode_key for entry in restarted.entries] == [
+            entry.episode_key for entry in late.entries
+        ]
+        assert [entry.episode_key for entry in restarted.invalidated_entries] == [
+            entry.episode_key for entry in late.invalidated_entries
+        ]
+        assert factory.calls == [first.config.graphiti, second.config.graphiti]
+        assert factory.llm_clients[0].response_models
+        assert factory.llm_clients[1].response_models == []
+        assert all(embedder.calls for embedder in factory.embedders)
 
     run(exercise())

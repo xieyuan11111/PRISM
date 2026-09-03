@@ -45,15 +45,22 @@ def test_pyproject_keeps_default_dependencies_empty_and_graphiti_opt_in():
     assert pyproject["project"]["dependencies"] == []
     extras = pyproject["project"]["optional-dependencies"]
     assert "graphiti" in extras
-    assert extras["graphiti"] == ["graphiti-core", "neo4j"]
-    # No fabricated version bound may hide in the extra.
-    assert not any(">=" in item or "==" in item or "~=" in item for item in extras["graphiti"])
+    assert extras["graphiti"] == [
+        "graphiti-core==0.29.3",
+        "neo4j==6.3.0",
+        "httpx==0.28.1",
+    ]
+    # Versions are pinned only because these exact packages were exercised by
+    # the isolated live spike; the extra remains opt-in.
 
 
-def test_pyproject_graphiti_extra_is_documented_as_unverified():
+def test_pyproject_graphiti_extra_is_documented_as_live_pinned():
     text = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
     assert "graphiti-core" in text
-    assert "unverified" in text or "Phase B" in text
+    assert "0.29.3" in text
+    assert "6.3.0" in text
+    assert "0.28.1" in text
+    assert "opt-in" in text
 
 
 def test_template_files_contain_no_absolute_host_paths_or_secrets():
@@ -186,15 +193,16 @@ def test_spike_plan_covers_names_ports_preflight_side_effects_rollback_acceptanc
     assert "rollback" in text.lower()
     assert "acceptance criteria" in text.lower()
     plain = re.sub(r"\s+", " ", re.sub(r"(?m)^\s*>\s?", "", text.replace("**", "")))
-    assert "not been validated" in plain
+    assert "three opt-in integration tests" in plain
     assert "PRISM_GRAPHITI_PASSWORD" in text
     assert "PRISM_GRAPHITI_URI" in text
 
 
-def test_readme_is_honest_that_real_graphiti_is_not_validated():
+def test_readme_is_honest_about_real_graphiti_validation_boundary():
     readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
 
-    assert "not yet validated" in readme
+    assert "passed three live tests" in readme
+    assert "not-yet-verified" in readme
     assert "deploy/graphiti-spike/" in readme
     assert "docs/graphiti-spike-plan.md" in readme
     assert "PRISM_GRAPHITI_URI" in readme

@@ -11,6 +11,7 @@ TypeError wrap never echoes the password.
 
 from __future__ import annotations
 
+import asyncio
 import builtins
 import sys
 from types import ModuleType
@@ -18,7 +19,10 @@ from types import ModuleType
 import pytest
 
 from prism.config import GraphitiConfig
-from prism.graph.graphiti_client import build_graphiti_client
+from prism.graph.graphiti_client import (
+    GRAPHITI_SEARCH_NUM_RESULTS,
+    build_graphiti_client,
+)
 
 URI = "bolt://prism-graphiti-spike:7688"
 USERNAME = "prism-user"
@@ -89,6 +93,81 @@ def test_build_graphiti_client_never_forwards_database_or_neo4j_kwargs(monkeypat
     assert list(calls[0]) == ["uri", "user", "password"]
     assert "database" not in calls[0]
     assert not any(key.startswith("neo4j_") for key in calls[0])
+
+
+def test_build_graphiti_client_forwards_explicit_model_clients(monkeypatch):
+    """A live-test factory can replace every provider Graphiti defaults to.
+
+    These sentinels deliberately are not real provider clients: this unit test
+    only pins constructor injection and cannot touch Neo4j, an LLM, embeddings,
+    or a reranker.
+    """
+    monkeypatch.setenv(PASSWORD_ENV, PASSWORD)
+    calls: list[dict[str, object]] = []
+    client = object()
+    llm_client = object()
+    embedder = object()
+    cross_encoder = object()
+
+    def fake_graphiti(**kwargs):
+        calls.append(kwargs)
+        return client
+
+    install_fake_graphiti(monkeypatch, fake_graphiti)
+
+    assert (
+        build_graphiti_client(
+            config(),
+            llm_client=llm_client,
+            embedder=embedder,
+            cross_encoder=cross_encoder,
+        )
+        is client
+    )
+    assert calls == [
+        {
+            "uri": URI,
+            "user": "neo4j",
+            "password": PASSWORD,
+            "llm_client": llm_client,
+            "embedder": embedder,
+            "cross_encoder": cross_encoder,
+        }
+    ]
+
+
+def test_build_graphiti_client_expands_omitted_search_window(monkeypatch):
+    """Timeline search never silently inherits Graphiti's small default."""
+    monkeypatch.setenv(PASSWORD_ENV, PASSWORD)
+
+    class SearchableClient:
+        marker = object()
+
+        def __init__(self):
+            self.calls: list[dict[str, object]] = []
+
+        async def search(self, query, **kwargs):
+            self.calls.append({"query": query, **kwargs})
+            return ["result"]
+
+    raw_client = SearchableClient()
+    install_fake_graphiti(monkeypatch, lambda **kwargs: raw_client)
+
+    client = build_graphiti_client(config())
+    result = asyncio.run(client.search("timeline", group_ids=["neo4j"]))
+
+    assert result == ["result"]
+    assert client.marker is raw_client.marker
+    assert raw_client.calls == [
+        {
+            "query": "timeline",
+            "center_node_uuid": None,
+            "group_ids": ["neo4j"],
+            "num_results": GRAPHITI_SEARCH_NUM_RESULTS,
+            "search_filter": None,
+            "driver": None,
+        }
+    ]
 
 
 def test_build_graphiti_client_typeerror_wrap_does_not_leak_password(monkeypatch):

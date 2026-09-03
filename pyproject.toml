@@ -17,16 +17,19 @@ dev = [
     "pytest>=8.0",
 ]
 
-# Phase A (Graphiti/Neo4j spike): the graphiti extra is opt-in and NEVER part of
-# the default install; PRISM's default runtime stays fully offline without it.
-# Version bounds are deliberately left unpinned: PRISM has not yet installed or
-# verified graphiti-core/neo4j against a live server (offline Phase A), so any
-# lower bound asserted here would be unverified. Confirm the real minimum
-# versions during the Phase B live spike (docs/graphiti-spike-plan.md) and pin
-# them conservatively afterwards.
+# Graphiti/Neo4j remains opt-in and is NEVER part of the default install;
+# PRISM's default runtime stays fully offline without it. Pinned to the
+# versions verified in the Phase B live spike (docs/graphiti-spike-plan.md,
+# 2026-09-03): graphiti-core 0.29.3 and the neo4j Python driver 6.3.0.
+# httpx is listed because graphiti-core 0.29.3 imports httpx unconditionally
+# at package import (its LLM client base) yet never declares it in its own
+# metadata - it only arrives transitively via graphiti-core's openai
+# dependency; 0.28.1 is the version the spike installed and verified. The
+# spike's pytest run is deliberately NOT part of this extra.
 graphiti = [
-    "graphiti-core",
-    "neo4j",
+    "graphiti-core==0.29.3",
+    "neo4j==6.3.0",
+    "httpx==0.28.1",
 ]
 
 [tool.setuptools.packages.find]

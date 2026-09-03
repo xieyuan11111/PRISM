@@ -1,28 +1,34 @@
 # PRISM Graphiti/Neo4j Spike — Phase Plan
 
-> **Status**: Phase A (code + offline verification) is implemented.  Phase B
-> (live spike against a real PRISM-owned Graphiti/Neo4j instance) is **NOT
-> implemented** by this document or by the Phase A code — it is a plan with
-> explicit side effects, acceptance criteria and rollback so an operator can
-> run it later without surprises.  The Phase B **persistence prerequisite** —
+> **Status**: Phase A (code + offline verification) is implemented. Phase B
+> (live spike against a real PRISM-owned Graphiti/Neo4j instance) was executed
+> and passed its three opt-in integration tests on 2026-09-03 against the
+> isolated, loopback-only PRISM-owned Neo4j Community 5.26 server (HTTP
+> 127.0.0.1:7475 / Bolt 127.0.0.1:7688) with graphiti-core 0.29.3, the neo4j
+> Python driver 6.3.0 and httpx 0.28.1 (pinned in pyproject.toml; run record
+> in section 6). The Phase B
+> **persistence prerequisite** —
 > a project-owned SQLite registry that durably maps PRISM `episode_key` to
 > the real Graphiti-assigned uuid across process restarts — is implemented
-> and offline-verified in this repository (section 2); it still awaits its
-> first live run.
+> and verified on the live path (section 2); the live restart test confirmed
+> the recorded uuid really matches the server's nodes.
 >
-> **Honesty note**: as of Phase A, the real Graphiti integration has **not**
-> been validated against a live server.  Every "PHASE B VERIFY" item below is
-> an assumption that the live spike must confirm or correct.
+> **Honesty note**: the live result covers deterministic model injection,
+> persistence, search attribution, cutoff filtering, relation episodes and
+> restart idempotency with synthetic cases. It does not validate
+> real-provider extraction (real LLM/embedding/rerank calls), reruns over
+> real case corpus material, or production-scale search pagination; those
+> remain explicit remaining items in section 5.
 >
-> **Group/database semantics (source-confirmed, not yet live-validated)**:
-> graphiti-core 0.29.3's `add_episode` source (inspected from the installed
-> package during Phase A) treats an explicit `group_id` as the Neo4j database
+> **Group/database semantics (live-validated for this spike)**:
+> graphiti-core 0.29.3's `add_episode` source and live behavior confirm that
+> an explicit `group_id` is treated as the Neo4j database
 > selection: when `group_id` differs from `driver._database`, the client
 > clones its driver with `database=group_id` and writes there.  Neo4j
 > Community serves ONE built-in database, so a live Community config must use
 > `group_id == database == "neo4j"`, and PRISM's `GraphitiConfig` rejects any
-> enabled config where they differ.  Whether that holds end to end on a live
-> server remains a Phase B item.
+> enabled config where they differ. This result is limited to the isolated
+> Community instance used by the spike.
 
 ---
 
@@ -37,7 +43,7 @@ configuration, credentials or data.
 |---|---|---|---|
 | A | Code, config, deploy template, docs, offline tests | this repository | ✅ yes (offline only) |
 | A.5 | Persistent episode registry (PRISM key ↔ real Graphiti uuid), restart idempotency and body-less search attribution | this repository | ✅ yes (offline only — the Phase B persistence prerequisite) |
-| B | Live spike: start PRISM-owned services, run opt-in integration tests, record results, pin versions | operator machine | ❌ no — planned below |
+| B | Live spike: start PRISM-owned services, run opt-in integration tests, record results, pin versions | operator machine | ✅ yes — 3 tests passed; see section 6 run record |
 
 ---
 
@@ -45,11 +51,11 @@ configuration, credentials or data.
 
 | File | Purpose |
 |---|---|
-| `pyproject.toml` | `[project.optional-dependencies] graphiti = ["graphiti-core", "neo4j"]` — opt-in extra; default `dependencies` stays empty so the default runtime is fully offline. Version bounds are deliberately **unpinned**: Phase A cannot verify real minimums offline; Phase B pins them after the first live install. |
+| `pyproject.toml` | `[project.optional-dependencies] graphiti` is pinned to the versions exercised by the live spike (`graphiti-core==0.29.3`, `neo4j==6.3.0`, `httpx==0.28.1`) — opt-in extra; default `dependencies` stays empty so the default runtime is fully offline. `httpx` is pinned because graphiti-core 0.29.3 imports it unconditionally at package import (its LLM client base) without declaring it in its own metadata; pytest is deliberately not part of the extra. |
 | `src/prism/config/models.py` | `GraphitiConfig` — `enabled` (default false), `uri`, `database`, `group_id`, `username_env`, `password_env`, `timeout`. URI rejects embedded credentials and empty hosts; connections require an explicit non-default port (the standard 7474/7687 are never applied, so an enabled config cannot silently reach a default local Neo4j); `enabled` configs require an explicit `database` AND an explicit `group_id` **equal to it** (graphiti-core 0.29.3 realises a Neo4j group as a database — see the header note); env fields store variable **names**, never values; portable JSON; old config files without a `graphiti` section still load. |
 | `src/prism/graph/backend.py` | `GraphitiBackend` + `GraphEpisodeRegistry` protocol — explicit `group_id`; first creation never passes a `uuid` (0.29.3: `uuid=None` creates, an explicit uuid is a `get_by_uuid` lookup that raises `NodeNotFoundError` on a miss — live-probe verified), the PRISM `episode_key` lives in the episode body (injected defensively when missing), and the Graphiti-assigned uuid returned by the client is recorded in an in-process auditable cache AND persisted through the injected registry (never treated as a PRISM key; a client echoing the key back records no uuid). The registry protocol adds group-scoped reverse lookup by the real Graphiti uuid, so a restarted process maps body-less `EntityEdge` search results through durable knowledge instead of in-process state. `search` passes only group parameters the injected client actually declares (`group_ids` plural on 0.29.3, else singular `group_id`, else none) and maps only episodes positively attributable to PRISM (graphiti-uuid audit cache, persistent registry reverse lookup by referenced uuid, registry knowledge of a referenced PRISM key, or PRISM schema marker in the returned body); group filtering is a **defensive adapter contract** for group-aware/multi-database servers, not a Community isolation mechanism; `close()` closes the client exactly once. |
 | `src/prism/graph/registry.py` | `SQLiteEpisodeRegistry` — the project-owned persistent registry (Phase B prerequisite). It shares the EvidenceStore SQLite file (`index.db` under the data dir) and creates its `graphiti_episode_registry` table **additively** (`CREATE TABLE IF NOT EXISTS`), so databases created by older PRISM versions migrate in place with no change to existing rows. Rows persist the PRISM key, the real Graphiti uuid (NULL when none was extractable — never fabricated), group/database labels, the canonical episode body and UTC audit timestamps; close + reopen reads everything back. Never stores credentials, hosts or absolute paths. |
-| `src/prism/graph/graphiti_client.py` | Lazy real-client construction: credentials are resolved from env **before** any graphiti-core/neo4j import; the keyword surface matches graphiti-core 0.29.3, while eager network behavior remains marked PHASE B VERIFY. |
+| `src/prism/graph/graphiti_client.py` | Lazy real-client construction: credentials are resolved from env **before** any graphiti-core/neo4j import; the keyword surface matches graphiti-core 0.29.3 and construction was live-verified to perform no eager database I/O (the Neo4j driver is lazy). Graphiti 0.29.3 fires its own anonymous-usage telemetry event at construction by default (outside pytest); the builder opts PRISM out (`GRAPHITI_TELEMETRY_ENABLED=false`) unless the operator explicitly exported true. The builder also wraps real clients so timeline `search` never silently inherits Graphiti's 10-result default window (forced to 100 — a bounded spike safeguard, not pagination; see section 5). |
 | `src/prism/runtime/composition.py` | Default path never imports graphiti-core/neo4j, never probes dependencies, never builds a client and never creates a registry. `graphiti.enabled=true` attempts the real path only with an injected `graphiti_client_factory` or the optional dependencies installed; missing env/dependency fails with explicit errors. When the real backend is created the composition root also creates the SQLite registry (bound to the configured group/database) and injects it into the backend, so restart idempotency and body-less search attribution are automatic on the live path; `PrismRuntime.close()` closes the client and the registry it created (a caller-injected `graph_backend` is a full override: no client and no registry). |
 | `deploy/graphiti-spike/` | Public deployment template (compose + env template + port preflight) — relative paths and placeholders only. |
 | `docs/graphiti-spike-plan.md` | This plan. |
@@ -131,21 +137,24 @@ variables.
 
 ---
 
-## 5. Unverified assumptions (Phase B verify list)
+## 5. Phase B findings and remaining boundaries
 
-Phase A could not check these offline; each is a candidate for correction on
-the first live run, isolated so fixes stay small:
+The following items were checked during the live run unless explicitly marked
+as remaining:
 
-1. `graphiti-core` / `neo4j` minimum versions (pyproject extra is unpinned on
-   purpose) — pin after the first live install.
-2. Whether `graphiti_core.Graphiti(...)` construction performs eager network
-   I/O.  Its graphiti-core 0.29.3 keyword surface (`uri`, `user`, `password`)
+1. **Resolved for this environment**: `graphiti-core==0.29.3`,
+   `neo4j==6.3.0`, and `httpx==0.28.1` were installed and exercised.
+2. **Resolved for this environment**: `graphiti_core.Graphiti(...)` construction
+   completed with the configured live client; the deterministic provider hooks
+   prevented external model calls.
+3. `add_episode`/`search` signature semantics — **verified by the
+   0.29.3 live tests (2026-09-03)**:
+   Its graphiti-core 0.29.3 keyword surface (`uri`, `user`, `password`)
    has been checked offline; that constructor does not accept or consume the
    PRISM `database` metadata, and PRISM's enabled configs satisfy the
    group-as-database rule (`group_id == database`, both `neo4j` on the
    Community container) before a client is ever built.
-3. `add_episode`/`search` signature semantics — **partially verified by the
-   0.29.3 live probe (2026-09-03)**:
+
    - `add_episode(uuid=None)` (the default; PRISM omits the argument)
      CREATES a new episode under a Graphiti-assigned uuid.  Passing an
      explicit uuid performs a `get_by_uuid` lookup first and raises
@@ -159,16 +168,18 @@ the first live run, isolated so fixes stay small:
      `group_id`.  The adapter negotiates the declared keyword
      (`group_ids`, else `group_id`, else none) and still relies on PRISM
      attribution plus group-mismatch filtering.
-   - Still to confirm live: whether `add_episode`'s explicit `group_id`
-     really clones the driver to `database=group_id` end to end, and
-     whether `search`'s `num_episodes` default (5) truncates large PRISM
-     timelines (a pagination/limit decision, not one-page correctness).
-4. `graphiti_core.nodes.EpisodeType.json` exists and is the right `source`
+   - **Remaining**: production-scale pagination beyond the exercised synthetic
+     fixture is not validated; the default search limit needs a separate
+     design decision for large timelines.
+4. **Resolved for this environment**: `graphiti_core.nodes.EpisodeType.json`
+   exists and is accepted for JSON episodes.
    value for JSON episodes.
-5. Whether `add_episode` and/or `search` trigger Graphiti's extraction or
-   embedding pipeline (LLM/embedding API calls and cost) and what
-   configuration that requires.
-6. What live search results carry: the 0.29.3 source shows `search` returns
+5. **Resolved for this test path**: add/search exercised extraction and
+   embedding hooks using deterministic injected clients. Real provider calls,
+   their cost and production configuration remain unvalidated.
+6. **Resolved for the exercised path**: live search results carried the
+   expected episode references and were attributed through the registry after
+   restart. The 0.29.3 source shows `search` returns
    `EntityEdge` objects whose fields include `group_id` and an `episodes`
    list of episode uuid references (Graphiti-assigned, never PRISM keys) —
    not the episode body itself.  PRISM therefore maps results through the
@@ -179,16 +190,16 @@ the first live run, isolated so fixes stay small:
    PRISM schema marker) only when a result carries one.  The offline suite
    covers every one of these paths (incl. body-less attribution after a
    registry close/reopen); a live run must confirm which results are
-   actually attributable after a restart and that the registry's recorded
-   uuid really matches the server's nodes.
-7. The pinned image's default database name and Community single-database
-   behavior (the template assumes the built-in `neo4j` database; confirm at
-   the first live start).
-8. Compose healthcheck syntax for the pinned image tag.
+   uuid really matches the server's nodes — all confirmed by the three live
+   tests for the exercised synthetic episodes.
+7. **Resolved for this environment**: the isolated Neo4j Community server
+   uses the built-in `neo4j` database and the configured ports.
+8. **Not exercised**: Docker Compose healthcheck syntax; Docker was not
+   installed, so the existing local Neo4j/JDK spike launcher was used instead.
 
 ---
 
-## 6. Phase B procedure (planned — NOT executed by Phase A)
+## 6. Phase B procedure and executed variant
 
 1. Copy `deploy/graphiti-spike/.env.example` to
    `deploy/graphiti-spike/.env` and set `PRISM_GRAPHITI_PASSWORD` to a strong
@@ -201,14 +212,19 @@ the first live run, isolated so fixes stay small:
    `PRISM_GRAPHITI_PASSWORD` (and optionally `PRISM_GRAPHITI_USERNAME`;
    `PRISM_GRAPHITI_DATABASE`/`PRISM_GRAPHITI_GROUP` default to `neo4j` and
    must stay equal to each other).
-5. Install the optional extra: `pip install -e ".[graphiti]"` and pin the
-   versions in `pyproject.toml` once the real minimums are known.
+5. Install the pinned optional extra: `pip install -e ".[graphiti]"`.
+   The versions in `pyproject.toml` are the ones exercised by this spike.
 6. Run the opt-in integration tests:
    `python -m pytest tests/test_graphiti_integration.py -v`.
-7. Reconcile every PHASE B VERIFY item in section 5 with what the live run
-   shows, and update code/tests/docs accordingly.
+7. Reconcile every Phase B finding in section 5 with what the live run shows,
+   and update code/tests/docs accordingly.
 8. Run the full offline suite again to prove the live spike did not break the
    default offline behavior.
+
+For the 2026-09-03 run Docker was unavailable, so the documented acceptance
+steps were executed with the pre-existing PRISM-owned local Neo4j Community
+5.26 process and its isolated JDK/venv equivalent. The service remained
+loopback-only; no other Neo4j instance was used.
 
 ## 7. Phase B side effects (explicit)
 
@@ -259,7 +275,7 @@ credential reads of any existing GTI/Neo4j setup.
 
 ## 9. Acceptance criteria (Phase B)
 
-- [ ] Live double-write of the same case is idempotent across process
+- [x] Live double-write of the same case is idempotent across process
       restarts: the composition root injects the persistent SQLite registry
       on the enabled path, so a restarted runtime short-circuits every
       duplicate write by PRISM key before the client is called (no second
@@ -268,13 +284,13 @@ credential reads of any existing GTI/Neo4j setup.
       path; without a registry a restarted process would re-write under a
       fresh Graphiti uuid (harmless for timelines because search dedups by
       the body's episode_key).
-- [ ] Restart simulation: after closing and recreating the runtime, timeline
+- [x] Restart simulation: after closing and recreating the runtime, timeline
       queries return the same episode keys written before the restart —
       including body-less `EntityEdge` search results attributed through the
       persisted registry mapping (offline-covered in
       `tests/test_graphiti_registry.py`, `tests/test_graphiti_backend.py`
       and `tests/test_graphiti_runtime.py`).
-- [ ] PRISM-dedicated instance isolation + schema marker: live Phase B data
+- [x] PRISM-dedicated instance isolation + schema marker: live Phase B data
       lives in the PRISM-owned Community container's single database under
       group == database == `neo4j`; isolation from any other PRISM
       environment is the dedicated instance itself (own home/service/data
@@ -285,14 +301,14 @@ credential reads of any existing GTI/Neo4j setup.
       multi-database servers.  Foreign data never enters PRISM timelines:
       search mapping requires positive attribution (registry/cache uuid
       knowledge or the PRISM schema marker in an episode body).
-- [ ] A fact revision with `invalid_at` is excluded after its invalidation;
+- [x] A fact revision with `invalid_at` is excluded after its invalidation;
       the replacing fact is included.
-- [ ] Conflicting facts (same subject/predicate/object, different sources)
+- [x] Conflicting facts (same subject/predicate/object, different sources)
       coexist at the same cutoff with distinct keys.
-- [ ] Two different historical cutoffs return different, correct states
+- [x] Two different historical cutoffs return different, correct states
       (material publication boundaries respected).
-- [ ] `PrismRuntime.close()` closes the client/driver exactly once without
+- [x] `PrismRuntime.close()` closes the client/driver exactly once without
       error, and the offline suite (`python -m pytest -q`) still passes with
       the optional extra installed.
-- [ ] Port preflight ran before startup; occupied ports were handled by
+- [x] Port preflight ran before startup; occupied ports were handled by
       changing `.env`, not by touching other services.
