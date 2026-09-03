@@ -274,6 +274,7 @@ def test_strict_extraction_accepts_only_source_bound_temporal_relations():
     body = "A review explicitly triggered the revised status."
     source = material("revision", T2, body)
     payload = {
+        "material_role": "policy_source",
         "case": {
             "case_id": "m1-case", "case_type": "policy",
             "canonical_name": "M1", "start_at": T1.isoformat(),

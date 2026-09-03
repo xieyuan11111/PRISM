@@ -7,6 +7,7 @@ from .service import (
     ExtractionEvidenceMatch,
     ExtractionResult,
     ExtractionService,
+    MATERIAL_ROLES,
 )
 
 __all__ = [
@@ -16,4 +17,5 @@ __all__ = [
     "ExtractionEvidenceMatch",
     "ExtractionResult",
     "ExtractionService",
+    "MATERIAL_ROLES",
 ]

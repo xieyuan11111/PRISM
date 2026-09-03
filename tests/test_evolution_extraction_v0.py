@@ -97,6 +97,7 @@ def evidence(quote, paragraph, page=None):
 def small_payload(evidence_entries):
     """A minimal strict payload with one evidence-bound proposal node."""
     return {
+        "material_role": "policy_source",
         "case": {
             "case_id": "case-disclosure",
             "case_type": "policy",
@@ -130,6 +131,7 @@ def small_payload(evidence_entries):
 
 def payload():
     return {
+        "material_role": "policy_source",
         "case": {
             "case_id": "case-disclosure",
             "case_type": "policy",
@@ -237,6 +239,9 @@ def test_extract_material_handles_multiple_events_and_keeps_three_time_axes():
     prompt = router.calls[0][1]
     assert "happened_at" in prompt and "valid_at" in prompt and "observed_at" in prompt
     assert "publication" in prompt and "substantive" in prompt
+    assert "material_role" in prompt
+    assert "review" in prompt and "primary_study" in prompt
+    assert "cited_prior_research" in prompt
 
 
 def test_prediction_is_a_claim_not_a_confirmed_fact():
@@ -270,8 +275,51 @@ def test_quote_location_failure_is_an_explicit_gap_and_candidate_never_reaches_o
     assert "quote" in result.evidence_gaps[0].detail
 
 
+def test_invalid_node_assertion_type_drops_only_that_candidate_as_validation_gap():
+    bad = payload()
+    bad["nodes"][1]["assertion_type"] = "claim"
+
+    result = run(
+        service(bad)[0].extract_material(
+            material(), corpus_path="corpus/2026-03/disclosure.md"
+        )
+    )
+
+    assert [node.id for node in result.nodes] == ["proposal"]
+    assert result.case.node_ids == ("proposal",)
+    assert result.temporal_facts[0].object == "implemented"
+    assert result.claims[0].claim_id == "forecast"
+    gap = next(gap for gap in result.evidence_gaps if gap.item_id == "implementation")
+    assert gap.gap_type == "candidate_validation_failed"
+    assert gap.item_kind == "node"
+    assert "assertion_type must be 'fact'" in gap.detail
+
+
+def test_node_before_case_start_drops_only_that_candidate_without_changing_time():
+    bad = payload()
+    original_time = "2025-12-31T00:00:00+00:00"
+    bad["nodes"][0]["happened_at"] = original_time
+    bad["nodes"][0]["valid_at"] = original_time
+
+    result = run(
+        service(bad)[0].extract_material(
+            material(), corpus_path="corpus/2026-03/disclosure.md"
+        )
+    )
+
+    assert [node.id for node in result.nodes] == ["implementation"]
+    assert result.case.node_ids == ("implementation",)
+    assert all(node.happened_at.isoformat() != original_time for node in result.nodes)
+    gap = next(gap for gap in result.evidence_gaps if gap.item_id == "proposal")
+    assert gap.gap_type == "candidate_validation_failed"
+    assert gap.item_kind == "node"
+    assert "happened_at must not be earlier than case.start_at" in gap.detail
+    assert all("nodes[0]" not in match.path for match in result.evidence_matches)
+
+
 def test_no_substantive_change_does_not_fabricate_a_publication_node():
     empty = {
+        "material_role": "news_report",
         "case": None,
         "nodes": [],
         "temporal_facts": [],
@@ -288,6 +336,276 @@ def test_no_substantive_change_does_not_fabricate_a_publication_node():
 
     assert result.case is None and result.nodes == ()
     assert result.evidence_gaps[0].gap_type == "no_substantive_evolution"
+
+
+def test_review_cited_research_is_context_not_graph_evolution():
+    review_body = (
+        "A 2020 study reported that the intervention doubled recovery.\n\n"
+        "In this review, the authors conclude that the evidence remains mixed."
+    )
+    review = material(
+        title="Evidence synthesis",
+        type="academic",
+        content=review_body,
+    )
+    extracted = {
+        "material_role": "review",
+        "case": {
+            "case_id": "case-disclosure",
+            "case_type": "academic_discourse",
+            "canonical_name": "Intervention evidence",
+            "start_at": "2020-01-01T00:00:00+00:00",
+            "status": "mixed",
+            "node_ids": ["review-publication"],
+        },
+        "nodes": [
+            {
+                "id": "review-publication",
+                "case_id": "case-disclosure",
+                "node_type": "publication",
+                "assertion_type": "fact",
+                "happened_at": PUBLISHED.isoformat(),
+                "valid_at": PUBLISHED.isoformat(),
+                "observed_at": PUBLISHED.isoformat(),
+                "summary": "The review published its synthesis.",
+                "source_ids": ["material-evolution"],
+                "claim_ids": ["review-conclusion"],
+                "provenance_type": "material_publication",
+                "evidence": evidence(
+                    "In this review, the authors conclude that the evidence remains mixed.",
+                    2,
+                ),
+            }
+        ],
+        "temporal_facts": [
+            {
+                "fact_id": "prior-result",
+                "subject": "Intervention",
+                "predicate": "recovery effect",
+                "object": "doubled recovery",
+                "assertion_type": "fact",
+                "valid_at": "2020-01-01T00:00:00+00:00",
+                "invalid_at": None,
+                "observed_at": PUBLISHED.isoformat(),
+                "source_ids": ["material-evolution"],
+                "confidence": 0.9,
+                "provenance_type": "cited_prior_research",
+                "evidence": evidence(
+                    "A 2020 study reported that the intervention doubled recovery.",
+                    1,
+                ),
+            }
+        ],
+        "claims": [
+            {
+                "claim_id": "prior-claim",
+                "actor": "2020 study authors",
+                "proposition": "The intervention doubled recovery.",
+                "stance": "support",
+                "claim_type": "interpretation",
+                "stated_at": "2020-01-01T00:00:00+00:00",
+                "observed_at": PUBLISHED.isoformat(),
+                "based_on": ["material-evolution"],
+                "revised_by": None,
+                "provenance_type": "cited_prior_research",
+                "confidence": 0.9,
+                "evidence": evidence(
+                    "A 2020 study reported that the intervention doubled recovery.",
+                    1,
+                ),
+            },
+            {
+                "claim_id": "review-conclusion",
+                "actor": "Review authors",
+                "proposition": "The evidence remains mixed.",
+                "stance": "uncertain",
+                "claim_type": "interpretation",
+                "stated_at": PUBLISHED.isoformat(),
+                "observed_at": PUBLISHED.isoformat(),
+                "based_on": ["material-evolution"],
+                "revised_by": None,
+                "provenance_type": "current_author_interpretation",
+                "confidence": 0.8,
+                "evidence": evidence(
+                    "In this review, the authors conclude that the evidence remains mixed.",
+                    2,
+                ),
+            },
+        ],
+        "conflicts": [],
+        "relations": [],
+        "warnings": [],
+    }
+
+    result = run(
+        service(extracted)[0].extract_material(
+            review, corpus_path="corpus/2026-03/review.md"
+        )
+    )
+
+    assert result.material_role == "review"
+    assert [node.id for node in result.nodes] == ["review-publication"]
+    assert result.temporal_facts == ()
+    assert [claim.claim_id for claim in result.claims] == ["review-conclusion"]
+    assert {gap.item_id for gap in result.evidence_gaps} >= {
+        "prior-result",
+        "prior-claim",
+    }
+    assert any(
+        "review/synthesis context" in warning for warning in result.warnings
+    )
+
+    backend = OfflineBackend()
+    write = run(
+        GraphService(backend).add_case(
+            result.case,
+            nodes=result.nodes,
+            facts=result.temporal_facts,
+            claims=result.claims,
+            relations=result.relations,
+            conflicts=result.conflicts,
+            materials=(review,),
+        )
+    )
+    assert not any(episode.kind == "temporal_fact" for episode in write.episodes)
+    assert not any("prior-claim" in episode.episode_body for episode in write.episodes)
+    assert sum(
+        episode.kind == "evolution_node" for episode in write.episodes
+    ) == 1
+
+
+def test_review_current_author_temporal_revision_is_allowed_with_exact_evidence():
+    comparison = (
+        "Comparing the 2020 and 2026 evidence, we revise the earlier conclusion."
+    )
+    review = material(type="academic", content=comparison)
+    extracted = small_payload(evidence(comparison, 1))
+    extracted["material_role"] = "synthesis"
+    extracted["case"]["case_type"] = "academic_discourse"
+    extracted["case"]["node_ids"] = ["revision"]
+    extracted["nodes"][0].update(
+        {
+            "id": "revision",
+            "node_type": "revision",
+            "summary": "The synthesis revises the earlier conclusion.",
+            "provenance_type": "current_author_temporal_synthesis",
+        }
+    )
+
+    result = run(
+        service(extracted)[0].extract_material(
+            review, corpus_path="corpus/2026-03/synthesis.md"
+        )
+    )
+
+    assert result.material_role == "synthesis"
+    assert [node.id for node in result.nodes] == ["revision"]
+    assert result.evidence_gaps == ()
+
+
+def test_review_publication_alone_cannot_create_an_empty_shell_case():
+    review_text = "This review summarizes the available literature."
+    review = material(type="academic", content=review_text)
+    extracted = small_payload(evidence(review_text, 1))
+    extracted["material_role"] = "review"
+    extracted["case"]["case_type"] = "academic_discourse"
+    extracted["case"]["node_ids"] = ["review-publication"]
+    extracted["nodes"][0].update(
+        {
+            "id": "review-publication",
+            "node_type": "publication",
+            "summary": "The review was published.",
+            "provenance_type": "material_publication",
+        }
+    )
+
+    result = run(
+        service(extracted)[0].extract_material(
+            review, corpus_path="corpus/2026-03/publication-only-review.md"
+        )
+    )
+
+    assert result.case is None
+    assert result.nodes == ()
+    assert any(
+        gap.gap_type == "no_substantive_evolution"
+        for gap in result.evidence_gaps
+    )
+    assert any("publication-only" in warning for warning in result.warnings)
+
+
+@pytest.mark.parametrize("role", ["primary_study", "policy_source", "news_report"])
+def test_non_review_role_is_not_changed_by_review_like_title(role):
+    primary = payload()
+    primary["material_role"] = role
+
+    result = run(
+        service(primary)[0].extract_material(
+            material(title="A review of the disclosure experiment"),
+            corpus_path="corpus/2026-03/primary.md",
+        )
+    )
+
+    assert result.material_role == role
+    assert [node.id for node in result.nodes] == ["proposal", "implementation"]
+    assert len(result.temporal_facts) == 1
+
+
+def test_unknown_material_role_is_rejected():
+    candidate = payload()
+    candidate["material_role"] = "opinion_piece"
+
+    with pytest.raises(ExtractionError, match="material_role"):
+        run(
+            service(candidate)[0].extract_material(
+                material(), corpus_path="corpus/2026-03/invalid-role.md"
+            )
+        )
+
+
+def test_strict_extraction_requires_material_role():
+    candidate = payload()
+    del candidate["material_role"]
+
+    with pytest.raises(ExtractionError, match="missing required field.*material_role"):
+        run(
+            service(candidate)[0].extract_material(
+                material(), corpus_path="corpus/2026-03/missing-role.md"
+            )
+        )
+
+
+@pytest.mark.parametrize("missing", ["case", "nodes", "temporal_facts", "claims", "conflicts"])
+def test_candidate_recovery_never_fills_missing_top_level_fields(missing):
+    candidate = payload()
+    del candidate[missing]
+
+    with pytest.raises(ExtractionError, match="missing required field"):
+        run(
+            service(candidate)[0].extract_material(
+                material(), corpus_path="corpus/2026-03/missing-top-level.md"
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda candidate: candidate.update({"case": []}),
+        lambda candidate: candidate["case"].pop("start_at"),
+        lambda candidate: candidate["case"].update({"explanation": "untrusted"}),
+    ],
+)
+def test_candidate_recovery_never_downgrades_unsafe_case_structure(mutation):
+    candidate = payload()
+    mutation(candidate)
+
+    with pytest.raises(ExtractionError):
+        run(
+            service(candidate)[0].extract_material(
+                material(), corpus_path="corpus/2026-03/unsafe-case.md"
+            )
+        )
 
 
 def test_source_conflict_is_preserved_with_verified_evidence():
@@ -389,7 +707,7 @@ def test_conflict_with_one_valid_alternative_becomes_an_auditable_gap():
         ["increased", None],
     ],
 )
-def test_conflict_alternative_recovery_does_not_relax_other_shape_rules(
+def test_invalid_conflict_shape_drops_only_that_candidate_as_validation_gap(
     alternatives,
 ):
     conflicted = payload()
@@ -407,12 +725,18 @@ def test_conflict_alternative_recovery_does_not_relax_other_shape_rules(
         }
     ]
 
-    with pytest.raises(ExtractionError, match="alternatives"):
-        run(
-            service(conflicted)[0].extract_material(
-                material(), corpus_path="corpus/2026-03/disclosure.md"
-            )
+    result = run(
+        service(conflicted)[0].extract_material(
+            material(), corpus_path="corpus/2026-03/disclosure.md"
         )
+    )
+
+    assert result.conflicts == ()
+    assert [node.id for node in result.nodes] == ["proposal", "implementation"]
+    gap = next(gap for gap in result.evidence_gaps if gap.item_kind == "conflict")
+    assert gap.gap_type == "candidate_validation_failed"
+    assert gap.item_id == "adoption-direction"
+    assert "alternatives" in gap.detail
 
 
 @pytest.mark.parametrize("invalid_boundary", ["source", "evidence"])
@@ -452,28 +776,124 @@ def test_conflict_alternative_recovery_still_enforces_evidence_boundaries(
 
 
 @pytest.mark.parametrize(
-    "mutation",
+    ("mutation", "item_kind", "item_id"),
     [
-        lambda value: value["nodes"][0].update(
-            {"happened_at": "2026-03-02T00:00:00+00:00"}
+        (
+            lambda value: value["nodes"][0].update(
+                {"happened_at": "2026-03-02T00:00:00+00:00"}
+            ),
+            "node",
+            "proposal",
         ),
-        lambda value: value["nodes"][0].update({"node_type": "policy_change"}),
-        lambda value: value["nodes"][0].update({"source_ids": "material-evolution"}),
-        lambda value: value["claims"][0].update({"based_on": []}),
-        lambda value: value["temporal_facts"][0].update(
-            {"assertion_type": "prediction"}
+        (
+            lambda value: value["nodes"][0].update({"node_type": "policy_change"}),
+            "node",
+            "proposal",
+        ),
+        (
+            lambda value: value["nodes"][0].pop("summary"),
+            "node",
+            "proposal",
+        ),
+        (
+            lambda value: value["nodes"][0].update(
+                {"source_ids": "material-evolution"}
+            ),
+            "node",
+            "proposal",
+        ),
+        (
+            lambda value: value["claims"][0].update({"based_on": []}),
+            "claim",
+            "forecast",
+        ),
+        (
+            lambda value: value["claims"][0].update({"based_on": ""}),
+            "claim",
+            "forecast",
+        ),
+        (
+            lambda value: value["temporal_facts"][0].update(
+                {"assertion_type": "prediction"}
+            ),
+            "temporal_fact",
+            None,
+        ),
+        (
+            lambda value: value["temporal_facts"][0].update(
+                {"valid_at": "2025-12-31T00:00:00+00:00"}
+            ),
+            "temporal_fact",
+            None,
+        ),
+        (
+            lambda value: value["claims"][0].update(
+                {"observed_at": "2026-02-28T00:00:00+00:00"}
+            ),
+            "claim",
+            "forecast",
         ),
     ],
 )
-def test_strict_schema_rejects_future_illegal_missing_source_and_array_errors(mutation):
+def test_candidate_schema_errors_become_local_validation_gaps(
+    mutation, item_kind, item_id
+):
     invalid = payload()
     mutation(invalid)
-    with pytest.raises(ExtractionError):
-        run(
-            service(invalid)[0].extract_material(
-                material(), corpus_path="corpus/2026-03/disclosure.md"
-            )
+
+    result = run(
+        service(invalid)[0].extract_material(
+            material(), corpus_path="corpus/2026-03/disclosure.md"
         )
+    )
+
+    gaps = [
+        gap
+        for gap in result.evidence_gaps
+        if gap.gap_type == "candidate_validation_failed"
+    ]
+    assert len(gaps) == 1
+    assert gaps[0].item_kind == item_kind
+    assert gaps[0].item_id == item_id
+    assert result.case is not None
+    assert any(
+        candidate
+        for candidate in (*result.nodes, *result.temporal_facts, *result.claims)
+    )
+
+
+def test_invalid_relation_drops_only_that_candidate_as_validation_gap():
+    invalid = payload()
+    invalid["relations"] = [
+        {
+            "relation_id": "bad-relation",
+            "relation_type": "causes",
+            "source_ref": "implementation",
+            "target_ref": "proposal",
+            "valid_at": "2026-02-15T00:00:00+00:00",
+            "invalid_at": None,
+            "observed_at": PUBLISHED.isoformat(),
+            "source_ids": ["material-evolution"],
+            "evidence": evidence(
+                "On 2026-02-15, the ministry implemented the disclosure rule.", 2
+            ),
+            "confidence": 0.8,
+            "provenance_type": "source_explicit",
+        }
+    ]
+
+    result = run(
+        service(invalid)[0].extract_material(
+            material(), corpus_path="corpus/2026-03/disclosure.md"
+        )
+    )
+
+    assert result.relations == ()
+    assert [node.id for node in result.nodes] == ["proposal", "implementation"]
+    gap = next(gap for gap in result.evidence_gaps if gap.item_kind == "relation")
+    assert gap.gap_type == "candidate_validation_failed"
+    assert gap.item_id == "bad-relation"
+    assert "relation_type" in gap.detail
 
 
 # --- Real-LLM output compatibility (narrow recovery, audited) ---------------
@@ -684,11 +1104,11 @@ def test_top_level_evidence_field_is_ignored_never_bound(hoisted):
     "mutation",
     [
         lambda value: value.update({"warnings": {"message": "not an array"}}),
-        lambda value: value["claims"][0].update({"based_on": ""}),
         lambda value: value.update({"api_key": "untrusted"}),
+        lambda value: value["nodes"][0].update({"explanation": "untrusted"}),
     ],
 )
-def test_compat_recovery_never_weakens_remaining_strict_validation(mutation):
+def test_candidate_recovery_never_weakens_fatal_structure_validation(mutation):
     invalid = payload()
     mutation(invalid)
     with pytest.raises(ExtractionError):

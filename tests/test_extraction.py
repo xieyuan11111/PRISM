@@ -159,13 +159,82 @@ def test_optional_case_and_empty_collections_are_supported():
     )
 
 
-def test_json_fenced_completion_is_supported_but_surrounding_prose_is_not():
+def test_json_fenced_and_bare_noise_repairs_are_audited():
     fenced = f"```json\n{json.dumps(valid_payload())}\n```"
     result, _ = run_extract(fenced)
     assert result.case.case_id == "case-1"
+    assert any(
+        "JSON syntax repair" in warning and "code fence" in warning
+        for warning in result.warnings
+    )
 
-    with pytest.raises(ExtractionError, match="JSON object"):
-        run_extract(f"Here is the result:\n{json.dumps(valid_payload())}")
+    result, _ = run_extract(
+        f"Here is the result:\n{json.dumps(valid_payload())}\nEnd result."
+    )
+    assert result.case.case_id == "case-1"
+    assert any(
+        "JSON syntax repair" in warning and "surrounding" in warning
+        for warning in result.warnings
+    )
+
+
+def test_only_structural_trailing_commas_are_repaired_and_audited():
+    payload = valid_payload()
+    payload["warnings"].append("A literal comma before a brace stays: ,}")
+    encoded = json.dumps(payload)
+    completion = encoded[:-1] + ",}"
+
+    result, _ = run_extract(completion)
+
+    assert result.case.case_id == "case-1"
+    assert "A literal comma before a brace stays: ,}" in result.warnings
+    assert any(
+        "JSON syntax repair" in warning and "trailing comma" in warning
+        for warning in result.warnings
+    )
+
+
+@pytest.mark.parametrize(
+    "completion",
+    [
+        # Two adjacent objects are not a unique recoverable envelope.  In
+        # particular, the parser must not silently keep one and drop the other.
+        '{"case":null}{"case":null}',
+        # A malformed nested member is intermediate content, not surrounding
+        # noise and not a structural trailing comma.
+        '{"case":null,"nodes":[],"temporal_facts":[],"claims":[],"warnings":[] '
+        '{"nested":true}}',
+        # Missing quotes require semantic guessing and are never repaired.
+        '{"case":null,"nodes":[],"temporal_facts":[],"claims":[],warnings:[]}',
+    ],
+)
+def test_non_unique_or_non_local_json_damage_is_rejected(completion):
+    with pytest.raises(ExtractionError, match="valid JSON"):
+        run_extract(completion)
+
+
+@pytest.mark.parametrize(
+    "completion",
+    [
+        '{"case":null,"case":null,"nodes":[],"temporal_facts":[],"claims":[],"warnings":[],}',
+        '{"case":null,"nodes":[],"temporal_facts":[],"claims":[],"warnings":[],"score":NaN,}',
+        '{"case":null,"nodes":[],"temporal_facts":[],"claims":[],"warnings":[],"score":Infinity,}',
+    ],
+)
+def test_trailing_comma_repair_cannot_bypass_duplicate_or_nonfinite_rejection(
+    completion,
+):
+    with pytest.raises(ExtractionError, match="valid JSON") as caught:
+        run_extract(completion)
+    assert "JSON syntax repair" in str(caught.value)
+
+
+def test_noise_repair_cannot_bypass_unknown_secret_field_rejection():
+    payload = valid_payload()
+    payload["api_key"] = "must-not-pass"
+
+    with pytest.raises(ExtractionError, match="unexpected field"):
+        run_extract(f"result follows\n{json.dumps(payload)}\nresult ends")
 
 
 @pytest.mark.parametrize(
