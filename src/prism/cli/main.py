@@ -43,6 +43,10 @@ class PrismAPIProtocol(Protocol):
         self, case_id: str, materials: Sequence[str] | None = None
     ) -> object: ...
 
+    async def bind_material_to_case(
+        self, material_id: str, case_id: str
+    ) -> object: ...
+
     async def report_case(
         self, case_id: str, as_of: datetime | None = None, use_llm: bool = True
     ) -> object: ...
@@ -239,6 +243,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     merge_case.set_defaults(handler=handle_merge_case)
 
+    bind_material = commands.add_parser(
+        "bind-material",
+        help=(
+            "Explicitly bind pending material-scoped evidence to an existing "
+            "case, then rebuild and write that case."
+        ),
+    )
+    bind_material.add_argument(
+        "material_id", type=_nonempty, metavar="MATERIAL_ID"
+    )
+    bind_material.add_argument("case_id", type=_nonempty, metavar="CASE_ID")
+    bind_material.set_defaults(handler=handle_bind_material)
+
     report = commands.add_parser(
         "report", help="Render a case evolution report as JSON."
     )
@@ -378,6 +395,15 @@ async def handle_merge_case(args: argparse.Namespace, api: PrismAPIProtocol) -> 
     """Delegate a parsed merge-case command to the injected facade."""
     return await _await_api_call(
         api.merge_case(args.case_id, materials=args.materials)
+    )
+
+
+async def handle_bind_material(
+    args: argparse.Namespace, api: PrismAPIProtocol
+) -> object:
+    """Bind one explicitly named pending material to an existing case."""
+    return await _await_api_call(
+        api.bind_material_to_case(args.material_id, args.case_id)
     )
 
 
@@ -616,6 +642,7 @@ async def main(
 __all__ = [
     "PrismAPIProtocol",
     "build_parser",
+    "handle_bind_material",
     "handle_fetch",
     "handle_fetch_all",
     "handle_discover",

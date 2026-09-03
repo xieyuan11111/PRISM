@@ -204,6 +204,7 @@ class CaseBundleMerger:
                     evidence=node.evidence,
                     change_reason=node.change_reason,
                     provenance_type=node.provenance_type,
+                    evidence_role=node.evidence_role,
                 )
                 self._append_by_id(
                     normalized.id, normalized, node_by_id, nodes, "node"
@@ -291,6 +292,7 @@ class CaseBundleMerger:
                     provenance_type=claim.provenance_type,
                     confidence=claim.confidence,
                     claim_type=claim.claim_type,
+                    evidence_role=claim.evidence_role,
                 )
                 self._append_by_id(
                     normalized_claim.claim_id,
@@ -396,12 +398,14 @@ from .service import (  # noqa: E402  (must follow base exports)
 from .ledger import (  # noqa: E402  (durable accumulation contract)
     CaseExtractionLedger,
     CaseLedgerEntry,
+    MaterialEvidenceEntry,
     MaterialCaseConflict,
 )
 
 __all__ += [
     "CaseExtractionLedger",
     "CaseLedgerEntry",
+    "MaterialEvidenceEntry",
     "CaseService",
     "CaseWriteOutcome",
     "MaterialCaseConflict",

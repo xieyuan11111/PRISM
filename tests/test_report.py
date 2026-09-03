@@ -62,6 +62,7 @@ def make_analysis(**overrides):
                 node_type="publication",
                 confidence=0.9,
                 provenance_type="explicit",
+                evidence_role="publication_event",
             ),
             TimelineStage(
                 episode_key=FACT_EPISODE,
@@ -74,6 +75,8 @@ def make_analysis(**overrides):
                 source_ids=("material-1",),
                 confidence=0.8,
                 provenance_type="explicit",
+                evidence_role="cited_prior_research",
+                cited_source_ref="Smith et al. (2020)",
             ),
             TimelineStage(
                 episode_key=CLAIM_EPISODE,
@@ -85,6 +88,7 @@ def make_analysis(**overrides):
                 reference_time=datetime(2026, 8, 31, 11, 0, tzinfo=UTC),
                 source_ids=("material-3",),
                 stance="uncertain",
+                evidence_role="current_synthesis",
             ),
         ),
         "turning_points": (
@@ -261,8 +265,15 @@ def test_report_without_router_is_deterministic_and_complete():
         "material-3",
         "material-case",
         "deterministic fallback",
+        "Evidence role",
+        "cited_prior_research",
+        "secondary evidence",
+        "Smith et al. (2020)",
     ):
         assert expected in markdown
+
+    assert doc.publication_node_count == 1
+    assert doc.substantive_node_count == 0
 
     again = run_report(make_analysis())
     assert again == doc
@@ -352,6 +363,8 @@ def test_router_happy_path_uses_summarize_report_role_and_analysis_only_prompt()
         "material-3",
         "BEGIN ANALYSIS",
         "END ANALYSIS",
+        '"evidence_role": "cited_prior_research"',
+        '"cited_source_ref": "Smith et al. (2020)"',
     ):
         assert token in prompt
     assert SECRET not in prompt

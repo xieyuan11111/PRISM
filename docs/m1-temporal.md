@@ -34,6 +34,26 @@ real-provider extraction or a real case has passed live acceptance.
 - Reports and the shared API/CLI serialization include revision/conflict
   relations, invalidated facts, source ids and portable evidence locations.
   Publication nodes are counted separately from substantive evolution.
+- A validated extraction with substantive candidates but no top-level case is
+  explicitly `awaiting_case_binding`. The automatic pipeline stores its
+  immutable `ExtractionResult` and source material in the project-owned
+  `material_evidence_ledger` table of the existing local SQLite database; it
+  does not create a `case_id` and does not submit a case-specific Graphiti
+  episode. `context_only` candidates and publication-only padding do not enter
+  this accumulation.
+- `prism bind-material MATERIAL_ID CASE_ID` (and the matching API/CaseService
+  method) is the explicit promotion boundary. It accepts only an already
+  accumulated case, rechecks material/source ids, verbatim evidence and
+  timestamps against the stored material, removes `missing_case_context`, and
+  then uses the normal merge-and-write path. No title, tag, embedding or vector
+  similarity is used to guess a case. Pending evidence remains in SQLite if
+  validation, merge or graph writing fails.
+- Review/synthesis results carry a separate `evidence_role` layer.
+  `cited_prior_research` is secondary evidence reported by the current
+  material—not an observation by that material's authors—and preserves its
+  optional `cited_source_ref`; `current_synthesis` identifies the current
+  authors' synthesis. Both reach the graph only after a case is present, and
+  reports/CLI serialization expose the layer and citation reference.
 - Model-distilled summaries must cite episode/source pairs present in the
   analyzed evidence. Invalid output is rejected and deterministically
   downgraded without adding an unsupported conclusion.

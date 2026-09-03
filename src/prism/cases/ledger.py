@@ -15,12 +15,16 @@ Design notes
   EvidenceStore text index (``index.db`` under ``PathConfig.data_dir``), one
   PRISM home keeps one SQLite file.  The table is created additively
   (``CREATE TABLE IF NOT EXISTS``) so older databases migrate in place.
-* Rows are only written after the corresponding merge-and-write succeeded
+* Case rows are only retained after the corresponding merge-and-write succeeded
   (see :class:`prism.cases.service.CaseService`); a failed merge rolls the
   row back, so the ledger never contains a material that poisoned its case.
 * Only domain data is stored — never credentials, hosts or absolute paths
   beyond the material's own project-relative ``raw_path``/evidence fields.
 * Importing this module touches no network and imports no optional extras.
+* Validated case-less candidates live separately in
+  ``material_evidence_ledger`` with status ``awaiting_case_binding``. They
+  preserve the exact material/extraction payload but cannot be consumed by a
+  case merge until an explicit binding promotes them.
 """
 
 from __future__ import annotations
@@ -39,6 +43,7 @@ from prism.store.service import DB_FILENAME
 
 #: Table holding one row per successfully merged (case, material) extraction.
 TABLE = "case_extraction_ledger"
+MATERIAL_TABLE = "material_evidence_ledger"
 
 _DDL = f"""
 CREATE TABLE IF NOT EXISTS {TABLE} (
@@ -52,6 +57,14 @@ CREATE TABLE IF NOT EXISTS {TABLE} (
 );
 CREATE INDEX IF NOT EXISTS {TABLE}_material_idx
     ON {TABLE} (material_id);
+CREATE TABLE IF NOT EXISTS {MATERIAL_TABLE} (
+    material_id TEXT PRIMARY KEY,
+    status TEXT NOT NULL,
+    material_json TEXT NOT NULL,
+    extraction_json TEXT NOT NULL,
+    recorded_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
 
 _UPSERT_SQL = f"""
@@ -59,6 +72,17 @@ INSERT INTO {TABLE} (
     case_id, material_id, material_json, extraction_json, recorded_at, updated_at
 ) VALUES (?, ?, ?, ?, ?, ?)
 ON CONFLICT(case_id, material_id) DO UPDATE SET
+    material_json = excluded.material_json,
+    extraction_json = excluded.extraction_json,
+    updated_at = excluded.updated_at
+"""
+
+_MATERIAL_UPSERT_SQL = f"""
+INSERT INTO {MATERIAL_TABLE} (
+    material_id, status, material_json, extraction_json, recorded_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT(material_id) DO UPDATE SET
+    status = excluded.status,
     material_json = excluded.material_json,
     extraction_json = excluded.extraction_json,
     updated_at = excluded.updated_at
@@ -74,12 +98,21 @@ _BACKWARD_DEFAULT_FIELDS = frozenset(
     {
         ("ExtractionResult", "relations"),
         ("ExtractionResult", "material_role"),
+        ("ExtractionResult", "accumulation_status"),
+        ("EvolutionNode", "evidence_role"),
+        ("TemporalFact", "evidence_role"),
+        ("TemporalFact", "cited_source_ref"),
+        ("Claim", "evidence_role"),
+        ("TemporalRelation", "evidence_role"),
+        ("TemporalRelation", "cited_source_ref"),
         ("TemporalFact", "fact_id"),
         ("ExtractionConflict", "valid_at"),
         ("ExtractionConflict", "invalid_at"),
         ("ExtractionConflict", "observed_at"),
         ("ExtractionConflict", "confidence"),
         ("ExtractionConflict", "provenance_type"),
+        ("ExtractionConflict", "evidence_role"),
+        ("ExtractionConflict", "cited_source_ref"),
     }
 )
 
@@ -339,6 +372,32 @@ class CaseLedgerEntry:
             raise TypeError("extraction must be an ExtractionResult")
 
 
+@dataclass(frozen=True, slots=True)
+class MaterialEvidenceEntry:
+    """One case-less extraction awaiting an explicit case binding."""
+
+    material_id: str
+    status: str
+    material: Material
+    extraction: ExtractionResult
+    recorded_at: datetime
+
+    def __post_init__(self) -> None:
+        _require_text("material_id", self.material_id)
+        if self.status != "awaiting_case_binding":
+            raise ValueError("status must be 'awaiting_case_binding'")
+        if not isinstance(self.material, Material):
+            raise TypeError("material must be a Material")
+        if not isinstance(self.extraction, ExtractionResult):
+            raise TypeError("extraction must be an ExtractionResult")
+        if self.material.id != self.material_id:
+            raise ValueError("material id does not match entry material_id")
+        if self.extraction.case is not None:
+            raise ValueError("material-scoped extraction must not declare a case")
+        if self.extraction.accumulation_status != self.status:
+            raise ValueError("extraction accumulation status does not match entry status")
+
+
 class CaseExtractionLedger:
     """SQLite-backed, restart-durable accumulation of case extractions.
 
@@ -379,6 +438,89 @@ class CaseExtractionLedger:
         )
         self._connection.commit()
         return (previous[0], previous[1]) if previous is not None else None
+
+    def record_material(
+        self, material: Material, extraction: ExtractionResult
+    ) -> MaterialEvidenceEntry:
+        """Upsert validated case-less candidates awaiting explicit binding."""
+        if not isinstance(material, Material):
+            raise TypeError("material must be a Material")
+        if not isinstance(extraction, ExtractionResult):
+            raise TypeError("extraction must be an ExtractionResult")
+        if extraction.case is not None:
+            raise ValueError("material-scoped extraction must not declare a case")
+        if extraction.accumulation_status != "awaiting_case_binding":
+            raise ValueError(
+                "material-scoped extraction must contain substantive candidates "
+                "with status 'awaiting_case_binding'"
+            )
+        material_json = material_to_json(material)
+        extraction_json = extraction_to_json(extraction)
+        now = _now_iso()
+        previous = self._connection.execute(
+            f"SELECT recorded_at FROM {MATERIAL_TABLE} WHERE material_id = ?",
+            (material.id,),
+        ).fetchone()
+        recorded_at = previous[0] if previous is not None else now
+        self._connection.execute(
+            _MATERIAL_UPSERT_SQL,
+            (
+                material.id,
+                "awaiting_case_binding",
+                material_json,
+                extraction_json,
+                recorded_at,
+                now,
+            ),
+        )
+        self._connection.commit()
+        return MaterialEvidenceEntry(
+            material.id,
+            "awaiting_case_binding",
+            material,
+            extraction,
+            _parse_timestamp("recorded_at", recorded_at),
+        )
+
+    def material_entry(self, material_id: str) -> MaterialEvidenceEntry | None:
+        """Return one pending material-scoped extraction, or ``None``."""
+        _require_text("material_id", material_id)
+        row = self._connection.execute(
+            f"SELECT material_id, status, material_json, extraction_json, "
+            f"recorded_at FROM {MATERIAL_TABLE} WHERE material_id = ?",
+            (material_id,),
+        ).fetchone()
+        return self._decode_material_entry(row) if row is not None else None
+
+    def material_entries(self) -> tuple[MaterialEvidenceEntry, ...]:
+        """All pending material-scoped extractions in first-recorded order."""
+        rows = self._connection.execute(
+            f"SELECT material_id, status, material_json, extraction_json, "
+            f"recorded_at FROM {MATERIAL_TABLE} ORDER BY recorded_at, rowid"
+        ).fetchall()
+        return tuple(self._decode_material_entry(row) for row in rows)
+
+    def remove_material(self, material_id: str) -> bool:
+        """Remove a pending material after a successful explicit binding."""
+        _require_text("material_id", material_id)
+        cursor = self._connection.execute(
+            f"DELETE FROM {MATERIAL_TABLE} WHERE material_id = ?", (material_id,)
+        )
+        self._connection.commit()
+        return cursor.rowcount > 0
+
+    @staticmethod
+    def _decode_material_entry(row: tuple) -> MaterialEvidenceEntry:
+        material_id, status, material_json, extraction_json, recorded_at = row
+        material = material_from_json(material_json)
+        extraction = extraction_from_json(extraction_json)
+        return MaterialEvidenceEntry(
+            material_id,
+            status,
+            material,
+            extraction,
+            _parse_timestamp("recorded_at", recorded_at),
+        )
 
     def record_raw(
         self,
@@ -503,6 +645,8 @@ class CaseExtractionLedger:
 __all__ = [
     "CaseExtractionLedger",
     "CaseLedgerEntry",
+    "MATERIAL_TABLE",
+    "MaterialEvidenceEntry",
     "MaterialCaseConflict",
     "extraction_from_json",
     "extraction_to_json",

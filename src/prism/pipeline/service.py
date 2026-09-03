@@ -3,7 +3,10 @@
 The pipeline continues where ingestion ends: one already-ingested
 :class:`~prism.ingestion.IngestionResult` is pushed through three stages in a
 fixed order — index the corpus file, extract structured domain objects, then
-write the resulting case bundle to the graph.  Every collaborator (indexer,
+write the resulting case bundle to the graph. Case-less substantive candidates
+are first accumulated in the local material evidence ledger with status
+``awaiting_case_binding``; their graph stage remains skipped until an explicit
+case binding. Every collaborator (indexer,
 extractor, graph writer, clock, and the event-to-material resolver) is
 injected, so the service is fully testable offline.  Failures raise
 :class:`PipelineError` with the audit trail of already-completed stages; no
@@ -59,6 +62,10 @@ _RUN_STATUSES = frozenset({_STATUS_COMPLETED, _STATUS_SKIPPED})
 _DETAIL_DUPLICATE_MATERIAL = "duplicate material_id"
 _DETAIL_DUPLICATE_CORRELATION = "duplicate correlation_id"
 _DETAIL_NO_CASE = "extraction produced no case"
+_DETAIL_CASELESS_CANDIDATES = (
+    "extraction retained material-scoped candidates without a case; "
+    "case-specific graph writing was skipped"
+)
 
 # Levels that carry evidence *about* a work — an abstract, bibliographic
 # metadata only, or an access-blocked placeholder — never the work's full
@@ -103,6 +110,10 @@ class _CaseRecorder(Protocol):
     """
 
     async def record_extraction(
+        self, material: Material, extraction: ExtractionResult
+    ) -> object: ...
+
+    async def record_material_extraction(
         self, material: Material, extraction: ExtractionResult
     ) -> object: ...
 
@@ -547,9 +558,58 @@ class PipelineService:
             stages.append(PipelineStage(_STAGE_EXTRACT, "extracted", extraction))
 
             if extraction.case is None:
+                has_candidates = bool(
+                    extraction.nodes
+                    or extraction.temporal_facts
+                    or extraction.claims
+                    or extraction.conflicts
+                    or extraction.relations
+                )
+                material_status = None
+                if has_candidates and self._case_recorder is not None:
+                    record_material = getattr(
+                        self._case_recorder, "record_material_extraction", None
+                    )
+                    if not callable(record_material):
+                        error = TypeError(
+                            "case_service must provide "
+                            "record_material_extraction() for case-less candidates"
+                        )
+                        raise self._stage_failure(
+                            _STAGE_GRAPH, material_id, stages, error
+                        ) from error
+                    try:
+                        material_outcome = await record_material(
+                            result.material, extraction
+                        )
+                        material_status = getattr(
+                            material_outcome, "status", None
+                        )
+                        if material_status != "awaiting_case_binding":
+                            raise TypeError(
+                                "case_service material outcome must expose "
+                                "status 'awaiting_case_binding'"
+                            )
+                    except Exception as exc:
+                        raise self._stage_failure(
+                            _STAGE_GRAPH, material_id, stages, exc
+                        ) from exc
+                detail = (
+                    _DETAIL_CASELESS_CANDIDATES
+                    + (
+                        "; persisted with status awaiting_case_binding"
+                        if material_status == "awaiting_case_binding"
+                        else "; no material evidence ledger is configured"
+                    )
+                    if has_candidates
+                    else _DETAIL_NO_CASE
+                )
                 stages.append(
                     PipelineStage(
-                        _STAGE_GRAPH, _STATUS_SKIPPED, None, detail=_DETAIL_NO_CASE
+                        _STAGE_GRAPH,
+                        _STATUS_SKIPPED,
+                        None,
+                        detail=detail,
                     )
                 )
             elif self._case_recorder is not None:

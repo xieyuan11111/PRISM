@@ -206,6 +206,8 @@ class GraphService:
         fields: dict[str, Any],
         confidence: float | None = None,
         provenance_type: str | None = None,
+        evidence_role: str | None = None,
+        cited_source_ref: str | None = None,
         evidence: tuple[EvidenceLocator, ...] = (),
         logical_key: str | None = None,
     ) -> GraphEpisode:
@@ -224,6 +226,10 @@ class GraphService:
             payload["confidence"] = confidence
         if provenance_type is not None:
             payload["provenance_type"] = provenance_type
+        if evidence_role is not None:
+            payload["evidence_role"] = evidence_role
+        if cited_source_ref is not None:
+            payload["cited_source_ref"] = cited_source_ref
         if logical_key is not None:
             payload["logical_key"] = logical_key
         fingerprint = uuid5(NAMESPACE_URL, _json(payload))
@@ -242,6 +248,8 @@ class GraphService:
             confidence=confidence,
             provenance_type=provenance_type,
             evidence=evidence,
+            evidence_role=evidence_role,
+            cited_source_ref=cited_source_ref,
         )
 
     def _case_episode(self, case: EvolutionCase) -> GraphEpisode:
@@ -309,6 +317,7 @@ class GraphService:
             source_ids=node.source_ids,
             evidence=node.evidence,
             provenance_type=node.provenance_type,
+            evidence_role=node.evidence_role,
             fields={
                 "node_id": node.id,
                 "node_type": node.node_type,
@@ -344,6 +353,8 @@ class GraphService:
             source_ids=fact.source_ids,
             confidence=fact.confidence,
             provenance_type=fact.provenance_type,
+            evidence_role=fact.evidence_role,
+            cited_source_ref=fact.cited_source_ref,
             evidence=fact.evidence,
             logical_key=(f"fact:{fact.fact_id}" if fact.fact_id is not None else None),
             fields={
@@ -380,6 +391,7 @@ class GraphService:
             evidence=claim.evidence,
             confidence=claim.confidence,
             provenance_type=claim.provenance_type,
+            evidence_role=claim.evidence_role,
             logical_key=f"claim:{claim.claim_id}",
             fields={
                 "claim_id": claim.claim_id,
@@ -415,6 +427,8 @@ class GraphService:
             source_ids=relation.source_ids,
             confidence=relation.confidence,
             provenance_type=relation.provenance_type,
+            evidence_role=relation.evidence_role,
+            cited_source_ref=relation.cited_source_ref,
             evidence=relation.evidence,
             logical_key=f"relation:{relation.relation_id}",
             fields={
@@ -495,6 +509,8 @@ class GraphService:
         invalid_at = getattr(conflict, "invalid_at", None)
         confidence = getattr(conflict, "confidence", 1.0)
         provenance_type = getattr(conflict, "provenance_type", "reported_conflict")
+        evidence_role = getattr(conflict, "evidence_role", None)
+        cited_source_ref = getattr(conflict, "cited_source_ref", None)
         episodes: list[GraphEpisode] = []
         for left_index, left in enumerate(alternatives):
             for right_index in range(left_index + 1, len(alternatives)):
@@ -511,6 +527,8 @@ class GraphService:
                     evidence=evidence,
                     confidence=confidence,
                     provenance_type=provenance_type,
+                    evidence_role=evidence_role,
+                    cited_source_ref=cited_source_ref,
                 )
                 episodes.append(self._relation_episode(case_id, relation, availability))
         return tuple(episodes)
@@ -587,6 +605,10 @@ class GraphService:
             stance=payload.get("stance"),
             payload=_json(payload),
             evidence=episode.evidence,
+            evidence_role=payload.get("evidence_role") or episode.evidence_role,
+            cited_source_ref=(
+                payload.get("cited_source_ref") or episode.cited_source_ref
+            ),
         )
 
     @staticmethod

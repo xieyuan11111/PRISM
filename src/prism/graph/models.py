@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from prism.domain import EvidenceLocator
+from prism.domain import EVIDENCE_ROLES, EvidenceLocator
 
 #: Schema marker of PRISM's own episode payloads.  Only episodes carrying this
 #: marker are ever mapped back by the Graphiti adapter, so a shared Graphiti
@@ -77,6 +77,8 @@ class GraphEpisode:
     confidence: float | None = None
     provenance_type: str | None = None
     evidence: tuple[EvidenceLocator, ...] = ()
+    evidence_role: str | None = None
+    cited_source_ref: str | None = None
 
     def __post_init__(self) -> None:
         for name in ("episode_key", "name", "case_id", "kind", "episode_body"):
@@ -93,6 +95,11 @@ class GraphEpisode:
                 raise ValueError("confidence must be between 0.0 and 1.0")
         if self.provenance_type is not None:
             require_text("provenance_type", self.provenance_type)
+        if self.evidence_role is not None and self.evidence_role not in EVIDENCE_ROLES:
+            allowed = ", ".join(sorted(EVIDENCE_ROLES))
+            raise ValueError(f"evidence_role must be one of: {allowed}")
+        if self.cited_source_ref is not None:
+            require_text("cited_source_ref", self.cited_source_ref)
         object.__setattr__(self, "evidence", evidence_tuple(self.evidence))
         if not {item.source_id for item in self.evidence}.issubset(set(self.source_ids)):
             raise ValueError("evidence source_id must be present in source_ids")
@@ -115,6 +122,8 @@ class TimelineEntry:
     stance: str | None
     payload: str
     evidence: tuple[EvidenceLocator, ...] = ()
+    evidence_role: str | None = None
+    cited_source_ref: str | None = None
 
     def __post_init__(self) -> None:
         for name in ("episode_key", "case_id", "kind", "summary", "payload"):
@@ -124,6 +133,11 @@ class TimelineEntry:
         object.__setattr__(self, "source_ids", source_tuple(self.source_ids))
         if self.stance is not None:
             require_text("stance", self.stance)
+        if self.evidence_role is not None and self.evidence_role not in EVIDENCE_ROLES:
+            allowed = ", ".join(sorted(EVIDENCE_ROLES))
+            raise ValueError(f"evidence_role must be one of: {allowed}")
+        if self.cited_source_ref is not None:
+            require_text("cited_source_ref", self.cited_source_ref)
         object.__setattr__(self, "evidence", evidence_tuple(self.evidence))
         if not {item.source_id for item in self.evidence}.issubset(set(self.source_ids)):
             raise ValueError("evidence source_id must be present in source_ids")

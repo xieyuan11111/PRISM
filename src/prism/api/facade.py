@@ -176,6 +176,10 @@ class _CaseService(Protocol):
         self, case_id: str, material_ids: "Iterable[str]"
     ) -> object: ...
 
+    async def bind_material_to_case(
+        self, material_id: str, case_id: str
+    ) -> object: ...
+
     def case_for_material(self, material_id: str) -> str | None: ...
 
 
@@ -581,6 +585,24 @@ class PrismAPI:
                 )
             return outcome
         return await self._case_service.merge_explicit(case_id, tuple(materials))
+
+    async def bind_material_to_case(
+        self, material_id: str, case_id: str
+    ) -> object:
+        """Explicitly attach pending material evidence to an existing case.
+
+        Both identifiers come from the caller.  The case service revalidates
+        the stored evidence and refuses unknown cases; this facade performs
+        no title-, tag-, or vector-based case inference.
+        """
+        if self._case_service is None:
+            raise ValueError(
+                "case_service is required for bind_material_to_case()"
+            )
+        bind = getattr(self._case_service, "bind_material_to_case", None)
+        if not callable(bind):
+            raise TypeError("case_service must provide bind_material_to_case()")
+        return await bind(material_id, case_id)
 
     @staticmethod
     def _audit_warnings(run: object) -> list[str]:

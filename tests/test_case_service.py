@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -482,6 +483,174 @@ def test_record_extraction_requires_a_case(tmp_path):
                 make_material("mat-1"), ExtractionResult()
             )
         assert ledger.entries("case-1") == ()
+
+    run(main())
+
+
+def test_material_scoped_candidates_accumulate_without_graph_and_bind_explicitly(tmp_path):
+    async def main():
+        service, ledger, graph = make_service(tmp_path)
+        await service.record_extraction(
+            make_material("mat-1"), make_extraction("mat-1")
+        )
+        graph.calls.clear()
+
+        candidate = make_extraction("mat-2", node_id="secondary-node")
+        caseless = ExtractionResult(
+            case=None,
+            temporal_facts=(
+                replace(
+                    candidate.temporal_facts[0],
+                    evidence_role="cited_prior_research",
+                    cited_source_ref="Smith et al. (2020)",
+                ),
+            ),
+            evidence_gaps=(
+                ExtractionEvidenceGap(
+                    "missing_case_context",
+                    "validated candidates await explicit case binding",
+                    source_ids=("mat-2",),
+                ),
+            ),
+            material_role="review",
+        )
+        pending = await service.record_material_extraction(
+            make_material("mat-2"), caseless
+        )
+
+        assert pending.status == "awaiting_case_binding"
+        assert pending.extraction.accumulation_status == "awaiting_case_binding"
+        assert graph.calls == []
+        assert ledger.material_entry("mat-2") == pending
+
+        outcome = await service.bind_material_to_case("mat-2", "case-1")
+
+        assert outcome.case_id == "case-1"
+        assert outcome.material_ids == ("mat-1", "mat-2")
+        assert ledger.material_entry("mat-2") is None
+        bound = ledger.entries("case-1")[1].extraction
+        assert bound.case is not None and bound.case.case_id == "case-1"
+        assert bound.accumulation_status == "case_bound"
+        assert bound.temporal_facts == caseless.temporal_facts
+        assert all(
+            gap.gap_type != "missing_case_context"
+            for gap in bound.evidence_gaps
+        )
+        assert len(graph.calls) == 1
+
+    run(main())
+
+
+def test_bind_material_requires_an_existing_explicit_case_and_revalidates_evidence(tmp_path):
+    async def main():
+        service, ledger, graph = make_service(tmp_path)
+        candidate = make_extraction("mat-2")
+        caseless = ExtractionResult(
+            case=None,
+            temporal_facts=(
+                replace(
+                    candidate.temporal_facts[0],
+                    evidence_role="cited_prior_research",
+                    cited_source_ref="Smith et al. (2020)",
+                ),
+            ),
+            evidence_gaps=(
+                ExtractionEvidenceGap(
+                    "missing_case_context", "awaiting case", source_ids=("mat-2",)
+                ),
+            ),
+        )
+        await service.record_material_extraction(make_material("mat-2"), caseless)
+
+        with pytest.raises(LookupError, match="existing case"):
+            await service.bind_material_to_case("mat-2", "case-unknown")
+        assert ledger.material_entry("mat-2") is not None
+        assert graph.calls == []
+
+    run(main())
+
+
+def test_bind_rejects_tampered_quote_and_keeps_pending_material(tmp_path):
+    async def main():
+        service, ledger, graph = make_service(tmp_path)
+        await service.record_extraction(
+            make_material("mat-1"), make_extraction("mat-1")
+        )
+        graph.calls.clear()
+
+        candidate = make_extraction("mat-2").temporal_facts[0]
+        bad_locator = replace(
+            candidate.evidence[0], quote="This quote is absent from the material."
+        )
+        tampered = ExtractionResult(
+            case=None,
+            temporal_facts=(
+                replace(
+                    candidate,
+                    evidence=(bad_locator,),
+                    evidence_role="cited_prior_research",
+                    cited_source_ref="Smith et al. (2020)",
+                ),
+            ),
+            evidence_gaps=(
+                ExtractionEvidenceGap(
+                    "missing_case_context", "awaiting case", source_ids=("mat-2",)
+                ),
+            ),
+        )
+        ledger.record_material(make_material("mat-2"), tampered)
+
+        with pytest.raises(ValueError, match="not present verbatim"):
+            await service.bind_material_to_case("mat-2", "case-1")
+        assert ledger.material_entry("mat-2") is not None
+        assert graph.calls == []
+
+    run(main())
+
+
+def test_bind_graph_failure_rolls_back_case_row_and_keeps_pending_material(tmp_path):
+    async def main():
+        service, ledger, graph = make_service(tmp_path)
+        await service.record_extraction(
+            make_material("mat-1"), make_extraction("mat-1")
+        )
+        candidate = make_extraction("mat-2").temporal_facts[0]
+        caseless = ExtractionResult(
+            case=None,
+            temporal_facts=(
+                replace(
+                    candidate,
+                    evidence_role="cited_prior_research",
+                    cited_source_ref="Smith et al. (2020)",
+                ),
+            ),
+        )
+        await service.record_material_extraction(make_material("mat-2"), caseless)
+        graph.exc = RuntimeError("graph unavailable")
+
+        with pytest.raises(RuntimeError, match="graph unavailable"):
+            await service.bind_material_to_case("mat-2", "case-1")
+
+        assert ledger.material_entry("mat-2") is not None
+        assert [entry.material_id for entry in ledger.entries("case-1")] == ["mat-1"]
+
+    run(main())
+
+
+@pytest.mark.parametrize("role", [None, "context_only", "publication_event"])
+def test_material_accumulation_rejects_non_substantive_candidates(tmp_path, role):
+    async def main():
+        service, ledger, graph = make_service(tmp_path)
+        candidate = replace(
+            make_extraction("mat-2").temporal_facts[0], evidence_role=role
+        )
+        caseless = ExtractionResult(case=None, temporal_facts=(candidate,))
+        with pytest.raises(ValueError, match="evidence_role|publication-only"):
+            await service.record_material_extraction(
+                make_material("mat-2"), caseless
+            )
+        assert ledger.material_entry("mat-2") is None
+        assert graph.calls == []
 
     run(main())
 

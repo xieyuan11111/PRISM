@@ -27,6 +27,7 @@ from .models import (
     GAP_EMPTY_TIMELINE,
     GAP_MISSING_CASE_DEFINITION,
     GAP_MISSING_EVIDENCE_LOCATION,
+    GAP_MISSING_PRIMARY_SOURCE,
     GAP_UNATTRIBUTED_ENTRY,
     INTERPRETATION_CHANGE,
     ORIGIN_OPEN_QUESTION_NODE,
@@ -319,6 +320,8 @@ class AnalyzerService:
             source_ref=source_ref,
             target_ref=target_ref,
             record_id=record_id,
+            evidence_role=entry.evidence_role,
+            cited_source_ref=entry.cited_source_ref,
         )
         return _Staged(entry, stage, payload)
 
@@ -523,6 +526,22 @@ class AnalyzerService:
                         stage.source_ids,
                     )
                 )
+            if stage.evidence_role == "cited_prior_research":
+                reference = (
+                    f"; cited reference: {stage.cited_source_ref}"
+                    if stage.cited_source_ref
+                    else ""
+                )
+                gaps.append(
+                    EvidenceGap(
+                        GAP_MISSING_PRIMARY_SOURCE,
+                        f"{stage.kind} entry {stage.episode_key!r} is secondary "
+                        f"evidence from a review; no original material is linked"
+                        f"{reference}",
+                        stage.episode_key,
+                        stage.source_ids,
+                    )
+                )
         return tuple(
             sorted(gaps, key=lambda gap: (gap.gap_type, gap.episode_key or ""))
         )
@@ -634,6 +653,8 @@ class AnalyzerService:
                 provenance_type=entry.provenance_type,
                 stance=entry.stance,
                 evidence=entry.evidence,
+                evidence_role=entry.evidence_role,
+                cited_source_ref=entry.cited_source_ref,
             )
             for entry in entries
         ]

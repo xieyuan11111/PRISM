@@ -90,6 +90,8 @@ def make_episode(
     evidence: tuple[EvidenceLocator, ...] = (),
     confidence: float | None = None,
     provenance_type: str | None = None,
+    evidence_role: str | None = None,
+    cited_source_ref: str | None = None,
 ) -> GraphEpisode:
     payload: dict[str, object] = {
         "schema": EPISODE_SCHEMA,
@@ -115,6 +117,10 @@ def make_episode(
         payload["confidence"] = confidence
     if provenance_type is not None:
         payload["provenance_type"] = provenance_type
+    if evidence_role is not None:
+        payload["evidence_role"] = evidence_role
+    if cited_source_ref is not None:
+        payload["cited_source_ref"] = cited_source_ref
     return GraphEpisode(
         episode_key=key,
         name=f"prism:{case_id}:{kind}:{key[:12]}",
@@ -128,6 +134,8 @@ def make_episode(
         confidence=confidence,
         provenance_type=provenance_type,
         evidence=evidence,
+        evidence_role=evidence_role,
+        cited_source_ref=cited_source_ref,
     )
 
 
@@ -142,6 +150,8 @@ def full_episode() -> GraphEpisode:
         evidence=make_evidence(),
         confidence=0.85,
         provenance_type="document",
+        evidence_role="cited_prior_research",
+        cited_source_ref="Smith et al. (2020)",
     )
 
 

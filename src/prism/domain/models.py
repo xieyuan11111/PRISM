@@ -31,6 +31,15 @@ CLAIM_TYPES = frozenset({"interpretation", "value_judgment", "prediction"})
 RELATION_TYPES = frozenset(
     {"supersedes", "revises", "contradicts", "triggered_by"}
 )
+EVIDENCE_ROLES = frozenset(
+    {
+        "primary_observation",
+        "cited_prior_research",
+        "current_synthesis",
+        "publication_event",
+        "context_only",
+    }
+)
 ORIGINAL_FORMATS = frozenset({"md", "pdf", "html"})
 
 
@@ -49,6 +58,13 @@ def _require_choice(name: str, value: str, choices: frozenset[str]) -> None:
     if value not in choices:
         allowed = ", ".join(sorted(choices))
         raise ValueError(f"{name} must be one of: {allowed}")
+
+
+def _validate_optional_choice(
+    name: str, value: str | None, choices: frozenset[str]
+) -> None:
+    if value is not None:
+        _require_choice(name, value, choices)
 
 
 def _require_aware_datetime(name: str, value: datetime) -> None:
@@ -228,6 +244,8 @@ class EvolutionNode:
     evidence: tuple[EvidenceLocator, ...] = ()
     change_reason: str | None = None
     provenance_type: str | None = None
+    # Cross-material evidence layer. Appended for positional compatibility.
+    evidence_role: str | None = None
 
     def __post_init__(self) -> None:
         _require_text("id", self.id)
@@ -252,6 +270,7 @@ class EvolutionNode:
             raise ValueError("node evidence source_id must be present in source_ids")
         _validate_optional_text("change_reason", self.change_reason)
         _validate_optional_text("provenance_type", self.provenance_type)
+        _validate_optional_choice("evidence_role", self.evidence_role, EVIDENCE_ROLES)
 
 
 @dataclass(frozen=True, slots=True)
@@ -271,6 +290,8 @@ class TemporalFact:
     # Optional stable reference for M1 relations/version coalescing.  Appended
     # so every pre-M1 positional constructor remains valid.
     fact_id: str | None = None
+    evidence_role: str | None = None
+    cited_source_ref: str | None = None
 
     def __post_init__(self) -> None:
         for name in ("subject", "predicate", "object", "provenance_type"):
@@ -291,6 +312,8 @@ class TemporalFact:
         if not {item.source_id for item in self.evidence}.issubset(set(self.source_ids)):
             raise ValueError("fact evidence source_id must be present in source_ids")
         _validate_optional_text("fact_id", self.fact_id)
+        _validate_optional_choice("evidence_role", self.evidence_role, EVIDENCE_ROLES)
+        _validate_optional_text("cited_source_ref", self.cited_source_ref)
 
 
 @dataclass(frozen=True, slots=True)
@@ -314,6 +337,8 @@ class TemporalRelation:
     evidence: tuple[EvidenceLocator, ...] = ()
     confidence: float = 1.0
     provenance_type: str = "source_explicit"
+    evidence_role: str | None = None
+    cited_source_ref: str | None = None
 
     def __post_init__(self) -> None:
         for name in ("relation_id", "source_ref", "target_ref", "provenance_type"):
@@ -334,6 +359,8 @@ class TemporalRelation:
         if not {item.source_id for item in self.evidence}.issubset(set(self.source_ids)):
             raise ValueError("relation evidence source_id must be present in source_ids")
         _require_confidence(self.confidence)
+        _validate_optional_choice("evidence_role", self.evidence_role, EVIDENCE_ROLES)
+        _validate_optional_text("cited_source_ref", self.cited_source_ref)
 
 
 @dataclass(frozen=True, slots=True)
@@ -359,6 +386,7 @@ class Claim:
     provenance_type: str = "unspecified"
     confidence: float = 1.0
     claim_type: str = "interpretation"
+    evidence_role: str | None = None
 
     def __post_init__(self) -> None:
         for name in ("claim_id", "actor", "proposition"):
@@ -377,3 +405,4 @@ class Claim:
         _require_text("provenance_type", self.provenance_type)
         _require_confidence(self.confidence)
         _require_choice("claim_type", self.claim_type, CLAIM_TYPES)
+        _validate_optional_choice("evidence_role", self.evidence_role, EVIDENCE_ROLES)

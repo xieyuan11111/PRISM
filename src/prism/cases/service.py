@@ -1,8 +1,9 @@
 """Automatic accumulation and merged graph writes for evolution cases.
 
 :class:`CaseService` closes the loop between per-material extraction and the
-graph: every material whose extraction succeeded is recorded under its case
-id in the durable :class:`~prism.cases.ledger.CaseExtractionLedger`, the
+graph: evidence with a case is recorded under that case id, while substantive
+case-less evidence is retained separately as ``awaiting_case_binding`` in the
+durable :class:`~prism.cases.ledger.CaseExtractionLedger`. The
 accumulated evidence of that case is merged through the conservative
 :class:`~prism.cases.CaseBundleMerger`, and the merged bundle — never one
 full case per material — is written to the injected graph service.
@@ -23,14 +24,20 @@ from __future__ import annotations
 import asyncio
 import inspect
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from datetime import datetime
 from typing import Protocol
 
 from prism.domain import EvolutionCase, Material
-from prism.extraction import ExtractionResult
+from prism.extraction import ExtractionEvidenceGap, ExtractionResult
 from prism.graph import GraphWriteResult
 
-from .ledger import CaseExtractionLedger, CaseLedgerEntry, MaterialCaseConflict
+from .ledger import (
+    CaseExtractionLedger,
+    CaseLedgerEntry,
+    MaterialCaseConflict,
+    MaterialEvidenceEntry,
+)
 
 
 class _GraphWriter(Protocol):
@@ -125,27 +132,101 @@ class CaseService:
             )
         case_id = extraction.case.case_id
         async with self._lock:
-            bound = self._ledger.case_ids_for_material(material.id)
-            if bound and case_id not in bound:
+            return await self._record_bound_locked(material, extraction)
+
+    async def record_material_extraction(
+        self, material: Material, extraction: ExtractionResult
+    ) -> MaterialEvidenceEntry:
+        """Persist graph-ready candidates that have no case yet.
+
+        This path writes only PRISM's local SQLite ledger.  It never calls
+        the graph and never derives a case from title, tags, embeddings, or
+        candidate identifiers.
+        """
+        if not isinstance(material, Material):
+            raise TypeError("material must be a Material")
+        if not isinstance(extraction, ExtractionResult):
+            raise TypeError("extraction must be an ExtractionResult")
+        if extraction.case is not None:
+            raise ValueError("material-scoped extraction must not declare a case")
+        if extraction.accumulation_status != "awaiting_case_binding":
+            raise ValueError(
+                "material-scoped accumulation requires substantive candidates"
+            )
+        if not any(
+            gap.gap_type == "missing_case_context"
+            for gap in extraction.evidence_gaps
+        ):
+            extraction = replace(
+                extraction,
+                evidence_gaps=extraction.evidence_gaps
+                + (
+                    ExtractionEvidenceGap(
+                        "missing_case_context",
+                        "validated candidates are retained at material scope "
+                        "until an explicit case binding is supplied",
+                        source_ids=(material.id,),
+                    ),
+                ),
+            )
+        self._validate_material_candidates(material, extraction)
+        async with self._lock:
+            if self._ledger.case_ids_for_material(material.id):
                 raise MaterialCaseConflict(
-                    material.id, bound, attempted_case=case_id
+                    material.id, self._ledger.case_ids_for_material(material.id)
                 )
-            previous = self._ledger.record(case_id, material, extraction)
-            try:
-                outcome = await self._merge_entries(
-                    case_id, self._ledger.entries(case_id)
+            return self._ledger.record_material(material, extraction)
+
+    async def bind_material_to_case(
+        self, material_id: str, case_id: str
+    ) -> CaseWriteOutcome:
+        """Explicitly bind one pending material to an already known case.
+
+        The existing case record supplies all case metadata; this method does
+        not synthesize a case from the material.  Evidence/source/time
+        integrity is rechecked against the stored material immediately before
+        the bound extraction enters the normal merge-and-graph path.
+        """
+        if not isinstance(material_id, str) or not material_id.strip():
+            raise ValueError("material_id must be a non-empty string")
+        if not isinstance(case_id, str) or not case_id.strip():
+            raise ValueError("case_id must be a non-empty string")
+        async with self._lock:
+            pending = self._ledger.material_entry(material_id)
+            if pending is None:
+                raise LookupError(
+                    f"no material-scoped evidence awaiting binding for {material_id!r}"
                 )
-            except BaseException as error:
-                try:
-                    self._rollback(case_id, material.id, previous)
-                except Exception as rollback_error:
-                    raise RuntimeError(
-                        f"ledger rollback for material {material.id!r} failed "
-                        f"after merge error: {rollback_error}"
-                    ) from error
-                raise
-            if outcome is None:  # pragma: no cover - ledger row exists by construction
-                raise RuntimeError("ledger lost the just-recorded entry")
+            entries = self._ledger.entries(case_id)
+            if not entries:
+                raise LookupError(
+                    f"explicit binding requires an existing case {case_id!r}"
+                )
+            bound_cases = self._ledger.case_ids_for_material(material_id)
+            if bound_cases and case_id not in bound_cases:
+                raise MaterialCaseConflict(
+                    material_id, bound_cases, attempted_case=case_id
+                )
+            self._validate_material_candidates(
+                pending.material, pending.extraction
+            )
+            template = self._template_case(case_id, entries)
+            bound = replace(
+                pending.extraction,
+                case=template,
+                nodes=tuple(
+                    replace(node, case_id=case_id)
+                    for node in pending.extraction.nodes
+                ),
+                evidence_gaps=tuple(
+                    gap
+                    for gap in pending.extraction.evidence_gaps
+                    if gap.gap_type != "missing_case_context"
+                ),
+                accumulation_status="case_bound",
+            )
+            outcome = await self._record_bound_locked(pending.material, bound)
+            self._ledger.remove_material(material_id)
             return outcome
 
     async def merge_case(self, case_id: str) -> CaseWriteOutcome | None:
@@ -202,6 +283,116 @@ class CaseService:
         return self._ledger.case_for_material(material_id)
 
     # ------------------------------------------------------------- internals
+
+    async def _record_bound_locked(
+        self, material: Material, extraction: ExtractionResult
+    ) -> CaseWriteOutcome:
+        case = extraction.case
+        if case is None:  # pragma: no cover - guarded by public entry point
+            raise ValueError("bound extraction must declare a case")
+        case_id = case.case_id
+        bound = self._ledger.case_ids_for_material(material.id)
+        if bound and case_id not in bound:
+            raise MaterialCaseConflict(material.id, bound, attempted_case=case_id)
+        previous = self._ledger.record(case_id, material, extraction)
+        try:
+            outcome = await self._merge_entries(
+                case_id, self._ledger.entries(case_id)
+            )
+        except BaseException as error:
+            try:
+                self._rollback(case_id, material.id, previous)
+            except Exception as rollback_error:
+                raise RuntimeError(
+                    f"ledger rollback for material {material.id!r} failed "
+                    f"after merge error: {rollback_error}"
+                ) from error
+            raise
+        if outcome is None:  # pragma: no cover - ledger row exists by construction
+            raise RuntimeError("ledger lost the just-recorded entry")
+        return outcome
+
+    @staticmethod
+    def _validate_material_candidates(
+        material: Material, extraction: ExtractionResult
+    ) -> None:
+        """Recheck persisted candidates without trusting old ledger JSON."""
+        collections = (
+            ("node", extraction.nodes, "source_ids"),
+            ("temporal_fact", extraction.temporal_facts, "source_ids"),
+            ("claim", extraction.claims, "based_on"),
+            ("conflict", extraction.conflicts, "source_ids"),
+            ("relation", extraction.relations, "source_ids"),
+        )
+        candidates = [
+            (kind, candidate, source_field)
+            for kind, items, source_field in collections
+            for candidate in items
+        ]
+        if not candidates:
+            raise ValueError("material-scoped evidence has no candidates")
+        substantive = False
+        for kind, candidate, source_field in candidates:
+            evidence_role = getattr(candidate, "evidence_role", None)
+            if evidence_role == "context_only" or evidence_role is None:
+                raise ValueError(
+                    f"{kind} candidate requires a substantive evidence_role"
+                )
+            if evidence_role != "publication_event":
+                substantive = True
+            source_ids = tuple(getattr(candidate, source_field))
+            if not source_ids or any(item != material.id for item in source_ids):
+                raise ValueError(
+                    f"{kind} candidate source ids must reference only stored "
+                    f"material {material.id!r}"
+                )
+            evidence = tuple(getattr(candidate, "evidence", ()))
+            if not evidence:
+                raise ValueError(f"{kind} candidate requires source evidence")
+            for locator in evidence:
+                if locator.source_id != material.id:
+                    raise ValueError(
+                        f"{kind} evidence must reference stored material {material.id!r}"
+                    )
+                if locator.quote is None or locator.quote not in material.content:
+                    raise ValueError(
+                        f"{kind} evidence quote is not present verbatim in stored material"
+                    )
+            CaseService._validate_candidate_times(kind, candidate, material)
+        if not substantive:
+            raise ValueError(
+                "publication-only material evidence cannot become substantive case evidence"
+            )
+
+    @staticmethod
+    def _validate_candidate_times(
+        kind: str, candidate: object, material: Material
+    ) -> None:
+        for name in (
+            "happened_at",
+            "valid_at",
+            "invalid_at",
+            "observed_at",
+            "stated_at",
+        ):
+            value = getattr(candidate, name, None)
+            if value is not None:
+                if not isinstance(value, datetime):
+                    raise TypeError(f"{kind}.{name} must be a datetime")
+                if value.tzinfo is None or value.utcoffset() is None:
+                    raise ValueError(f"{kind}.{name} must be timezone-aware")
+                if value > material.published_at:
+                    raise ValueError(
+                        f"{kind}.{name} must not be later than material publication"
+                    )
+        observed = getattr(candidate, "observed_at", None)
+        anchor = getattr(candidate, "happened_at", None)
+        if anchor is None:
+            anchor = getattr(candidate, "stated_at", None)
+        if anchor is None:
+            anchor = getattr(candidate, "valid_at", None)
+        if observed is not None and anchor is not None and observed < anchor:
+            raise ValueError(f"{kind}.observed_at must not precede its time anchor")
 
     def _rollback(
         self,

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -142,26 +144,108 @@ def make_paths(tmp_path: Path) -> PathConfig:
 
 
 def test_extraction_json_roundtrip_preserves_every_field():
-    extraction = make_extraction()
+    extraction = replace(
+        make_extraction(),
+        nodes=(replace(NODE, evidence_role="publication_event"),),
+        temporal_facts=(
+            replace(
+                FACT,
+                evidence_role="cited_prior_research",
+                cited_source_ref="Smith et al. (2020)",
+            ),
+        ),
+        claims=(replace(CLAIM, evidence_role="current_synthesis"),),
+        conflicts=(
+            replace(
+                CONFLICT,
+                evidence_role="cited_prior_research",
+                cited_source_ref="Smith et al. (2020)",
+            ),
+        ),
+        material_role="review",
+    )
     decoded = extraction_from_json(extraction_to_json(extraction))
     assert decoded == extraction
     assert decoded.nodes[0].evidence[0].corpus_path == NODE.evidence[0].corpus_path
-    assert decoded.conflicts == (CONFLICT,)
+    assert decoded.conflicts == extraction.conflicts
+    assert decoded.conflicts[0].cited_source_ref == "Smith et al. (2020)"
     assert decoded.evidence_gaps == (GAP,)
+    assert decoded.temporal_facts[0].evidence_role == "cited_prior_research"
+    assert decoded.temporal_facts[0].cited_source_ref == "Smith et al. (2020)"
+    assert decoded.claims[0].evidence_role == "current_synthesis"
+
+
+def test_old_extraction_json_without_evidence_roles_stays_compatible():
+    encoded = json.loads(extraction_to_json(make_extraction()))
+    encoded.pop("accumulation_status")
+    for collection in ("nodes", "temporal_facts", "claims", "conflicts", "relations"):
+        for candidate in encoded[collection]:
+            candidate.pop("evidence_role")
+            candidate.pop("cited_source_ref", None)
+
+    decoded = extraction_from_json(json.dumps(encoded))
+
+    assert decoded == make_extraction()
+    assert decoded.nodes[0].evidence_role is None
 
 
 def test_extraction_json_roundtrip_preserves_a_caseless_result():
     extraction = ExtractionResult(
+        nodes=(replace(NODE, evidence_role="cited_prior_research"),),
+        temporal_facts=(
+            replace(
+                FACT,
+                evidence_role="cited_prior_research",
+                cited_source_ref="Smith et al. (2020)",
+            ),
+        ),
         warnings=("no LLM router configured; structured extraction skipped",),
         evidence_gaps=(
             ExtractionEvidenceGap(
-                "extraction_unavailable",
-                "no evolution candidates were produced",
+                "missing_case_context",
+                "validated candidates were retained but have no case context",
+                source_ids=("mat-1",),
+            ),
+        ),
+        material_role="review",
+    )
+    decoded = extraction_from_json(extraction_to_json(extraction))
+    assert decoded == extraction
+    assert decoded.case is None
+    assert decoded.nodes[0].evidence_role == "cited_prior_research"
+    assert decoded.temporal_facts[0].cited_source_ref == "Smith et al. (2020)"
+
+
+def test_material_scoped_result_and_ledger_state_are_explicit_and_durable(tmp_path):
+    caseless = make_extraction()
+    caseless = ExtractionResult(
+        case=None,
+        temporal_facts=caseless.temporal_facts,
+        evidence_gaps=(
+            ExtractionEvidenceGap(
+                "missing_case_context",
+                "validated candidates were retained but have no case context",
                 source_ids=("mat-1",),
             ),
         ),
     )
-    assert extraction_from_json(extraction_to_json(extraction)) == extraction
+    assert caseless.accumulation_status == "awaiting_case_binding"
+
+    ledger = CaseExtractionLedger(make_paths(tmp_path))
+    try:
+        entry = ledger.record_material(make_material(), caseless)
+        assert entry.status == "awaiting_case_binding"
+        assert entry.material_id == "mat-1"
+        assert entry.extraction == caseless
+        assert ledger.material_entries() == (entry,)
+    finally:
+        ledger.close()
+
+    reopened = CaseExtractionLedger(make_paths(tmp_path))
+    try:
+        assert reopened.material_entry("mat-1") == entry
+    finally:
+        reopened.close()
 
 
 def test_material_json_roundtrip_preserves_every_field():

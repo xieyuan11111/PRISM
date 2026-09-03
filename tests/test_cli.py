@@ -16,6 +16,7 @@ from prism.cli import (
     handle_timeline,
     main,
 )
+from prism.graph import GraphTimeline, TimelineEntry
 
 
 NOW = datetime(2026, 9, 1, 9, 30, tzinfo=timezone.utc)
@@ -187,6 +188,39 @@ def test_timeline_requires_and_delegates_an_aware_iso_timestamp():
     }
 
 
+def test_timeline_api_json_exposes_secondary_evidence_layer():
+    class LayeredAPI(FakeAPI):
+        async def build_timeline(self, case_id, as_of):
+            self.calls.append(("build_timeline", (case_id, as_of), {}))
+            entry = TimelineEntry(
+                episode_key="fact-prior",
+                case_id=case_id,
+                kind="temporal_fact",
+                summary="A prior study reported the result.",
+                reference_time=as_of,
+                valid_at=datetime(2020, 1, 1, tzinfo=timezone.utc),
+                invalid_at=None,
+                source_ids=("review-material",),
+                confidence=0.8,
+                provenance_type="cited_prior_research",
+                stance=None,
+                payload='{"kind":"temporal_fact"}',
+                evidence_role="cited_prior_research",
+                cited_source_ref="Smith et al. (2020)",
+            )
+            return GraphTimeline(case_id, as_of, (entry,))
+
+    api = LayeredAPI()
+    status, stdout, stderr = run_cli(
+        ["timeline", "case-1", "--as-of", "2026-09-01T09:30:00+00:00"], api
+    )
+
+    assert status == 0 and stderr == ""
+    entry = json.loads(stdout)["entries"][0]
+    assert entry["evidence_role"] == "cited_prior_research"
+    assert entry["cited_source_ref"] == "Smith et al. (2020)"
+
+
 def test_naive_timeline_timestamp_is_a_usage_error_and_does_not_call_api():
     api = FakeAPI()
 
@@ -293,6 +327,7 @@ class ProcessingFakeAPI(FakeAPI):
         super().__init__()
         self.processed: list[tuple[object, dict | None]] = []
         self.merged: list[tuple[str, tuple[str, ...] | None]] = []
+        self.bound: list[tuple[str, str]] = []
 
     async def process_material(self, source, metadata=None):
         self.processed.append((source, metadata))
@@ -307,6 +342,10 @@ class ProcessingFakeAPI(FakeAPI):
     async def merge_case(self, case_id, materials=None):
         self.merged.append((case_id, tuple(materials) if materials else None))
         return {"case_id": case_id, "material_ids": ["mat-1"]}
+
+    async def bind_material_to_case(self, material_id, case_id):
+        self.bound.append((material_id, case_id))
+        return {"case_id": case_id, "material_ids": ["mat-1", material_id]}
 
 
 def test_process_delegates_to_the_unified_processing_entry_point():
@@ -361,3 +400,13 @@ def test_merge_case_requires_a_case_id():
     api = ProcessingFakeAPI()
     status, _, err = run_cli(["merge-case"], api)
     assert status == 2 and err
+
+
+def test_bind_material_requires_explicit_material_and_case_ids():
+    api = ProcessingFakeAPI()
+    status, out, err = run_cli(
+        ["bind-material", "mat-review", "case-1"], api
+    )
+    assert status == 0 and err == ""
+    assert api.bound == [("mat-review", "case-1")]
+    assert json.loads(out)["case_id"] == "case-1"

@@ -242,6 +242,9 @@ def test_extract_material_handles_multiple_events_and_keeps_three_time_axes():
     assert "material_role" in prompt
     assert "review" in prompt and "primary_study" in prompt
     assert "cited_prior_research" in prompt
+    assert "evidence_role" in prompt and "current_synthesis" in prompt
+    assert "Preserve an earlier study's supported result" in prompt
+    assert "so they are excluded from graph-ready output" not in prompt
 
 
 def test_prediction_is_a_claim_not_a_confirmed_fact():
@@ -338,9 +341,10 @@ def test_no_substantive_change_does_not_fabricate_a_publication_node():
     assert result.evidence_gaps[0].gap_type == "no_substantive_evolution"
 
 
-def test_review_cited_research_is_context_not_graph_evolution():
+def test_review_cited_research_is_secondary_graph_evolution():
     review_body = (
         "A 2020 study reported that the intervention doubled recovery.\n\n"
+        "The cited literature reported both doubled recovery and no effect estimates.\n\n"
         "In this review, the authors conclude that the evidence remains mixed."
     )
     review = material(
@@ -356,9 +360,27 @@ def test_review_cited_research_is_context_not_graph_evolution():
             "canonical_name": "Intervention evidence",
             "start_at": "2020-01-01T00:00:00+00:00",
             "status": "mixed",
-            "node_ids": ["review-publication"],
+            "node_ids": ["prior-study", "review-publication"],
         },
         "nodes": [
+            {
+                "id": "prior-study",
+                "case_id": "case-disclosure",
+                "node_type": "publication",
+                "assertion_type": "fact",
+                "happened_at": "2020-01-01T00:00:00+00:00",
+                "valid_at": "2020-01-01T00:00:00+00:00",
+                "observed_at": PUBLISHED.isoformat(),
+                "summary": "A 2020 study reported doubled recovery.",
+                "source_ids": ["material-evolution"],
+                "claim_ids": ["prior-claim"],
+                "provenance_type": "cited_prior_research",
+                "evidence_role": "cited_prior_research",
+                "evidence": evidence(
+                    "A 2020 study reported that the intervention doubled recovery.",
+                    1,
+                ),
+            },
             {
                 "id": "review-publication",
                 "case_id": "case-disclosure",
@@ -371,9 +393,10 @@ def test_review_cited_research_is_context_not_graph_evolution():
                 "source_ids": ["material-evolution"],
                 "claim_ids": ["review-conclusion"],
                 "provenance_type": "material_publication",
+                "evidence_role": "publication_event",
                 "evidence": evidence(
                     "In this review, the authors conclude that the evidence remains mixed.",
-                    2,
+                    3,
                 ),
             }
         ],
@@ -390,6 +413,8 @@ def test_review_cited_research_is_context_not_graph_evolution():
                 "source_ids": ["material-evolution"],
                 "confidence": 0.9,
                 "provenance_type": "cited_prior_research",
+                "evidence_role": "cited_prior_research",
+                "cited_source_ref": "Smith et al. (2020), doi:10.1000/example",
                 "evidence": evidence(
                     "A 2020 study reported that the intervention doubled recovery.",
                     1,
@@ -408,6 +433,7 @@ def test_review_cited_research_is_context_not_graph_evolution():
                 "based_on": ["material-evolution"],
                 "revised_by": None,
                 "provenance_type": "cited_prior_research",
+                "evidence_role": "cited_prior_research",
                 "confidence": 0.9,
                 "evidence": evidence(
                     "A 2020 study reported that the intervention doubled recovery.",
@@ -425,14 +451,34 @@ def test_review_cited_research_is_context_not_graph_evolution():
                 "based_on": ["material-evolution"],
                 "revised_by": None,
                 "provenance_type": "current_author_interpretation",
+                "evidence_role": "current_synthesis",
                 "confidence": 0.8,
                 "evidence": evidence(
                     "In this review, the authors conclude that the evidence remains mixed.",
-                    2,
+                    3,
                 ),
             },
         ],
-        "conflicts": [],
+        "conflicts": [
+            {
+                "conflict_id": "prior-estimate-conflict",
+                "subject": "Intervention",
+                "predicate": "recovery effect",
+                "alternatives": ["doubled recovery", "no effect"],
+                "source_ids": ["material-evolution"],
+                "valid_at": "2020-01-01T00:00:00+00:00",
+                "invalid_at": None,
+                "observed_at": PUBLISHED.isoformat(),
+                "confidence": 0.7,
+                "provenance_type": "cited_prior_research",
+                "evidence_role": "cited_prior_research",
+                "cited_source_ref": "Smith et al. (2020), doi:10.1000/example",
+                "evidence": evidence(
+                    "The cited literature reported both doubled recovery and no effect estimates.",
+                    2,
+                ),
+            }
+        ],
         "relations": [],
         "warnings": [],
     }
@@ -444,20 +490,32 @@ def test_review_cited_research_is_context_not_graph_evolution():
     )
 
     assert result.material_role == "review"
-    assert [node.id for node in result.nodes] == ["review-publication"]
-    assert result.temporal_facts == ()
-    assert [claim.claim_id for claim in result.claims] == ["review-conclusion"]
-    assert {gap.item_id for gap in result.evidence_gaps} >= {
-        "prior-result",
-        "prior-claim",
-    }
-    assert any(
-        "review/synthesis context" in warning for warning in result.warnings
+    assert [node.id for node in result.nodes] == ["prior-study", "review-publication"]
+    assert result.nodes[0].evidence_role == "cited_prior_research"
+    assert [fact.fact_id for fact in result.temporal_facts] == ["prior-result"]
+    assert result.temporal_facts[0].evidence_role == "cited_prior_research"
+    assert result.temporal_facts[0].cited_source_ref == (
+        "Smith et al. (2020), doi:10.1000/example"
     )
+    assert [claim.claim_id for claim in result.claims] == [
+        "prior-claim",
+        "review-conclusion",
+    ]
+    assert result.claims[0].evidence_role == "cited_prior_research"
+    assert result.claims[1].evidence_role == "current_synthesis"
+    assert result.conflicts[0].evidence_role == "cited_prior_research"
+    assert result.conflicts[0].cited_source_ref == (
+        "Smith et al. (2020), doi:10.1000/example"
+    )
+    unresolved = next(
+        gap for gap in result.evidence_gaps if gap.gap_type == "unresolved_cited_source"
+    )
+    assert unresolved.item_id == "prior-result"
 
     backend = OfflineBackend()
+    graph = GraphService(backend)
     write = run(
-        GraphService(backend).add_case(
+        graph.add_case(
             result.case,
             nodes=result.nodes,
             facts=result.temporal_facts,
@@ -467,11 +525,41 @@ def test_review_cited_research_is_context_not_graph_evolution():
             materials=(review,),
         )
     )
-    assert not any(episode.kind == "temporal_fact" for episode in write.episodes)
-    assert not any("prior-claim" in episode.episode_body for episode in write.episodes)
+    assert any(episode.kind == "temporal_fact" for episode in write.episodes)
+    assert any("prior-claim" in episode.episode_body for episode in write.episodes)
+    assert any(
+        '"evidence_role":"cited_prior_research"' in episode.episode_body
+        for episode in write.episodes
+    )
     assert sum(
         episode.kind == "evolution_node" for episode in write.episodes
-    ) == 1
+    ) == 2
+    timeline = run(graph.timeline("case-disclosure", FETCHED))
+    prior_fact_entry = next(
+        entry for entry in timeline.entries if entry.kind == "temporal_fact"
+    )
+    assert prior_fact_entry.evidence_role == "cited_prior_research"
+    assert prior_fact_entry.cited_source_ref == (
+        "Smith et al. (2020), doi:10.1000/example"
+    )
+    prior_conflict_entry = next(
+        entry
+        for entry in timeline.entries
+        if entry.kind == "temporal_relation"
+        and entry.evidence_role == "cited_prior_research"
+    )
+    assert prior_conflict_entry.cited_source_ref == (
+        "Smith et al. (2020), doi:10.1000/example"
+    )
+    analysis = run(AnalyzerService(graph).analyze("case-disclosure", FETCHED))
+    prior_fact_stage = next(
+        stage for stage in analysis.stages if stage.kind == "temporal_fact"
+    )
+    assert prior_fact_stage.evidence_role == "cited_prior_research"
+    assert any(gap.gap_type == "missing_primary_source" for gap in analysis.evidence_gaps)
+    report = run(ReportService().report(analysis))
+    assert "cited_prior_research" in report.markdown
+    assert "secondary evidence" in report.markdown
 
 
 def test_review_current_author_temporal_revision_is_allowed_with_exact_evidence():
@@ -489,8 +577,25 @@ def test_review_current_author_temporal_revision_is_allowed_with_exact_evidence(
             "node_type": "revision",
             "summary": "The synthesis revises the earlier conclusion.",
             "provenance_type": "current_author_temporal_synthesis",
+            "evidence_role": "current_synthesis",
         }
     )
+    extracted["relations"] = [
+        {
+            "relation_id": "review-revises-prior",
+            "relation_type": "revises",
+            "source_ref": "revision",
+            "target_ref": "earlier-conclusion",
+            "valid_at": PUBLISHED.isoformat(),
+            "invalid_at": None,
+            "observed_at": PUBLISHED.isoformat(),
+            "source_ids": ["material-evolution"],
+            "evidence": evidence(comparison, 1),
+            "confidence": 0.8,
+            "provenance_type": "current_author_temporal_synthesis",
+            "evidence_role": "current_synthesis",
+        }
+    ]
 
     result = run(
         service(extracted)[0].extract_material(
@@ -500,7 +605,84 @@ def test_review_current_author_temporal_revision_is_allowed_with_exact_evidence(
 
     assert result.material_role == "synthesis"
     assert [node.id for node in result.nodes] == ["revision"]
+    assert result.nodes[0].evidence_role == "current_synthesis"
+    assert [relation.relation_id for relation in result.relations] == [
+        "review-revises-prior"
+    ]
+    assert result.relations[0].evidence_role == "current_synthesis"
     assert result.evidence_gaps == ()
+
+
+def test_review_cited_prior_publication_node_alone_is_not_review_publication_padding():
+    prior = "A 2020 study reported that the intervention doubled recovery."
+    review = material(type="academic", content=prior)
+    extracted = small_payload(evidence(prior, 1))
+    extracted["material_role"] = "review"
+    extracted["case"]["case_type"] = "academic_discourse"
+    extracted["case"]["start_at"] = "2020-01-01T00:00:00+00:00"
+    extracted["case"]["node_ids"] = ["prior-study"]
+    extracted["nodes"][0].update(
+        {
+            "id": "prior-study",
+            "node_type": "publication",
+            "happened_at": "2020-01-01T00:00:00+00:00",
+            "valid_at": "2020-01-01T00:00:00+00:00",
+            "summary": "A 2020 study reported doubled recovery.",
+            "provenance_type": "cited_prior_research",
+            "evidence_role": "cited_prior_research",
+        }
+    )
+
+    result = run(
+        service(extracted)[0].extract_material(
+            review, corpus_path="corpus/2026-03/prior-node.md"
+        )
+    )
+
+    assert result.case is not None
+    assert [node.id for node in result.nodes] == ["prior-study"]
+    assert not any(gap.gap_type == "no_substantive_evolution" for gap in result.evidence_gaps)
+
+
+def test_review_context_only_candidate_becomes_gap():
+    background = "Researchers have long discussed this intervention."
+    review = material(type="academic", content=background)
+    extracted = payload()
+    extracted["material_role"] = "review"
+    extracted["case"]["case_type"] = "academic_discourse"
+    extracted["case"]["start_at"] = "2020-01-01T00:00:00+00:00"
+    extracted["case"]["node_ids"] = []
+    extracted["nodes"] = []
+    extracted["claims"] = []
+    extracted["temporal_facts"] = [
+        {
+            "fact_id": "generic-background",
+            "subject": "Researchers",
+            "predicate": "discussed",
+            "object": "the intervention",
+            "assertion_type": "fact",
+            "valid_at": "2020-01-01T00:00:00+00:00",
+            "invalid_at": None,
+            "observed_at": PUBLISHED.isoformat(),
+            "source_ids": ["material-evolution"],
+            "confidence": 0.4,
+            "provenance_type": "context_only",
+            "evidence_role": "context_only",
+            "evidence": evidence(background, 1),
+        }
+    ]
+
+    result = run(
+        service(extracted)[0].extract_material(
+            review, corpus_path="corpus/2026-03/context.md"
+        )
+    )
+
+    assert result.case is None
+    assert result.temporal_facts == ()
+    gap = next(gap for gap in result.evidence_gaps if gap.item_id == "generic-background")
+    assert gap.gap_type == "review_context"
+    assert "evidence_role='context_only'" in gap.detail
 
 
 def test_review_publication_alone_cannot_create_an_empty_shell_case():
@@ -516,6 +698,7 @@ def test_review_publication_alone_cannot_create_an_empty_shell_case():
             "node_type": "publication",
             "summary": "The review was published.",
             "provenance_type": "material_publication",
+            "evidence_role": "publication_event",
         }
     )
 
@@ -538,6 +721,10 @@ def test_review_publication_alone_cannot_create_an_empty_shell_case():
 def test_non_review_role_is_not_changed_by_review_like_title(role):
     primary = payload()
     primary["material_role"] = role
+    for node in primary["nodes"]:
+        node["evidence_role"] = "primary_observation"
+    primary["temporal_facts"][0]["evidence_role"] = "primary_observation"
+    primary["claims"][0]["evidence_role"] = "primary_observation"
 
     result = run(
         service(primary)[0].extract_material(
@@ -549,6 +736,23 @@ def test_non_review_role_is_not_changed_by_review_like_title(role):
     assert result.material_role == role
     assert [node.id for node in result.nodes] == ["proposal", "implementation"]
     assert len(result.temporal_facts) == 1
+    assert result.temporal_facts[0].evidence_role == "primary_observation"
+
+
+def test_unknown_evidence_role_is_rejected_as_a_candidate_validation_gap():
+    candidate = payload()
+    candidate["nodes"][0]["evidence_role"] = "secondary-ish"
+
+    result = run(
+        service(candidate)[0].extract_material(
+            material(), corpus_path="corpus/2026-03/invalid-evidence-role.md"
+        )
+    )
+
+    assert [node.id for node in result.nodes] == ["implementation"]
+    gap = next(gap for gap in result.evidence_gaps if gap.item_id == "proposal")
+    assert gap.gap_type == "candidate_validation_failed"
+    assert "evidence_role" in gap.detail
 
 
 def test_unknown_material_role_is_rejected():
@@ -1053,15 +1257,40 @@ def test_unusable_case_id_with_no_candidates_records_single_gap():
     assert result.evidence_gaps[0].gap_type == "unusable_case"
 
 
-def test_case_null_with_candidates_is_still_rejected():
-    contradictory = payload()
-    contradictory["case"] = None
-    with pytest.raises(ExtractionError, match="case must be non-null"):
-        run(
-            service(contradictory)[0].extract_material(
-                material(), corpus_path="corpus/2026-03/disclosure.md"
-            )
+def test_case_null_with_valid_cited_prior_candidate_is_retained_with_case_gap():
+    prior = "A 2020 study reported that the intervention doubled recovery."
+    review = material(type="academic", content=prior, case_tags=())
+    extracted = small_payload(evidence(prior, 1))
+    extracted["material_role"] = "review"
+    extracted["case"] = None
+    extracted["nodes"][0].update(
+        {
+            "id": "prior-study",
+            "node_type": "publication",
+            "happened_at": "2020-01-01T00:00:00+00:00",
+            "valid_at": "2020-01-01T00:00:00+00:00",
+            "summary": "A 2020 study reported doubled recovery.",
+            "provenance_type": "cited_prior_research",
+            "evidence_role": "cited_prior_research",
+        }
+    )
+
+    result = run(
+        service(extracted)[0].extract_material(
+            review, corpus_path="corpus/2026-03/caseless-review.md"
         )
+    )
+
+    assert result.case is None
+    assert [node.id for node in result.nodes] == ["prior-study"]
+    assert result.nodes[0].case_id == "case-disclosure"
+    assert result.nodes[0].evidence_role == "cited_prior_research"
+    gap = next(
+        gap for gap in result.evidence_gaps if gap.gap_type == "missing_case_context"
+    )
+    assert gap.item_kind is None and gap.item_id is None
+    assert gap.source_ids == (review.id,)
+    assert "retained" in gap.detail and "case-specific graph" in gap.detail
 
 
 @pytest.mark.parametrize(

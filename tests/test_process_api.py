@@ -276,6 +276,7 @@ class FakeCaseService:
         self.recorded: list[tuple] = []
         self.merge_case_calls: list[str] = []
         self.merge_explicit_calls: list[tuple] = []
+        self.bind_calls: list[tuple[str, str]] = []
         self.known = {"mat-1": "case-1"}
         self.outcome = SimpleNamespace(
             case_id="case-1",
@@ -294,6 +295,10 @@ class FakeCaseService:
 
     async def merge_explicit(self, case_id, material_ids):
         self.merge_explicit_calls.append((case_id, tuple(material_ids)))
+        return self.outcome
+
+    async def bind_material_to_case(self, material_id, case_id):
+        self.bind_calls.append((material_id, case_id))
         return self.outcome
 
     def case_for_material(self, material_id):
@@ -545,6 +550,20 @@ def test_merge_case_supports_full_accumulation_and_explicit_subsets():
         api_no_cases._case_service = None
         with pytest.raises(ValueError, match="case_service"):
             await api_no_cases.merge_case("case-1")
+
+    run(main())
+
+
+def test_bind_material_to_case_delegates_only_explicit_ids():
+    async def main():
+        api, parts = make_api()
+        outcome = await api.bind_material_to_case("mat-review", "case-1")
+        assert outcome is parts["cases"].outcome
+        assert parts["cases"].bind_calls == [("mat-review", "case-1")]
+
+        api._case_service = None
+        with pytest.raises(ValueError, match="case_service"):
+            await api.bind_material_to_case("mat-review", "case-1")
 
     run(main())
 

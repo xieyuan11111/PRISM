@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -112,6 +113,11 @@ def test_service_maps_every_domain_object_to_explicit_safe_episode_payloads():
     backend = FakeBackend()
     service = GraphService(backend)
     case, node, fact, claim, material = fixtures()
+    fact = replace(
+        fact,
+        evidence_role="cited_prior_research",
+        cited_source_ref="Smith et al. (2020)",
+    )
 
     result = run(
         service.add_case(
@@ -137,6 +143,13 @@ def test_service_maps_every_domain_object_to_explicit_safe_episode_payloads():
     assert payloads["temporal_fact"]["source_ids"] == ["material-a", "material-b"]
     assert payloads["temporal_fact"]["confidence"] == 0.61
     assert payloads["temporal_fact"]["provenance_type"] == "model_inference"
+    assert payloads["temporal_fact"]["evidence_role"] == "cited_prior_research"
+    assert payloads["temporal_fact"]["cited_source_ref"] == "Smith et al. (2020)"
+    fact_episode = next(
+        episode for episode in result.episodes if episode.kind == "temporal_fact"
+    )
+    assert fact_episode.evidence_role == "cited_prior_research"
+    assert fact_episode.cited_source_ref == "Smith et al. (2020)"
     assert payloads["claim"]["stance"] == "uncertain"
     assert payloads["claim"]["revised_by"] == "claim-b"
     serialized = "\n".join(episode.episode_body for episode in result.episodes)
@@ -165,6 +178,11 @@ def test_as_of_timeline_uses_half_open_validity_and_keeps_provenance():
     backend = FakeBackend()
     service = GraphService(backend)
     case, node, fact, claim, material = fixtures()
+    fact = replace(
+        fact,
+        evidence_role="cited_prior_research",
+        cited_source_ref="Smith et al. (2020)",
+    )
     run(service.add_case(case, nodes=[node], facts=[fact], claims=[claim], materials=[material]))
 
     before = run(service.timeline(case.case_id, NOW + timedelta(hours=1, minutes=30)))
@@ -181,6 +199,8 @@ def test_as_of_timeline_uses_half_open_validity_and_keeps_provenance():
     assert fact_entry.source_ids == ("material-a", "material-b")
     assert fact_entry.confidence == 0.61
     assert fact_entry.provenance_type == "model_inference"
+    assert fact_entry.evidence_role == "cited_prior_research"
+    assert fact_entry.cited_source_ref == "Smith et al. (2020)"
     assert not any(entry.kind == "temporal_fact" for entry in at_invalidation.entries)
     assert backend.search_calls[-1] == "PRISM timeline for case_id=case-housing"
 

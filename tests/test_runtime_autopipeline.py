@@ -143,6 +143,43 @@ class FakeEvolutionExtractor:
         )
 
 
+class CaselessReviewExtractor(FakeEvolutionExtractor):
+    """Produces a legal secondary fact without inventing a case."""
+
+    async def extract_material(self, material, *, corpus_path=None):
+        if "review" not in material.title:
+            return await super().extract_material(
+                material, corpus_path=corpus_path
+            )
+        self.calls.append(material.id)
+        locator = EvidenceLocator(
+            source_id=material.id,
+            corpus_path=f"corpus/2026-08/example.test/{material.id}.md",
+            paragraph=1,
+            quote=material.content,
+        )
+        fact = TemporalFact(
+            subject="Prior study",
+            predicate="reported",
+            object="a secondary result",
+            valid_at=datetime(2020, 1, 1, tzinfo=timezone.utc),
+            invalid_at=None,
+            observed_at=material.published_at,
+            source_ids=(material.id,),
+            confidence=0.8,
+            provenance_type="cited_prior_research",
+            evidence=(locator,),
+            fact_id="prior-result",
+            evidence_role="cited_prior_research",
+            cited_source_ref="Smith et al. (2020)",
+        )
+        return ExtractionResult(
+            case=None,
+            temporal_facts=(fact,),
+            material_role="review",
+        )
+
+
 async def await_completion(runtime: PrismRuntime, material_id: str) -> object:
     for _ in range(500):
         run = runtime.pipeline.run_for(material_id)
@@ -313,6 +350,74 @@ def test_accumulated_case_state_rebuilds_after_restart(tmp_path):
             assert rebuilt is not None
             assert rebuilt.bundle == original.bundle
             assert rebuilt.material_ids == original.material_ids
+        finally:
+            await restarted.close()
+
+    run(main())
+
+
+def test_caseless_review_evidence_persists_then_binds_without_early_graph_write(tmp_path):
+    async def main():
+        config_path = make_config(tmp_path)
+        backend = FakeGraphBackend()
+        extractor = CaselessReviewExtractor()
+        runtime = await create_runtime(
+            config_path,
+            graph_backend=backend,
+            extraction_service=extractor,
+        )
+        primary = await runtime.api.ingest_material(
+            write_material(
+                tmp_path,
+                "policy-update",
+                "The agency published the revised policy.",
+            )
+        )
+        review = await runtime.api.ingest_material(
+            write_material(
+                tmp_path,
+                "review-evidence",
+                "The review reports a supported prior result.",
+            )
+        )
+        await await_completion(runtime, primary.material.id)
+        review_run = await await_completion(runtime, review.material.id)
+
+        pending = runtime.case_ledger.material_entry(review.material.id)
+        assert pending is not None
+        assert pending.status == "awaiting_case_binding"
+        assert pending.extraction.temporal_facts[0].cited_source_ref == (
+            "Smith et al. (2020)"
+        )
+        assert "persisted with status awaiting_case_binding" in (
+            review_run.stages[2].detail
+        )
+        assert not any(
+            episode.evidence_role == "cited_prior_research"
+            for episode in backend.episodes.values()
+        )
+        await runtime.close()
+
+        rebound_backend = FakeGraphBackend()
+        restarted = await create_runtime(
+            config_path, graph_backend=rebound_backend
+        )
+        try:
+            pending = restarted.case_ledger.material_entry(review.material.id)
+            assert pending is not None
+            outcome = await restarted.api.bind_material_to_case(
+                review.material.id, CASE_ID
+            )
+            assert review.material.id in outcome.material_ids
+            assert restarted.case_ledger.material_entry(review.material.id) is None
+            secondary = [
+                episode
+                for episode in rebound_backend.episodes.values()
+                if episode.evidence_role == "cited_prior_research"
+            ]
+            assert len(secondary) == 1
+            assert secondary[0].source_ids == (review.material.id,)
+            assert secondary[0].cited_source_ref == "Smith et al. (2020)"
         finally:
             await restarted.close()
 

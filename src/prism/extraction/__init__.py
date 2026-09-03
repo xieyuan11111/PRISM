@@ -1,6 +1,7 @@
 """Strict, source-bound structured extraction from normalized materials."""
 
 from .service import (
+    ACCUMULATION_STATUSES,
     ExtractionConflict,
     ExtractionError,
     ExtractionEvidenceGap,
@@ -11,6 +12,7 @@ from .service import (
 )
 
 __all__ = [
+    "ACCUMULATION_STATUSES",
     "ExtractionConflict",
     "ExtractionError",
     "ExtractionEvidenceGap",

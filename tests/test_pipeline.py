@@ -344,7 +344,7 @@ def test_index_failure_raises_pipeline_error_and_stays_retryable():
 
 def test_extraction_failure_reports_the_completed_index_stage():
     async def main():
-        boom = ExtractionError("completion is not valid JSON")
+        boom = ExtractionError("completion must contain a JSON object")
         service, indexer, extractor, graph, _ = make_service(extraction_exc=boom)
 
         with pytest.raises(PipelineError) as info:
@@ -355,6 +355,11 @@ def test_extraction_failure_reports_the_completed_index_stage():
         assert [stage.name for stage in error.stages] == ["index"]
         assert error.stages[0].result.status == "indexed"
         assert graph.calls == []
+        failure = service.failure_for("mat-1")
+        assert failure is not None
+        assert failure.stage == "extract"
+        assert failure.error_type == "ExtractionError"
+        assert failure.message == "completion must contain a JSON object"
 
         extractor.exc = None
         retried = await service.run_material(make_result())
@@ -513,6 +518,29 @@ def test_caseless_extraction_skips_the_graph_stage_without_fabricating_a_case():
     asyncio.run(main())
 
 
+def test_caseless_candidates_are_retained_but_never_sent_to_case_graph():
+    async def main():
+        extraction = ExtractionResult(case=None, nodes=(NODE,))
+        recorder = FakeCaseRecorder()
+        service, _indexer, _extractor, graph, order = make_recorded_service(
+            recorder, extraction_result=extraction
+        )
+
+        run = await service.run_material(make_result())
+
+        assert order == ["index", "extract"]
+        assert run.stages[1].result is extraction
+        assert run.stages[1].result.nodes == (NODE,)
+        assert run.stages[2].status == "skipped"
+        assert "material-scoped candidates" in run.stages[2].detail
+        assert "case-specific graph" in run.stages[2].detail
+        assert recorder.calls == []
+        assert recorder.material_calls == [(make_result().material, extraction)]
+        assert graph.calls == []
+
+    asyncio.run(main())
+
+
 def test_unexpected_stage_result_types_fail_explicitly():
     async def main():
         service, indexer, *_ = make_service()
@@ -655,6 +683,7 @@ class FakeCaseRecorder:
 
     def __init__(self, outcome: object | None = None, exc: Exception | None = None):
         self.calls: list[tuple[Material, ExtractionResult]] = []
+        self.material_calls: list[tuple[Material, ExtractionResult]] = []
         self.outcome = outcome
         self.exc = exc
 
@@ -669,6 +698,14 @@ class FakeCaseRecorder:
                 write=GraphWriteResult((), ("merged-episode",), ()),
                 material_ids=("mat-1",),
             )
+        )
+
+    async def record_material_extraction(self, material, extraction):
+        self.material_calls.append((material, extraction))
+        return SimpleNamespace(
+            material_id=material.id,
+            status="awaiting_case_binding",
+            extraction=extraction,
         )
 
 

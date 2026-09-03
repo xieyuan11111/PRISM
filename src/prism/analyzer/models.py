@@ -14,7 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
-from prism.domain import EvidenceLocator
+from prism.domain import EVIDENCE_ROLES, EvidenceLocator
 
 FACT_LAYER = "fact"
 INTERPRETATION_LAYER = "interpretation"
@@ -197,6 +197,8 @@ class TimelineStage:
     source_ref: str | None = None
     target_ref: str | None = None
     record_id: str | None = None
+    evidence_role: str | None = None
+    cited_source_ref: str | None = None
 
     def __post_init__(self) -> None:
         for name in ("episode_key", "kind", "layer", "summary"):
@@ -213,6 +215,10 @@ class TimelineStage:
             "relation_type", "source_ref", "target_ref", "record_id",
         ):
             _optional_text(name, getattr(self, name))
+        if self.evidence_role is not None and self.evidence_role not in EVIDENCE_ROLES:
+            allowed = ", ".join(sorted(EVIDENCE_ROLES))
+            raise ValueError(f"evidence_role must be one of: {allowed}")
+        _optional_text("cited_source_ref", self.cited_source_ref)
         if self.happened_at is not None:
             require_aware("happened_at", self.happened_at)
         _optional_confidence("confidence", self.confidence)
@@ -383,6 +389,8 @@ class ComparisonChange:
     provenance_type: str | None = None
     stance: str | None = None
     evidence: tuple[EvidenceLocator, ...] = ()
+    evidence_role: str | None = None
+    cited_source_ref: str | None = None
 
     def __post_init__(self) -> None:
         for name in ("episode_key", "kind", "layer", "summary"):
@@ -396,6 +404,10 @@ class ComparisonChange:
         _optional_confidence("confidence", self.confidence)
         _optional_text("provenance_type", self.provenance_type)
         _optional_text("stance", self.stance)
+        if self.evidence_role is not None and self.evidence_role not in EVIDENCE_ROLES:
+            allowed = ", ".join(sorted(EVIDENCE_ROLES))
+            raise ValueError(f"evidence_role must be one of: {allowed}")
+        _optional_text("cited_source_ref", self.cited_source_ref)
         object.__setattr__(
             self, "evidence", _typed_tuple("evidence", self.evidence, EvidenceLocator)
         )

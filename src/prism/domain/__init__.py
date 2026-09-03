@@ -1,6 +1,7 @@
 """Public exports for PRISM domain models."""
 from .models import (
     Claim,
+    EVIDENCE_ROLES,
     EvidenceLocator,
     EvolutionCase,
     EvolutionNode,
@@ -12,6 +13,7 @@ from .models import (
 
 __all__ = [
     "Claim",
+    "EVIDENCE_ROLES",
     "EvidenceLocator",
     "EvolutionCase",
     "EvolutionNode",

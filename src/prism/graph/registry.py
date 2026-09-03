@@ -295,6 +295,20 @@ class SQLiteEpisodeRegistry:
                 for item in json.loads(row["evidence"])
             )
             invalid_at = row["invalid_at"]
+            try:
+                body_payload = json.loads(row["episode_body"])
+            except (TypeError, ValueError):
+                body_payload = {}
+            evidence_role = (
+                body_payload.get("evidence_role")
+                if isinstance(body_payload, dict)
+                else None
+            )
+            cited_source_ref = (
+                body_payload.get("cited_source_ref")
+                if isinstance(body_payload, dict)
+                else None
+            )
             return GraphEpisode(
                 episode_key=row["episode_key"],
                 name=row["name"],
@@ -310,6 +324,8 @@ class SQLiteEpisodeRegistry:
                 confidence=row["confidence"],
                 provenance_type=row["provenance_type"],
                 evidence=evidence,
+                evidence_role=evidence_role,
+                cited_source_ref=cited_source_ref,
             )
         except (AttributeError, KeyError, TypeError, ValueError):
             return None

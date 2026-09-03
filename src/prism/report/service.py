@@ -138,6 +138,8 @@ def _analysis_payload(analysis: EvolutionAnalysis) -> dict[str, Any]:
                 "record_id": stage.record_id,
                 "confidence": stage.confidence,
                 "provenance_type": stage.provenance_type,
+                "evidence_role": stage.evidence_role,
+                "cited_source_ref": stage.cited_source_ref,
                 "stance": stage.stance,
                 "happened_at": _iso(stage.happened_at),
                 "evidence": [
@@ -165,6 +167,8 @@ def _analysis_payload(analysis: EvolutionAnalysis) -> dict[str, Any]:
                 "source_ids": list(stage.source_ids),
                 "confidence": stage.confidence,
                 "provenance_type": stage.provenance_type,
+                "evidence_role": stage.evidence_role,
+                "cited_source_ref": stage.cited_source_ref,
                 "evidence": [
                     {
                         "source_id": item.source_id,
@@ -628,16 +632,20 @@ def _render_markdown(
     lines.append("")
     lines.append(
         "_Classification: `fact` is a recorded event/fact; `interpretation` is "
-        "an actor's or analyst's claim; provenance labels such as `model_inference` "
-        "remain inference rather than source-stated fact._"
+        "an actor's or analyst's claim. Evidence role `cited_prior_research` is "
+        "secondary evidence reported by the current material, not a new observation "
+        "by its authors; provenance labels such as `model_inference` remain inference "
+        "rather than source-stated fact._"
     )
     lines.append("")
     if analysis.stages:
         lines.append(
             "| Episode | Kind | Layer | Happened | Valid from | Valid until | "
-            "Observed | Provenance | Summary | Sources |"
+            "Observed | Evidence role | Cited source | Provenance | Summary | Sources |"
         )
-        lines.append("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
+        lines.append(
+            "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"
+        )
         for stage in analysis.stages:
             if stage.kind == "claim":
                 discriminator = " / ".join(
@@ -654,6 +662,8 @@ def _render_markdown(
                 f"| `{_md(stage.episode_key)}` | {_md(kind)} | {_md(stage.layer)} "
                 f"| {_iso(stage.happened_at) or '—'} | {_iso(stage.valid_at)} "
                 f"| {_iso(stage.invalid_at) or 'open-ended'} | {_iso(stage.reference_time)} "
+                f"| {_md(stage.evidence_role or 'unspecified')} "
+                f"| {_md(stage.cited_source_ref or '—')} "
                 f"| {_md(stage.provenance_type or 'recorded')} "
                 f"| {_md(stage.summary)} | {_sources_label(stage.source_ids)} |"
             )

@@ -174,6 +174,7 @@ def test_merger_preserves_temporal_provenance_and_evidence_fields():
         (locator,),
         "The ministry revised the plan.",
         "reliable_transcription",
+        evidence_role="cited_prior_research",
     )
     extracted_claim = Claim(
         "claim-a",
@@ -215,6 +216,7 @@ def test_merger_preserves_temporal_provenance_and_evidence_fields():
     assert merged_node.evidence == (locator,)
     assert merged_node.change_reason == "The ministry revised the plan."
     assert merged_node.provenance_type == "reliable_transcription"
+    assert merged_node.evidence_role == "cited_prior_research"
     (merged_claim,) = merged.claims
     assert merged_claim.evidence == (locator,)
     assert merged.case.status_at == T2
@@ -244,6 +246,7 @@ def test_merger_preserves_claim_layering_fields():
         "reliable_transcription",
         0.7,
         "prediction",
+        evidence_role="current_synthesis",
     )
 
     merged = CaseBundleMerger().merge(
@@ -263,6 +266,7 @@ def test_merger_preserves_claim_layering_fields():
     assert merged_claim.confidence == 0.7
     assert merged_claim.evidence == (locator,)
     assert merged_claim.observed_at is None
+    assert merged_claim.evidence_role == "current_synthesis"
 def test_merger_rejects_conflicting_duplicate_ids_and_unbound_sources():
     source = material("mat-a")
     first = ExtractionResult(nodes=(node("same", "mat-a"),))

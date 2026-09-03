@@ -205,6 +205,8 @@ def _episode_from_body(body: object) -> GraphEpisode | None:
             return None
         confidence = _optional_float(payload.get("confidence"))
         provenance_type = payload.get("provenance_type")
+        evidence_role = payload.get("evidence_role")
+        cited_source_ref = payload.get("cited_source_ref")
         return GraphEpisode(
             episode_key=episode_key,
             name=f"prism:{case_id}:{kind}:{episode_key[:12]}",
@@ -222,6 +224,8 @@ def _episode_from_body(body: object) -> GraphEpisode | None:
             confidence=confidence,
             provenance_type=provenance_type,
             evidence=evidence,
+            evidence_role=evidence_role,
+            cited_source_ref=cited_source_ref,
         )
     except (KeyError, TypeError, ValueError):
         return None

@@ -11,6 +11,7 @@ from typing import Any, Callable, Protocol
 
 from prism.domain import (
     Claim,
+    EVIDENCE_ROLES,
     EvidenceLocator,
     EvolutionCase,
     EvolutionNode,
@@ -40,17 +41,34 @@ MATERIAL_ROLES = frozenset(
         "metadata_only",
     }
 )
+ACCUMULATION_STATUSES = frozenset(
+    {"case_bound", "awaiting_case_binding", "no_substantive_evidence"}
+)
 _REVIEW_MATERIAL_ROLES = frozenset({"review", "synthesis"})
-_REVIEW_GRAPH_PROVENANCE = {
+_REVIEW_GRAPH_EVIDENCE_ROLES = {
     "node": frozenset(
-        {"material_publication", "current_author_temporal_synthesis"}
+        {
+            "primary_observation",
+            "cited_prior_research",
+            "current_synthesis",
+            "publication_event",
+        }
     ),
-    "temporal_fact": frozenset({"current_author_temporal_synthesis"}),
+    "temporal_fact": frozenset(
+        {"primary_observation", "cited_prior_research", "current_synthesis"}
+    ),
     "claim": frozenset(
-        {"current_author_interpretation", "current_author_temporal_synthesis"}
+        {"primary_observation", "cited_prior_research", "current_synthesis"}
     ),
-    "conflict": frozenset({"current_author_temporal_synthesis"}),
-    "relation": frozenset({"current_author_temporal_synthesis"}),
+    "conflict": frozenset({"cited_prior_research", "current_synthesis"}),
+    "relation": frozenset({"cited_prior_research", "current_synthesis"}),
+}
+_PROVENANCE_EVIDENCE_ROLES = {
+    "cited_prior_research": "cited_prior_research",
+    "current_author_interpretation": "current_synthesis",
+    "current_author_temporal_synthesis": "current_synthesis",
+    "material_publication": "publication_event",
+    "context_only": "context_only",
 }
 
 
@@ -111,6 +129,8 @@ class ExtractionConflict:
     observed_at: datetime | None = None
     confidence: float = 1.0
     provenance_type: str = "reported_conflict"
+    evidence_role: str | None = None
+    cited_source_ref: str | None = None
 
     def __post_init__(self) -> None:
         for name in ("conflict_id", "subject", "predicate"):
@@ -150,6 +170,14 @@ class ExtractionConflict:
             raise ValueError("confidence must be between 0.0 and 1.0")
         if not isinstance(self.provenance_type, str) or not self.provenance_type.strip():
             raise ValueError("provenance_type must be a non-empty string")
+        if self.evidence_role is not None and self.evidence_role not in EVIDENCE_ROLES:
+            allowed = ", ".join(sorted(EVIDENCE_ROLES))
+            raise ValueError(f"evidence_role must be one of: {allowed}")
+        if self.cited_source_ref is not None and (
+            not isinstance(self.cited_source_ref, str)
+            or not self.cited_source_ref.strip()
+        ):
+            raise ValueError("cited_source_ref must be a non-empty string")
 
 
 MATCH_TYPES = frozenset({"exact", "whitespace_normalized"})
@@ -260,7 +288,14 @@ def _warning_tuple(value: object) -> tuple[str, ...]:
 
 @dataclass(frozen=True, slots=True)
 class ExtractionResult:
-    """A fully validated, immutable extraction from one material."""
+    """A fully validated, immutable extraction from one material.
+
+    ``case is None`` does not imply that every candidate collection is empty.
+    Strict extraction may retain evidence-bound, time-valid material-level
+    candidates when the model supplied no usable top-level case.  Such a
+    result carries a ``missing_case_context`` evidence gap and must not be
+    written to a case-specific graph until a real case is supplied.
+    """
 
     case: EvolutionCase | None = None
     nodes: tuple[EvolutionNode, ...] = ()
@@ -277,6 +312,10 @@ class ExtractionResult:
     # Document-level semantic role reported by the structured extractor.
     # Appended for positional and persisted-ledger compatibility.
     material_role: str | None = None
+    # Explicit pipeline-boundary disposition.  Appended for positional and
+    # persisted-ledger compatibility; callers may omit it and let the
+    # immutable result derive the only valid state from case/candidates.
+    accumulation_status: str | None = None
 
     def __post_init__(self) -> None:
         if self.case is not None and not isinstance(self.case, EvolutionCase):
@@ -321,6 +360,32 @@ class ExtractionResult:
             if self.material_role not in MATERIAL_ROLES:
                 allowed = ", ".join(sorted(MATERIAL_ROLES))
                 raise ValueError(f"material_role must be one of: {allowed}")
+        has_candidates = bool(
+            self.nodes
+            or self.temporal_facts
+            or self.claims
+            or self.conflicts
+            or self.relations
+        )
+        expected_status = (
+            "case_bound"
+            if self.case is not None
+            else (
+                "awaiting_case_binding"
+                if has_candidates
+                else "no_substantive_evidence"
+            )
+        )
+        if self.accumulation_status is None:
+            object.__setattr__(self, "accumulation_status", expected_status)
+        elif self.accumulation_status not in ACCUMULATION_STATUSES:
+            allowed = ", ".join(sorted(ACCUMULATION_STATUSES))
+            raise ValueError(f"accumulation_status must be one of: {allowed}")
+        elif self.accumulation_status != expected_status:
+            raise ValueError(
+                f"accumulation_status {self.accumulation_status!r} does not "
+                f"match extraction contents; expected {expected_status!r}"
+            )
 
 
 class ExtractionService:
@@ -479,16 +544,19 @@ class ExtractionService:
             "return case: null — never an object whose case_id is empty or "
             "null.\n"
             "nodes: [{id,case_id,node_type,assertion_type,happened_at,valid_at,"
-            "observed_at,summary,source_ids,claim_ids,provenance_type,evidence}].\n"
+            "observed_at,summary,source_ids,claim_ids,provenance_type,evidence_role,evidence}].\n"
             "temporal_facts: [{fact_id,subject,predicate,object,assertion_type,valid_at,"
-            "invalid_at,observed_at,source_ids,confidence,provenance_type,evidence}].\n"
+            "invalid_at,observed_at,source_ids,confidence,provenance_type,evidence_role,"
+            "cited_source_ref,evidence}].\n"
             "claims: [{claim_id,actor,proposition,stance,claim_type,stated_at,"
-            "observed_at,based_on,revised_by,provenance_type,confidence,evidence}].\n"
-            "conflicts: [{conflict_id,subject,predicate,alternatives,source_ids,evidence}]; "
+            "observed_at,based_on,revised_by,provenance_type,evidence_role,confidence,evidence}].\n"
+            "conflicts: [{conflict_id,subject,predicate,alternatives,source_ids,"
+            "evidence_role,cited_source_ref,provenance_type,evidence}]; "
             "alternatives must contain at least two non-empty strings with at "
             "least two distinct values.\n"
             "relations: [{relation_id,relation_type,source_ref,target_ref,valid_at,"
-            "invalid_at,observed_at,source_ids,evidence,confidence,provenance_type}], "
+            "invalid_at,observed_at,source_ids,evidence,confidence,provenance_type,"
+            "evidence_role,cited_source_ref}], "
             "where relation_type is supersedes, revises, contradicts, or triggered_by. "
             "Emit triggered_by only when the material explicitly supports that causal "
             "link; chronology alone is never causality.\n"
@@ -510,19 +578,32 @@ class ExtractionService:
             "substantive evolution node. If the material records no substantive "
             "change, return null case and empty candidate arrays; never add a "
             "publication node to pad a milestone.\n"
-            "For material_role review or synthesis, distinguish the current "
-            "authors' own interpretation from results merely attributed to earlier "
-            "studies. Earlier-study results are context, not evolution of the current "
-            "material: omit them from graph candidates or mark their provenance_type "
-            "as cited_prior_research so they are excluded from graph-ready output. "
-            "Use current_author_interpretation only for a claim made by the review's "
-            "current authors. A node, temporal fact, conflict, or relation is allowed "
-            "only when exact source evidence shows the current authors making an "
-            "explicit time-based comparison or revision; mark it "
-            "current_author_temporal_synthesis. A publication node for the review "
-            "itself uses material_publication and remains distinct from substantive "
-            "nodes; emit it only when the material also supports substantive current-"
-            "author interpretation or temporal synthesis.\n"
+            "Every candidate must classify evidence_role as exactly one of "
+            "primary_observation, cited_prior_research, current_synthesis, "
+            "publication_event, or context_only. evidence_role is the evidence layer; "
+            "provenance_type remains the more specific provenance description.\n"
+            "For material_role review or synthesis, distinguish results attributed "
+            "to earlier studies from the current authors' synthesis. Preserve an "
+            "earlier study's supported result as a graph candidate with evidence_role "
+            "cited_prior_research; its source_ids and quote still point to this review "
+            "material, so never invent an original material id or DOI. Mark current "
+            "authors' comparisons, support, rebuttal, correction, extension, "
+            "disagreement, or evidence-gap judgment as current_synthesis. Use "
+            "publication_event only for publication of the review itself and keep it "
+            "distinct from substantive nodes. Use context_only for generic background "
+            "whose origin or support cannot be established; it is retained as a gap, "
+            "not graph-ready output. A relation is allowed only when the material "
+            "explicitly states it and the exact quote supports that relationship; a "
+            "review mentioning an older number does not by itself establish "
+            "supersedes or contradicts. A publication node may be emitted only when "
+            "the material also supports substantive current_synthesis or cited prior "
+            "research.\n"
+            "For cited_prior_research facts, conflicts, and relations, "
+            "cited_source_ref may be null or the "
+            "verbatim bibliographic reference visible in the material. Never put that "
+            "reference in source_ids unless it is an actual ingested material id; an "
+            "unresolved cited_source_ref does not prevent the secondary candidate from "
+            "being emitted.\n"
             "Keep happened_at (event occurrence), valid_at (effective validity), "
             "and observed_at (when the material made it observable) distinct. "
             "The material publication time is not the event time. Every timestamp "
@@ -544,7 +625,7 @@ class ExtractionService:
             "conflicting alternatives; preserve them in conflicts and, when their "
             "fact ids are known, in contradicts relations. confidence is "
             "a number from 0 through 1. null is allowed only for case, invalid_at, "
-            "revised_by, relation invalid_at, paragraph, or page.\n\n"
+            "revised_by, cited_source_ref, relation invalid_at, paragraph, or page.\n\n"
             f"MATERIAL ID: {material.id}\n"
             f"MATERIAL PUBLISHED AT: {material.published_at.isoformat()}\n"
             f"BEGIN MATERIAL CONTENT\n{material.content}\nEND MATERIAL CONTENT"
@@ -764,12 +845,12 @@ class ExtractionService:
                 )
             else:
                 if self._exclude_review_context(
-                    material_role, "node", node.provenance_type
+                    material_role, "node", node.evidence_role
                 ):
                     gaps.append(
                         self._review_context_gap(
                             material_role, "node", node.id, node.source_ids,
-                            node.provenance_type,
+                            node.evidence_role,
                         )
                     )
                     continue
@@ -809,17 +890,33 @@ class ExtractionService:
                 )
             else:
                 if self._exclude_review_context(
-                    material_role, "temporal_fact", fact.provenance_type
+                    material_role, "temporal_fact", fact.evidence_role
                 ):
                     gaps.append(
                         self._review_context_gap(
                             material_role, "temporal_fact", fact.fact_id,
-                            fact.source_ids, fact.provenance_type,
+                            fact.source_ids, fact.evidence_role,
                         )
                     )
                     continue
                 facts.append(fact)
                 fact_audits.append(candidate_audit)
+                if (
+                    fact.evidence_role == "cited_prior_research"
+                    and fact.cited_source_ref is not None
+                    and fact.cited_source_ref not in fact.source_ids
+                ):
+                    gaps.append(
+                        ExtractionEvidenceGap(
+                            "unresolved_cited_source",
+                            f"cited source reference {fact.cited_source_ref!r} is not "
+                            "an ingested source id; the fact remains graph-ready as "
+                            "secondary evidence from this material",
+                            "temporal_fact",
+                            fact.fact_id,
+                            fact.source_ids,
+                        )
+                    )
         claim_audits: list[_BindingAudit] = []
         claims: list[Claim] = []
         for index, item in enumerate(self._array("claims", payload["claims"])):
@@ -846,12 +943,12 @@ class ExtractionService:
                 )
             else:
                 if self._exclude_review_context(
-                    material_role, "claim", claim.provenance_type
+                    material_role, "claim", claim.evidence_role
                 ):
                     gaps.append(
                         self._review_context_gap(
                             material_role, "claim", claim.claim_id,
-                            claim.based_on, claim.provenance_type,
+                            claim.based_on, claim.evidence_role,
                         )
                     )
                     continue
@@ -886,12 +983,12 @@ class ExtractionService:
                 continue
             if conflict is not None:
                 if self._exclude_review_context(
-                    material_role, "conflict", conflict.provenance_type
+                    material_role, "conflict", conflict.evidence_role
                 ):
                     gaps.append(
                         self._review_context_gap(
                             material_role, "conflict", conflict.conflict_id,
-                            conflict.source_ids, conflict.provenance_type,
+                            conflict.source_ids, conflict.evidence_role,
                         )
                     )
                 else:
@@ -921,12 +1018,12 @@ class ExtractionService:
                 )
             else:
                 if self._exclude_review_context(
-                    material_role, "relation", relation.provenance_type
+                    material_role, "relation", relation.evidence_role
                 ):
                     gaps.append(
                         self._review_context_gap(
                             material_role, "relation", relation.relation_id,
-                            relation.source_ids, relation.provenance_type,
+                            relation.source_ids, relation.evidence_role,
                         )
                     )
                     continue
@@ -935,7 +1032,11 @@ class ExtractionService:
         if (
             material_role in _REVIEW_MATERIAL_ROLES
             and nodes
-            and all(node.node_type == "publication" for node in nodes)
+            and all(
+                node.node_type == "publication"
+                and node.evidence_role == "publication_event"
+                for node in nodes
+            )
             and not (facts or claims or conflicts or relations)
         ):
             for node in nodes:
@@ -943,8 +1044,8 @@ class ExtractionService:
                     ExtractionEvidenceGap(
                         "no_substantive_evolution",
                         "review/synthesis publication-only candidate excluded: "
-                        "the material supplies no graph-ready current-author "
-                        "interpretation, temporal synthesis, fact, conflict, or relation",
+                        "the material supplies no graph-ready cited prior research, "
+                        "current synthesis, fact, conflict, or relation",
                         "node",
                         node.id,
                         node.source_ids,
@@ -1050,8 +1151,27 @@ class ExtractionService:
         if strict and case is None and (
             node_tuple or fact_tuple or claim_tuple or relations or conflicts
         ):
-            raise ExtractionError(
-                "case must be non-null when graph candidates are present"
+            candidate_counts = {
+                "node": len(node_tuple),
+                "temporal_fact": len(fact_tuple),
+                "claim": len(claim_tuple),
+                "conflict": len(conflicts),
+                "relation": len(relations),
+            }
+            retained = ", ".join(
+                f"{kind}={count}"
+                for kind, count in candidate_counts.items()
+                if count
+            )
+            gaps.append(
+                ExtractionEvidenceGap(
+                    "missing_case_context",
+                    "validated candidates were retained at material scope "
+                    f"({retained}), but no top-level case was supplied; "
+                    "case-specific graph writing must be skipped until an "
+                    "explicit real case is available",
+                    source_ids=(material.id,),
+                )
             )
         if strict and case is not None:
             undeclared = tuple(
@@ -1114,11 +1234,11 @@ class ExtractionService:
 
     @staticmethod
     def _exclude_review_context(
-        material_role: str | None, item_kind: str, provenance_type: str | None
+        material_role: str | None, item_kind: str, evidence_role: str | None
     ) -> bool:
         if material_role not in _REVIEW_MATERIAL_ROLES:
             return False
-        return provenance_type not in _REVIEW_GRAPH_PROVENANCE[item_kind]
+        return evidence_role not in _REVIEW_GRAPH_EVIDENCE_ROLES[item_kind]
 
     @staticmethod
     def _review_context_gap(
@@ -1126,18 +1246,34 @@ class ExtractionService:
         item_kind: str,
         item_id: str | None,
         source_ids: tuple[str, ...],
-        provenance_type: str | None,
+        evidence_role: str | None,
     ) -> ExtractionEvidenceGap:
         return ExtractionEvidenceGap(
             "review_context",
             f"{material_role} {item_kind} candidate was excluded from graph-ready "
-            "output because its provenance does not establish a current-author "
-            "time-based comparison or revision "
-            f"(provenance_type={provenance_type!r})",
+            "output because it is context-only or has no recognized evidence layer "
+            f"(evidence_role={evidence_role!r})",
             item_kind,
             item_id,
             source_ids,
         )
+
+    @staticmethod
+    def _parse_evidence_role(
+        path: str, value: object, provenance_type: str | None
+    ) -> str | None:
+        if value is None:
+            return _PROVENANCE_EVIDENCE_ROLES.get(provenance_type or "")
+        if not isinstance(value, str) or value not in EVIDENCE_ROLES:
+            allowed = ", ".join(sorted(EVIDENCE_ROLES))
+            raise ExtractionError(f"{path} must be one of: {allowed}")
+        expected = _PROVENANCE_EVIDENCE_ROLES.get(provenance_type or "")
+        if expected is not None and value != expected:
+            raise ExtractionError(
+                f"{path}={value!r} conflicts with provenance_type "
+                f"{provenance_type!r}; expected {expected!r}"
+            )
+        return value
 
     def _parse_case(
         self, value: object, material: Material
@@ -1224,6 +1360,7 @@ class ExtractionService:
                     "happened_at", "valid_at", "observed_at", "summary",
                     "source_ids", "claim_ids", "provenance_type", "evidence",
                 },
+                optional={"evidence_role"},
             )
             if obj["assertion_type"] != "fact":
                 raise ExtractionError(f"{path}.assertion_type must be 'fact'")
@@ -1245,6 +1382,9 @@ class ExtractionService:
             provenance_type = self._required_text(
                 f"{path}.provenance_type", obj["provenance_type"]
             )
+            evidence_role = self._parse_evidence_role(
+                f"{path}.evidence_role", obj.get("evidence_role"), provenance_type
+            )
         else:
             self._check_fields(
                 path,
@@ -1259,6 +1399,7 @@ class ExtractionService:
             observed_at = material.published_at
             evidence = ()
             provenance_type = None
+            evidence_role = None
         node = self._construct(
             path,
             EvolutionNode,
@@ -1275,6 +1416,7 @@ class ExtractionService:
             observed_at=observed_at,
             evidence=evidence,
             provenance_type=provenance_type,
+            evidence_role=evidence_role,
         )
         for name, timestamp in (
             ("happened_at", node.happened_at),
@@ -1305,10 +1447,10 @@ class ExtractionService:
             "subject", "predicate", "object", "valid_at", "observed_at",
             "confidence", "provenance_type",
         }
-        optional = {"invalid_at", "source_ids"}
+        optional = {"invalid_at", "source_ids", "evidence_role"}
         if strict:
             required.update({"invalid_at", "source_ids", "assertion_type", "evidence"})
-            optional = {"fact_id"}
+            optional = {"fact_id", "evidence_role", "cited_source_ref"}
         self._check_fields(path, obj, required=required, optional=optional)
         if strict and obj["assertion_type"] != "fact":
             raise ExtractionError(
@@ -1352,6 +1494,18 @@ class ExtractionService:
             provenance_type=obj["provenance_type"],
             evidence=evidence,
             fact_id=obj.get("fact_id"),
+            evidence_role=self._parse_evidence_role(
+                f"{path}.evidence_role",
+                obj.get("evidence_role"),
+                obj["provenance_type"],
+            ),
+            cited_source_ref=(
+                self._required_text(
+                    f"{path}.cited_source_ref", obj["cited_source_ref"]
+                )
+                if obj.get("cited_source_ref") is not None
+                else None
+            ),
         )
         if fact.observed_at < fact.valid_at:
             raise ExtractionError(
@@ -1388,7 +1542,7 @@ class ExtractionService:
                     "provenance_type", "confidence", "evidence",
                 }
             )
-            optional = set()
+            optional = {"evidence_role"}
         self._check_fields(path, obj, required=required, optional=optional)
         raw_based_on = obj["based_on"] if strict else obj.get("based_on")
         if isinstance(raw_based_on, str):
@@ -1449,6 +1603,15 @@ class ExtractionService:
             provenance_type=(obj["provenance_type"] if strict else "unspecified"),
             confidence=(obj["confidence"] if strict else 1.0),
             claim_type=(obj["claim_type"] if strict else "interpretation"),
+            evidence_role=(
+                self._parse_evidence_role(
+                    f"{path}.evidence_role",
+                    obj.get("evidence_role"),
+                    obj["provenance_type"],
+                )
+                if strict
+                else None
+            ),
         )
         self._not_future(f"{path}.stated_at", claim.stated_at, material)
         if strict:
@@ -1484,7 +1647,7 @@ class ExtractionService:
             },
             optional={
                 "valid_at", "invalid_at", "observed_at", "confidence",
-                "provenance_type",
+                "provenance_type", "evidence_role", "cited_source_ref",
             },
         )
         alternative_path = f"{path}.alternatives"
@@ -1577,6 +1740,16 @@ class ExtractionService:
             observed_at=observed_at,
             confidence=confidence,
             provenance_type=provenance_type,
+            evidence_role=self._parse_evidence_role(
+                f"{path}.evidence_role", obj.get("evidence_role"), provenance_type
+            ),
+            cited_source_ref=(
+                self._required_text(
+                    f"{path}.cited_source_ref", obj["cited_source_ref"]
+                )
+                if obj.get("cited_source_ref") is not None
+                else None
+            ),
         )
         return conflict, None
 
@@ -1599,6 +1772,7 @@ class ExtractionService:
                 "valid_at", "invalid_at", "observed_at", "source_ids",
                 "evidence", "confidence", "provenance_type",
             },
+            optional={"evidence_role", "cited_source_ref"},
         )
         source_ids = self._strict_sources(
             f"{path}.source_ids", obj["source_ids"], material
@@ -1629,6 +1803,18 @@ class ExtractionService:
             evidence=evidence,
             confidence=obj["confidence"],
             provenance_type=obj["provenance_type"],
+            evidence_role=self._parse_evidence_role(
+                f"{path}.evidence_role",
+                obj.get("evidence_role"),
+                obj["provenance_type"],
+            ),
+            cited_source_ref=(
+                self._required_text(
+                    f"{path}.cited_source_ref", obj["cited_source_ref"]
+                )
+                if obj.get("cited_source_ref") is not None
+                else None
+            ),
         )
         for name in ("valid_at", "invalid_at", "observed_at"):
             timestamp = getattr(relation, name)
