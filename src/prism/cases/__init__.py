@@ -340,3 +340,22 @@ __all__ += [
     "LegacyCaseLoader",
     "LegacyLoadIssue",
 ]
+
+from .service import (  # noqa: E402  (must follow base exports)
+    CaseService,
+    CaseWriteOutcome,
+)
+
+from .ledger import (  # noqa: E402  (durable accumulation contract)
+    CaseExtractionLedger,
+    CaseLedgerEntry,
+    MaterialCaseConflict,
+)
+
+__all__ += [
+    "CaseExtractionLedger",
+    "CaseLedgerEntry",
+    "CaseService",
+    "CaseWriteOutcome",
+    "MaterialCaseConflict",
+]

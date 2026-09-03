@@ -168,8 +168,23 @@ def test_handler_failure_is_isolated_and_reported():
         assert error.subscription_id == failed_id
         assert error.event == event(1)
         assert isinstance(error.exception, RuntimeError)
+        # A subscriber failure is auditable in time, not a bare error blob.
+        assert error.failed_at is not None
+        assert error.failed_at.tzinfo is not None
+        assert error.failed_at.utcoffset() is not None
+        assert error.failed_at >= NOW
 
     run(scenario())
+
+
+def test_dispatch_error_rejects_naive_timestamps():
+    with pytest.raises(ValueError, match="timezone-aware"):
+        DispatchError(
+            "sub-000001",
+            event(1),
+            RuntimeError("boom"),
+            datetime(2026, 9, 1, 8, 30),
+        )
 
 
 def test_lifecycle_rejects_publish_while_stopped_and_leaves_no_worker_tasks():

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from types import MappingProxyType
 from typing import Any
 
@@ -113,8 +113,26 @@ class Event:
 
 @dataclass(frozen=True, slots=True)
 class DispatchError:
-    """An observable record of one isolated subscriber failure."""
+    """An observable record of one isolated subscriber failure.
+
+    ``failed_at`` is the time the handler failed (defaults to now), so an
+    audit trail can order and age failures instead of exposing a bare error.
+    """
 
     subscription_id: str
     event: Event
     exception: Exception
+    failed_at: datetime | None = None
+
+    def __post_init__(self) -> None:
+        _require_text("subscription_id", self.subscription_id)
+        if not isinstance(self.event, Event):
+            raise TypeError("event must be an Event")
+        if not isinstance(self.exception, Exception):
+            raise TypeError("exception must be an Exception")
+        failed_at = self.failed_at
+        if failed_at is None:
+            failed_at = datetime.now(timezone.utc)
+            object.__setattr__(self, "failed_at", failed_at)
+        if failed_at.tzinfo is None or failed_at.utcoffset() is None:
+            raise ValueError("failed_at must be timezone-aware")

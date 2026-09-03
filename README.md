@@ -8,6 +8,10 @@ Current foundation modules:
 - portable configuration with `PRISM_HOME` support;
 - Markdown/PDF/OCR ingestion with raw-file retention;
 - SQLite/FTS5 evidence indexing and filtered search;
+- an automatic event-driven pipeline: every ingestion runs index → extract →
+  accumulated-case merge → graph write, with no manual pipeline call;
+- a durable per-case extraction ledger that rebuilds accumulated cases from
+  local PRISM data after a restart;
 - dependency-optional Graphiti/GTI temporal graph adapter and historical timeline contract;
 - opt-in Graphiti/Neo4j spike scaffolding (config, deploy template, live-test gate) that stays fully offline by default;
 - offline tests for every completed module.
@@ -26,10 +30,25 @@ Set `PRISM_HOME` to choose the local data directory. The default runtime never
 opens a network client:
 
 ```console
-python -m prism.cli ingest input.md
+python -m prism.cli ingest input.md            # ingest + index; automatic processing is queued and finishes before exit
+python -m prism.cli ingest input.md --process  # ingest + full automatic pipeline, printing its real outcome
+python -m prism.cli process MATERIAL_ID        # synchronous pipeline run (or explicit idempotent replay)
+python -m prism.cli merge-case CASE_ID         # rebuild and write the accumulated case from the durable ledger
 python -m prism.cli discover MATERIAL_ID
 python -m prism.cli state CASE_ID --cutoff-at 2026-09-01T00:00:00+00:00
 ```
+
+Every `ingest` run announces the material on the event bus, so the automatic
+pipeline (index → extract → accumulated-case merge → graph write) processes
+it in the same runtime — there is no "index only" ingestion once the
+automatic pipeline is wired. `ingest` without `--process` prints the
+ingestion result while processing runs to completion before the command
+exits; if that processing fails, the command exits non-zero with the
+auditable failure instead of reporting success. `ingest --process` and
+`process` are the synchronous entry points: they return only after the
+material's pipeline run and its accumulated-case outcome exist, and a
+repeated `process` on an already processed material is an explicit idempotent
+replay (`"replayed": true`) that merges nothing twice.
 
 Historical state queries apply both validity time and observation/publication
 time, so later retrospective material does not leak into an earlier cutoff.
@@ -55,6 +74,122 @@ remain uncertain claims rather than confirmed temporal facts, and contradictory
 alternatives remain reportable conflict audit items. A document publication is
 counted separately from substantive evolution in deterministic reports; a
 material with no supported change produces no padding publication node.
+
+## Automatic Evolution Pipeline v0
+
+One ingestion automatically runs the whole post-ingestion chain. When
+`PrismAPI.ingest_material` (or a source fetch) publishes `material.ingested`,
+the runtime's event subscriber feeds it to `PipelineService.handle_event`,
+which resolves the material from the evidence store and runs index → extract
+→ case merge → graph write. The subscription is registered before the event
+bus starts and removed (after draining in-flight events) when the runtime
+closes, so a shutdown never silently drops processing.
+
+**Synchronous vs asynchronous semantics are explicit.** `ingest_material` is
+the asynchronous, event-driven path: it returns once the material is ingested
+and indexed, with automatic processing *queued* — it never claims pipeline
+completion. The outcome is queryable at any moment:
+`pipeline.outcome_for(MATERIAL_ID)` reports the lifecycle state
+(`pending` while an attempt is in flight, `failed` after a failed attempt,
+`committed` only after a successful run), `pipeline.run_for` the completed
+run and `pipeline.failure_for` the last failed attempt (stage, error type,
+time). `process_material(MATERIAL_ID)` waits for the in-flight or completed
+run and reports the authoritative pipeline and case result: a repeated call
+for an already processed material is an explicit idempotent replay
+(`ProcessMaterialResult.replayed`), and a material whose last attempt failed
+is retried safely — a persistent failure raises the structured
+`PipelineError` (stage, material id, completed stages), never a fake success.
+`process_material(PATH)` is the synchronous path: it executes the pipeline
+itself, announces the material afterwards, and returns only when the
+pipeline run and — when a case was produced — the accumulated-case
+merge/write outcome exist. It never runs a second no-op merge after the
+pipeline: the reported `case_outcome` is the outcome the pipeline's case
+recorder produced, not a fresh merge.
+
+Cross-process behavior is honest and explicit: the completed-run registry is
+per-process, so a fresh process (a new CLI invocation over the same PRISM
+home) re-executes the pipeline for an id whose durable state is already
+committed — `replayed: false` for that genuine run. The writes stay
+idempotent (graph episodes are deduplicated by episode key and the durable
+ledger row is upserted under the same case), but extraction is re-run, so a
+changed extraction replaces the recorded evidence; if the re-extraction now
+declares a different case than the durable binding, the typed
+`MaterialCaseConflict` refuses the re-binding before any write (see below).
+
+**Subscriber failures are auditable, never fake successes.** A failure inside
+the event-driven pipeline is isolated from the publisher and recorded three
+ways: as a `DispatchError` on the bus (`PrismRuntime.dispatch_errors`), now
+stamped with the failure time; as a per-material `PipelineFailure` via
+`pipeline.failure_for(material_id)` carrying at least the material id, the
+failed stage, the error type and the failure time; and as the material's
+`failed` lifecycle outcome. A material whose processing failed has no
+completed run and no committed outcome — retrying it is safe and a later
+success clears the stale audit. A run is only recorded as completed after
+every stage (including the graph/ledger write) succeeded, and the CLI exits
+non-zero when automatic processing of a command's ingestion failed, so a
+background failure never exits 0 as if it had succeeded.
+
+Terminal outcomes (`failed`/`committed`) are persisted in a local
+`pipeline_outcomes` table of the same SQLite file (`index.db`) — one current
+row per material, hydrated into the pipeline on the next start, so a failure
+from an earlier process stays queryable (there is no stale `pending` row
+after a crash: `pending` is transient and lives only in the running
+process). This is deliberately a local, single-process-file ledger, not a
+cross-process outbox: it makes failure audits durable across restarts, but
+it does not ship work between processes, and a fresh process still re-runs a
+material whose durable state is committed. Durable evidence truth remains
+the corpus files, `case_extraction_ledger` rows and graph episodes.
+
+**One material binds one case.** The automatic accumulator records each
+material under the single case its extraction declares; an attempt to record
+an already-bound material under a different case is refused with the typed
+`MaterialCaseConflict` (material id, bound cases, attempted case) before any
+row or graph write, so the automatic path can never add ambiguous bindings —
+within one process or across processes (a fresh process whose re-extraction
+now declares another case gets the same typed refusal, with the durable
+binding unchanged and the refusal auditable as a failed outcome of
+`error_type: MaterialCaseConflict`).
+Legacy ledgers that already contain several rows for one material stay fully
+readable and reportable through `case_ids_for_material` (and
+`case_for_material` raises the same typed conflict instead of an unexpected
+`ValueError`).
+
+Case writing is cumulative, never per-material: every extraction that
+succeeds with a case is recorded in the durable `case_extraction_ledger`
+(an additive SQLite table in the existing `index.db`), and the merged bundle
+of the **whole accumulated case** is written to the graph each time — one
+material never overwrites or duplicates the complete case with its own
+single-material extraction. Node and claim ids are scoped per material, the
+conservative `CaseBundleMerger` rules apply unchanged (unknown sources,
+identifier collisions and foreign case ids raise; conflicting alternatives
+are never auto-resolved), and a failed merge or graph write rolls the new
+ledger entry back, so the accumulated state only ever contains materials
+whose merged write succeeded. After a restart the identical accumulated
+bundle is rebuilt from the local ledger alone — no LLM, no network, no
+re-extraction — and rewriting the same state is fully deduplicated by
+episode keys.
+
+Evidence levels stay binding in the automatic flow: `abstract_only`,
+`metadata_only` and `blocked` materials are indexed but never extracted or
+written to the graph, with per-stage skip records stating the access level.
+Extraction warnings, evidence gaps and unresolved conflicts never silently
+disappear — they persist in the ledger verbatim and surface in every
+`ProcessMaterialResult.warnings` and `CaseWriteOutcome.warnings`.
+
+Unified entry points: `PrismAPI.process_material(MATERIAL_ID_OR_PATH)` returns
+the pipeline run, the accumulated case merge/write outcome the run produced,
+and the audit warnings; `PrismAPI.merge_case(CASE_ID, materials=[...])` is
+the explicit reconciliation entry point, rebuilding the full accumulated
+case from the durable ledger or an explicitly selected subset (idempotent,
+episode-key deduplicated) — for example to repair a case whose graph state
+diverged before a ledger write completed. The CLI exposes the same
+operations (`ingest --process`, `process`, `merge-case`) over the identical
+API surface.
+
+PRISM is not a human-in-the-loop system yet: this pipeline is deliberately
+**automatic-only**. Human arbitration — reviewing adopted case records,
+resolving conflicts, adopting foreign-case materials explicitly, curating
+nodes — is a planned later capability, not part of this loop.
 
 `discover` creates a time-bounded research plan from an indexed material. To
 execute a plan, explicitly enable Firecrawl in `PRISM_HOME/config.json` and

@@ -17,6 +17,7 @@ from prism.ingestion import IngestionResult
 from prism.pipeline import (
     MATERIAL_INGESTED,
     PipelineError,
+    PipelineOutcome,
     PipelineRun,
     PipelineService,
     PipelineStage,
@@ -641,3 +642,440 @@ def test_no_background_tasks_are_created():
         assert {task for task in asyncio.all_tasks() if task is not current} == set()
 
     asyncio.run(main())
+
+
+# ------------------------------------------------- accumulated case writing
+
+
+from types import SimpleNamespace  # noqa: E402
+
+
+class FakeCaseRecorder:
+    """Stand-in for prism.cases.CaseService.record_extraction."""
+
+    def __init__(self, outcome: object | None = None, exc: Exception | None = None):
+        self.calls: list[tuple[Material, ExtractionResult]] = []
+        self.outcome = outcome
+        self.exc = exc
+
+    async def record_extraction(self, material, extraction):
+        self.calls.append((material, extraction))
+        if self.exc is not None:
+            raise self.exc
+        return (
+            self.outcome
+            if self.outcome is not None
+            else SimpleNamespace(
+                write=GraphWriteResult((), ("merged-episode",), ()),
+                material_ids=("mat-1",),
+            )
+        )
+
+
+def make_recorded_service(recorder: FakeCaseRecorder, **kwargs):
+    service, indexer, extractor, graph, order = make_service(**kwargs)
+    service._case_recorder = recorder
+    return service, indexer, extractor, graph, order
+
+
+def test_case_service_writes_the_merged_case_instead_of_a_per_material_case():
+    async def main():
+        recorder = FakeCaseRecorder()
+        service, indexer, extractor, graph, order = make_recorded_service(recorder)
+        result = make_result()
+        run = await service.run_material(result)
+
+        assert order == ["index", "extract"]
+        assert recorder.calls == [(result.material, EXTRACTION)]
+        # The pipeline itself must not write one full case per material; the
+        # accumulated merged write belongs to the case service.
+        assert graph.calls == []
+        graph_stage = run.stages[2]
+        assert graph_stage.status == "written"
+        assert graph_stage.result == GraphWriteResult((), ("merged-episode",), ())
+        assert "1 accumulated material(s)" in graph_stage.detail
+
+    asyncio.run(main())
+
+
+def test_case_service_failures_raise_auditable_retryable_pipeline_errors():
+    async def main():
+        recorder = FakeCaseRecorder(exc=ValueError("foreign case"))
+        service, *_ = make_recorded_service(recorder)
+        with pytest.raises(PipelineError) as info:
+            await service.run_material(make_result())
+        assert info.value.stage == "graph"
+        assert [stage.name for stage in info.value.stages] == ["index", "extract"]
+
+        recorder.exc = None
+        retried = await service.run_material(make_result())
+        assert retried.status == "completed"
+
+    asyncio.run(main())
+
+
+def test_case_service_outcome_must_expose_a_graph_write_result():
+    async def main():
+        recorder = FakeCaseRecorder(outcome=SimpleNamespace(material_ids=()))
+        service, *_ = make_recorded_service(recorder)
+        with pytest.raises(PipelineError) as info:
+            await service.run_material(make_result())
+        assert info.value.stage == "graph"
+
+    asyncio.run(main())
+
+
+def test_case_service_receives_no_caseless_or_non_fulltext_extractions():
+    async def main():
+        recorder = FakeCaseRecorder()
+        service, *_ = make_recorded_service(recorder)
+        run = await service.run_material(make_result())
+        assert len(recorder.calls) == 1
+
+        caseless, *_ = make_recorded_service(
+            FakeCaseRecorder(), extraction_result=ExtractionResult()
+        )
+        run = await caseless.run_material(make_result())
+        assert run.stages[2].status == "skipped"
+        assert "no case" in run.stages[2].detail
+
+        blocked_material = make_material(
+            access_level="blocked", retrieval_level="blocked"
+        )
+        blocked, *_ = make_recorded_service(FakeCaseRecorder())
+        run = await blocked.run_material(make_result(blocked_material))
+        assert run.stages[1].status == "skipped"
+        assert run.stages[2].status == "skipped"
+
+    asyncio.run(main())
+
+
+def test_run_for_returns_the_last_completed_run_only():
+    async def main():
+        service, *_ = make_service()
+        assert service.run_for("mat-1") is None
+        completed = await service.run_material(make_result())
+        assert service.run_for("mat-1") is completed
+        skipped = await service.run_material(make_result())
+        assert skipped.status == "skipped"
+        assert service.run_for("mat-1") is completed
+        assert service.run_for("mat-other") is None
+
+    asyncio.run(main())
+
+
+# ------------------------------------- failure audit and recorder outcomes
+
+
+def test_failed_runs_are_auditable_per_material_and_cleared_by_retry():
+    async def main():
+        service, *_ = make_service(extraction_exc=RuntimeError("extractor exploded"))
+        with pytest.raises(PipelineError):
+            await service.run_material(make_result())
+
+        # No completed run may exist for the failed material...
+        assert service.run_for("mat-1") is None
+        # ...and the failure itself is a queryable audit record: material id,
+        # stage, error type, message and time are all present.
+        failure = service.failure_for("mat-1")
+        assert failure is not None
+        assert failure.material_id == "mat-1"
+        assert failure.stage == "extract"
+        assert failure.error_type == "RuntimeError"
+        assert "extractor exploded" in failure.message
+        assert failure.failed_at is not None
+        assert failure.failed_at.tzinfo is not None
+        assert failure.failed_at >= T0
+        assert service.failure_for("mat-other") is None
+
+        # A successful retry clears the stale failure audit.
+        service._extraction.exc = None
+        retried = await service.run_material(make_result())
+        assert retried.status == "completed"
+        assert service.failure_for("mat-1") is None
+
+    asyncio.run(main())
+
+
+def test_case_write_failures_keep_the_stage_in_the_failure_audit():
+    async def main():
+        recorder = FakeCaseRecorder(exc=ValueError("foreign case"))
+        service, *_ = make_recorded_service(recorder)
+        with pytest.raises(PipelineError):
+            await service.run_material(make_result())
+        failure = service.failure_for("mat-1")
+        assert failure is not None
+        assert failure.stage == "graph"
+        assert failure.error_type == "ValueError"
+        assert "foreign case" in failure.message
+
+    asyncio.run(main())
+
+
+def test_failure_audit_validates_material_ids():
+    service, *_ = make_service()
+    with pytest.raises(ValueError):
+        service.failure_for("   ")
+
+
+def test_event_resolution_failures_are_auditable_with_the_material_id():
+    async def main():
+        def resolver(event):
+            raise LookupError("material not found: mat-1")
+
+        service, *_ = make_service(resolver=resolver)
+        with pytest.raises(LookupError, match="mat-1"):
+            await service.handle_event(make_event())
+
+        # Pre-stage failures keep the audit record too: material id, no
+        # stage, error type and time are all queryable.
+        failure = service.failure_for("mat-1")
+        assert failure is not None
+        assert failure.material_id == "mat-1"
+        assert failure.stage is None
+        assert failure.error_type == "LookupError"
+        assert failure.failed_at is not None
+        assert failure.failed_at.tzinfo is not None
+
+        # A later successful event run clears the stale audit.
+        healthy, *_ = make_service()
+        await healthy.run_material(make_result())
+        assert healthy.failure_for("mat-1") is None
+
+    asyncio.run(main())
+
+
+def test_case_outcome_for_exposes_the_recorded_outcome_of_a_material():
+    async def main():
+        outcome = SimpleNamespace(
+            write=GraphWriteResult((), ("merged-episode",), ()),
+            material_ids=("mat-1",),
+        )
+        recorder = FakeCaseRecorder(outcome=outcome)
+        service, *_ = make_recorded_service(recorder)
+        run = await service.run_material(make_result())
+        assert run.status == "completed"
+        # The pipeline run's merged case write produced an outcome for THIS
+        # material; it is queryable without re-merging the case.
+        assert service.case_outcome_for("mat-1") is outcome
+        assert service.case_outcome_for("mat-other") is None
+
+        # A second (skipped) attempt still reports the recorded outcome.
+        skipped = await service.run_material(make_result())
+        assert skipped.status == "skipped"
+        assert service.case_outcome_for("mat-1") is outcome
+
+    asyncio.run(main())
+
+
+def test_case_outcome_for_is_none_without_a_recorder_or_case():
+    async def main():
+        service, *_ = make_service()
+        run = await service.run_material(make_result())
+        assert run.status == "completed"
+        assert service.case_outcome_for("mat-1") is None
+
+        caseless, *_ = make_recorded_service(
+            FakeCaseRecorder(), extraction_result=ExtractionResult()
+        )
+        run = await caseless.run_material(make_result())
+        assert run.stages[2].status == "skipped"
+        assert caseless.case_outcome_for("mat-1") is None
+
+    asyncio.run(main())
+
+
+# ------------------------------------------------------ outcome lifecycle audit
+
+
+class GatedExtractor(FakeExtractor):
+    """An extractor whose first extraction blocks until released."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def extract(self, material: Material) -> ExtractionResult:
+        self.started.set()
+        await self.release.wait()
+        return await super().extract(material)
+
+
+def test_outcome_tracks_pending_then_committed():
+    """A run in flight is queryable as pending; a successful run is committed.
+
+    Pending is the honest state of an announced material whose pipeline has
+    started but not finished — never an absence that could be confused with
+    "never announced" or with success.
+    """
+
+    async def main():
+        extractor = GatedExtractor()
+        service = PipelineService(
+            indexer=FakeIndexer(),
+            extraction_service=extractor,
+            graph_service=FakeGraph(),
+            clock=FakeClock(),
+        )
+        result = make_result()
+        assert service.outcome_for("mat-1") is None
+
+        attempt = asyncio.create_task(service.run_material(result))
+        await asyncio.wait_for(extractor.started.wait(), timeout=1)
+        pending = service.outcome_for("mat-1")
+        assert pending is not None
+        assert isinstance(pending, PipelineOutcome)
+        assert pending.status == "pending"
+        assert pending.material_id == "mat-1"
+        assert pending.occurred_at == T0
+        assert pending.occurred_at.tzinfo is not None
+        # Pending is neither a fake success nor a failure.
+        assert pending.stage is None
+        assert pending.error_type is None
+        assert service.run_for("mat-1") is None
+        assert service.failure_for("mat-1") is None
+
+        extractor.release.set()
+        run = await asyncio.wait_for(attempt, timeout=1)
+        assert run.status == "completed"
+
+        committed = service.outcome_for("mat-1")
+        assert committed is not None
+        assert committed.status == "committed"
+        assert committed.occurred_at == T0 + CLOCK_STEP
+        assert committed.error_type is None
+        assert service.failure_for("mat-1") is None
+
+    asyncio.run(main())
+
+
+def test_outcome_records_failure_structured_fields_and_retry_commits():
+    async def main():
+        boom = RuntimeError("extractor exploded")
+        service, *_ = make_service(extraction_exc=boom)
+        with pytest.raises(PipelineError):
+            await service.run_material(make_result())
+
+        # No fake success: no completed run and no committed outcome.
+        assert service.run_for("mat-1") is None
+        outcome = service.outcome_for("mat-1")
+        assert outcome is not None
+        assert outcome.status == "failed"
+        assert outcome.material_id == "mat-1"
+        assert outcome.stage == "extract"
+        assert outcome.error_type == "RuntimeError"
+        assert "extractor exploded" in outcome.message
+        assert outcome.occurred_at is not None
+        assert outcome.occurred_at.tzinfo is not None
+        assert outcome.occurred_at >= T0
+        assert service.outcome_for("mat-other") is None
+
+        # A safe retry moves the material from failed to committed and clears
+        # the stale failure audit; the failed state is never terminal fiction.
+        service._extraction.exc = None
+        retried = await service.run_material(make_result())
+        assert retried.status == "completed"
+        assert service.outcome_for("mat-1").status == "committed"
+        assert service.failure_for("mat-1") is None
+
+    asyncio.run(main())
+
+
+def test_outcome_is_committed_only_after_recorder_and_graph_write_succeed():
+    async def main():
+        recorder = FakeCaseRecorder(exc=ValueError("graph backend unavailable"))
+        service, *_ = make_recorded_service(recorder)
+        with pytest.raises(PipelineError):
+            await service.run_material(make_result())
+        assert service.outcome_for("mat-1").status == "failed"
+        assert service.outcome_for("mat-1").stage == "graph"
+
+        recorder.exc = None
+        retried = await service.run_material(make_result())
+        assert retried.status == "completed"
+        assert service.outcome_for("mat-1").status == "committed"
+        assert service.outcome_for("mat-1").error_type is None
+
+    asyncio.run(main())
+
+
+def test_outcomes_enumeration_and_skipped_duplicates_never_clobber():
+    async def main():
+        service, *_ = make_service()
+        assert service.outcomes() == ()
+        await service.run_material(make_result(make_material("mat-a")))
+        await service.run_material(make_result(make_material("mat-b")))
+
+        outcomes = service.outcomes()
+        assert [item.material_id for item in outcomes] == ["mat-a", "mat-b"]
+        assert [item.status for item in outcomes] == ["committed", "committed"]
+
+        # A skipped duplicate attempt is not a new lifecycle transition: the
+        # authoritative committed outcome stays put and no second record is
+        # invented for the same material.
+        skipped = await service.run_material(make_result(make_material("mat-a")))
+        assert skipped.status == "skipped"
+        assert service.outcome_for("mat-a").status == "committed"
+        assert service.outcome_for("mat-a").occurred_at == outcomes[0].occurred_at
+        assert len(service.outcomes()) == 2
+
+    asyncio.run(main())
+
+
+def test_handle_event_resolution_failures_record_a_failed_outcome():
+    async def main():
+        def resolver(event):
+            raise LookupError("material not found: mat-1")
+
+        service, *_ = make_service(resolver=resolver)
+        with pytest.raises(LookupError, match="mat-1"):
+            await service.handle_event(make_event())
+
+        outcome = service.outcome_for("mat-1")
+        assert outcome is not None
+        assert outcome.status == "failed"
+        assert outcome.stage is None  # the failure preceded any stage
+        assert outcome.error_type == "LookupError"
+        assert outcome.occurred_at is not None
+        assert outcome.occurred_at.tzinfo is not None
+
+    asyncio.run(main())
+
+
+def test_pipeline_outcome_validates_inputs_and_is_immutable():
+    from dataclasses import FrozenInstanceError
+
+    with pytest.raises(ValueError):
+        PipelineOutcome("  ", "pending", T0)
+    with pytest.raises(ValueError):
+        PipelineOutcome("mat-1", "bogus", T0)
+    with pytest.raises(ValueError):
+        PipelineOutcome("mat-1", "pending", datetime(2026, 9, 1, 8, 0))
+    # A failed record must say what failed; a success must not carry failure
+    # fields that could be mistaken for one.
+    with pytest.raises(ValueError):
+        PipelineOutcome("mat-1", "failed", T0)
+    with pytest.raises(ValueError):
+        PipelineOutcome("mat-1", "failed", T0, error_type="RuntimeError")
+    with pytest.raises(ValueError):
+        PipelineOutcome("mat-1", "committed", T0, error_type="RuntimeError")
+
+    failed = PipelineOutcome(
+        "mat-1",
+        "failed",
+        T0,
+        stage="extract",
+        error_type="RuntimeError",
+        message="extractor exploded",
+    )
+    assert failed.status == "failed"
+    assert failed.stage == "extract"
+    with pytest.raises(FrozenInstanceError):
+        failed.status = "committed"
+
+    committed = PipelineOutcome(
+        "mat-1", "committed", T0 + CLOCK_STEP, correlation_id="corr-1"
+    )
+    assert committed.correlation_id == "corr-1"
+    assert committed.error_type is None

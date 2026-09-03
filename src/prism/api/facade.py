@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Iterable
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, TypeVar
@@ -12,8 +13,10 @@ from uuid import uuid4
 from prism.analyzer import EvolutionAnalysis, HistoricalCaseState
 from prism.domain import Claim, EvolutionCase, EvolutionNode, Material, TemporalFact
 from prism.events import Event
+from prism.extraction import ExtractionResult
 from prism.graph import GraphTimeline, GraphWriteResult
 from prism.ingestion import IngestionResult
+from prism.pipeline import PipelineError
 from prism.report import ReportDocument, ReportService
 from prism.sources import (
     ScholarlyMetadataClient,
@@ -26,7 +29,6 @@ from prism.sources import (
 from prism.store import IndexEntry, IndexOutcome, SearchFilter
 
 if TYPE_CHECKING:
-    from prism.extraction import ExtractionResult
     from prism.research import ResearchExecutionReport, ResearchPlan
 
 from .fetching import (
@@ -40,6 +42,46 @@ from .fetching import (
 
 
 _Dependency = TypeVar("_Dependency")
+
+_INPUT_SUFFIXES = (".md", ".markdown", ".pdf")
+
+
+@dataclass(frozen=True, slots=True)
+class ProcessMaterialResult:
+    """The end-to-end outcome of processing one material automatically.
+
+    ``pipeline`` is the authoritative completed
+    :class:`~prism.pipeline.PipelineRun` (never a duplicate-skip record),
+    ``case_id``/``case_outcome`` describe the accumulated case the material
+    entered (both ``None`` when the extraction produced no case), and
+    ``warnings`` collects every auditable skip reason, extraction warning,
+    evidence gap and unresolved conflict surfaced along the way.
+
+    ``replayed`` is ``False`` when this call executed the pipeline, ``True``
+    when it was an idempotent replay of a run that had already completed
+    (e.g. an event-driven run or an earlier call) — the fields above are the
+    authoritative outcome either way, and nothing is merged a second time.
+    """
+
+    material_id: str
+    pipeline: object
+    case_id: str | None
+    case_outcome: object | None
+    warnings: tuple[str, ...] = ()
+    replayed: bool = False
+
+
+def _is_pathlike_input(source: object) -> bool:
+    if isinstance(source, Path):
+        return True
+    if not isinstance(source, str):
+        raise TypeError("source must be a material id or a path")
+    text = source.strip()
+    return (
+        "/" in text
+        or "\\" in text
+        or text.lower().endswith(_INPUT_SUFFIXES)
+    )
 
 
 class _IngestionService(Protocol):
@@ -108,6 +150,30 @@ class _PipelineService(Protocol):
     async def run_material(
         self, result: IngestionResult, *, correlation_id: str | None = ...
     ) -> object: ...
+
+    def run_for(self, material_id: str) -> object | None: ...
+
+    def case_outcome_for(self, material_id: str) -> object | None: ...
+
+
+class _CaseService(Protocol):
+    async def record_extraction(
+        self, material: Material, extraction: ExtractionResult
+    ) -> object: ...
+
+    async def merge_case(self, case_id: str) -> object | None: ...
+
+    async def merge_explicit(
+        self, case_id: str, material_ids: "Iterable[str]"
+    ) -> object: ...
+
+    def case_for_material(self, material_id: str) -> str | None: ...
+
+
+class _MaterialResolver(Protocol):
+    def resolve(self, material_id: str) -> IngestionResult: ...
+
+    def __call__(self, event: Event) -> IngestionResult: ...
 
 
 class _ExtractionService(Protocol):
@@ -186,6 +252,8 @@ class PrismAPI:
         research_intake: object | None = None,
         scholarly_metadata_client: _ScholarlyMetadataClient | None = None,
         extraction_service: _ExtractionService | None = None,
+        case_service: _CaseService | None = None,
+        material_resolver: _MaterialResolver | None = None,
     ) -> None:
         self._ingestion = _required_dependency(
             "ingestion_service", ingestion_service, "ingest"
@@ -238,6 +306,13 @@ class PrismAPI:
         self._extraction = _optional_dependency(
             "extraction_service", extraction_service, "extract_material"
         )
+        self._case_service = _optional_dependency(
+            "case_service", case_service, "merge_case"
+        )
+        _optional_dependency("case_service", case_service, "record_extraction")
+        self._material_resolver = _optional_dependency(
+            "material_resolver", material_resolver, "resolve"
+        )
 
     async def search(
         self,
@@ -267,9 +342,44 @@ class PrismAPI:
         path: str | Path,
         metadata: dict[str, Any] | None = None,
     ) -> IngestionResult:
-        """Normalize and index one material, then publish its completion event."""
+        """Normalize and index one material, then announce it on the bus.
+
+        This is the asynchronous, event-driven entry point: it returns when
+        ingestion and indexing are complete, and announces the material on
+        the event bus.  In a runtime with the automatic pipeline subscribed,
+        index → extract → accumulated-case merge → graph processing is
+        QUEUED and finishes after this call returns — this result never
+        claims pipeline completion.  The material's lifecycle is queryable
+        at any moment: ``pipeline.outcome_for(material_id)`` reports
+        ``pending``/``failed``/``committed``, ``pipeline.run_for`` the
+        completed run and ``pipeline.failure_for`` the last failed attempt.
+        To block until processing is done (or to force a retry of a failed
+        material) call :meth:`process_material` with the material id: it
+        waits for the in-flight or completed run and reports the
+        authoritative outcome, replaying nothing and merging nothing twice;
+        a persistent failure is raised there as the structured
+        :class:`~prism.pipeline.PipelineError`.  Subscriber failures are
+        recorded as auditable dispatch errors and per-material pipeline
+        failures — never reported here as processing success.
+        """
+        result, index_result = self._ingest_and_index(path, metadata)
+        await self._announce(
+            result, index_status=getattr(index_result, "status", None)
+        )
+        return result
+
+    def _ingest_and_index(
+        self, path: str | Path, metadata: dict[str, Any] | None
+    ) -> tuple[IngestionResult, object]:
+        """Normalize one input and index its corpus file (no events)."""
         result = self._ingestion.ingest(path, metadata)
         index_result = self._store.index_file(result.corpus_path)
+        return result, index_result
+
+    async def _announce(
+        self, result: IngestionResult, *, index_status: object | None
+    ) -> None:
+        """Publish the ``material.ingested`` announcement for one material."""
         event = Event(
             event_id=f"material-ingested-{uuid4()}",
             event_type="material.ingested",
@@ -277,12 +387,13 @@ class PrismAPI:
             payload={
                 "material_id": result.material.id,
                 "corpus_path": str(result.corpus_path),
-                "index_status": index_result.status,
+                "index_status": (
+                    index_status if isinstance(index_status, str) else None
+                ),
             },
             correlation_id=result.material.id,
         )
         await self._events.publish(event)
-        return result
 
     async def extract_material(
         self,
@@ -297,6 +408,195 @@ class PrismAPI:
         return await self._extraction.extract_material(
             material, corpus_path=corpus_path
         )
+
+    async def process_material(
+        self,
+        source: str | os.PathLike[str],
+        metadata: dict[str, Any] | None = None,
+    ) -> ProcessMaterialResult:
+        """Run one material through the automatic pipeline, end to end.
+
+        This is the synchronous entry point: ``source`` is either a material
+        id already indexed in the evidence store or a path to an input
+        document (which is ingested and indexed first).  The API returns only
+        after the material's pipeline run — and, when a case was produced,
+        its accumulated case merge/write outcome — has completed.
+
+        Semantics are explicit and idempotent within one process:
+        * a material whose run has not yet started is executed now (a path
+          input, or an id with no in-process run);
+        * a material whose event-driven run is still in flight is waited on
+          (the pipeline is serialized) and its authoritative outcome is
+          reported with ``replayed=True``;
+        * a repeated call for an already completed material is an explicit
+          idempotent replay (``replayed=True``) of that run — the accumulated
+          case is never merged a second time by this entry point;
+        * a material whose last attempt failed is RETRIED safely: the stale
+          failed audit/outcome is cleared by a later success, and a
+          persistent failure raises the structured
+          :class:`~prism.pipeline.PipelineError` (stage and material id) —
+          a fake success is never returned.
+
+        Cross-process behavior is honest and explicit: the completed-run
+        registry is per-process, so a fresh process (e.g. another CLI
+        invocation) re-executes the pipeline for an id whose durable state is
+        already committed — ``replayed=False`` for that genuine run.  The
+        writes stay idempotent (graph episodes are deduplicated by episode
+        key and the durable ledger row is upserted under the same case), but
+        extraction is re-run, so a changed extraction REPLACES the recorded
+        evidence; if the re-extraction now declares a different case than the
+        durable binding, the typed
+        :class:`~prism.cases.MaterialCaseConflict` refuses the re-binding
+        before any write — the automatic path never adds ambiguous bindings
+        and a legacy multi-case binding is never silently resolved.
+
+        The returned :class:`ProcessMaterialResult` carries the authoritative
+        pipeline run, the case outcome the run produced, and every auditable
+        warning.  A failed attempt raises the structured
+        :class:`~prism.pipeline.PipelineError` (with stage and material id)
+        and never returns a fake success; an ambiguous legacy multi-case
+        binding raises the typed :class:`~prism.cases.MaterialCaseConflict`.
+        """
+        if self._pipeline is None:
+            raise ValueError("pipeline_service is required for process_material()")
+        if _is_pathlike_input(source):
+            ingested, index_outcome = self._ingest_and_index(source, metadata)
+            material_id = ingested.material.id
+            ingestion_result: IngestionResult = ingested
+        else:
+            material_id = str(source).strip()
+            getter = getattr(self._store, "get", None)
+            if not callable(getter):
+                raise TypeError(
+                    "evidence_store must provide get() to process by material id"
+                )
+            if getter(material_id) is None:
+                raise LookupError(f"material not found: {material_id}")
+            if self._material_resolver is None:
+                raise ValueError(
+                    "material_resolver is required to process by material id"
+                )
+            ingestion_result = self._material_resolver.resolve(material_id)
+            index_outcome = None
+
+        try:
+            attempt = await self._pipeline.run_material(ingestion_result)
+        except PipelineError as error:
+            # A case-binding refusal raised by the automatic accumulator
+            # inside the pipeline surfaces as the typed, structured conflict
+            # (material id, bound cases, attempted case) — never as a generic
+            # wrapped stage error.  The failure audit with the typed
+            # error_type stays recorded on the pipeline either way.
+            from prism.cases.ledger import MaterialCaseConflict
+
+            cause = error.__cause__
+            if isinstance(cause, MaterialCaseConflict):
+                raise cause
+            raise
+        if attempt.status == "completed":
+            run = attempt
+            replayed = False
+        else:
+            # Skipped duplicate attempt: the authoritative completed run is
+            # the one this call waited on and must report.
+            run_for = getattr(self._pipeline, "run_for", None)
+            run = run_for(material_id) if callable(run_for) else None
+            if run is None:
+                raise RuntimeError(
+                    "pipeline reported no run for the processed material"
+                )
+            replayed = True
+        if index_outcome is not None:
+            # The synchronous path announced nothing before processing; the
+            # completed material is announced now — event subscribers
+            # deduplicate by material id, so nothing runs twice.
+            await self._announce(
+                ingestion_result,
+                index_status=getattr(index_outcome, "status", None),
+            )
+
+        case_outcome: object | None = None
+        case_id: str | None = None
+        outcome_getter = getattr(self._pipeline, "case_outcome_for", None)
+        if callable(outcome_getter):
+            case_outcome = outcome_getter(material_id)
+        warnings = self._audit_warnings(run)
+        if case_outcome is not None:
+            outcome_case_id = getattr(case_outcome, "case_id", None)
+            if isinstance(outcome_case_id, str) and outcome_case_id.strip():
+                case_id = outcome_case_id
+            warnings.extend(tuple(getattr(case_outcome, "warnings", ()) or ()))
+        elif self._case_service is not None:
+            # No fresh case outcome: report any durable binding truthfully —
+            # the ledger may bind the material from an earlier process even
+            # when this run produced no case.
+            case_id = self._case_service.case_for_material(material_id)
+            if case_id is not None:
+                warnings.append(
+                    f"material {material_id!r} is bound to case {case_id!r} "
+                    "in the durable ledger but this run produced no case "
+                    "outcome; run merge-case to rebuild the accumulated case"
+                )
+        return ProcessMaterialResult(
+            material_id=material_id,
+            pipeline=run,
+            case_id=case_id,
+            case_outcome=case_outcome,
+            warnings=tuple(dict.fromkeys(warnings)),
+            replayed=replayed,
+        )
+
+    async def merge_case(
+        self,
+        case_id: str,
+        materials: Iterable[str] | None = None,
+    ) -> object:
+        """Merge and write one case's accumulated evidence on demand.
+
+        This is the explicit reconciliation entry point, independent of the
+        automatic pipeline: without ``materials`` the full accumulated case
+        is rebuilt from the durable ledger; with ``materials`` only the
+        explicitly listed materials are merged (an id with no recorded
+        extraction raises :class:`LookupError`).  Rewriting the same
+        accumulated state is idempotent (graph episodes are deduplicated by
+        episode key).  An unknown case raises :class:`LookupError` — it is
+        never silently treated as empty.
+        """
+        if self._case_service is None:
+            raise ValueError("case_service is required for merge_case()")
+        if materials is None:
+            outcome = await self._case_service.merge_case(case_id)
+            if outcome is None:
+                raise LookupError(
+                    f"no accumulated extractions for case {case_id!r}"
+                )
+            return outcome
+        return await self._case_service.merge_explicit(case_id, tuple(materials))
+
+    @staticmethod
+    def _audit_warnings(run: object) -> list[str]:
+        """Surface every skip reason, warning, gap and conflict of one run."""
+        warnings: list[str] = []
+        for stage in getattr(run, "stages", ()) or ():
+            result = getattr(stage, "result", None)
+            if isinstance(result, ExtractionResult):
+                for warning in result.warnings:
+                    warnings.append(f"extraction warning: {warning}")
+                for gap in result.evidence_gaps:
+                    warnings.append(
+                        f"evidence gap ({gap.gap_type})"
+                        + (f" on {gap.item_kind}" if gap.item_kind else "")
+                        + f": {gap.detail}"
+                    )
+                for conflict in result.conflicts:
+                    warnings.append(
+                        f"unresolved conflict {conflict.conflict_id}: "
+                        f"{conflict.subject} {conflict.predicate} -> "
+                        + " | ".join(conflict.alternatives)
+                    )
+            if getattr(stage, "status", None) == "skipped" and stage.detail:
+                warnings.append(f"stage {stage.name} skipped: {stage.detail}")
+        return warnings
 
     async def fetch_source(
         self,

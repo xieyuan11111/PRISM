@@ -283,3 +283,81 @@ def test_search_evidence_is_supported_as_facade_compatibility_name():
     assert stdout == "[]\n"
     assert stderr == ""
     assert len(api.calls) == 1
+
+
+# ------------------------------------------------- automatic pipeline commands
+
+
+class ProcessingFakeAPI(FakeAPI):
+    def __init__(self):
+        super().__init__()
+        self.processed: list[tuple[object, dict | None]] = []
+        self.merged: list[tuple[str, tuple[str, ...] | None]] = []
+
+    async def process_material(self, source, metadata=None):
+        self.processed.append((source, metadata))
+        return {
+            "material_id": "mat-1",
+            "pipeline": {"material_id": "mat-1", "status": "completed"},
+            "case_id": "case-1",
+            "case_outcome": {"case_id": "case-1", "material_ids": ["mat-1"]},
+            "warnings": ("stage graph skipped: nothing",),
+        }
+
+    async def merge_case(self, case_id, materials=None):
+        self.merged.append((case_id, tuple(materials) if materials else None))
+        return {"case_id": case_id, "material_ids": ["mat-1"]}
+
+
+def test_process_delegates_to_the_unified_processing_entry_point():
+    api = ProcessingFakeAPI()
+    status, out, err = run_cli(["process", "mat-1"], api)
+    assert status == 0 and err == ""
+    assert api.processed == [("mat-1", None)]
+    payload = json.loads(out)
+    assert payload["material_id"] == "mat-1"
+    assert payload["pipeline"]["status"] == "completed"
+    assert payload["warnings"] == ["stage graph skipped: nothing"]
+
+
+def test_process_accepts_a_path_and_json_metadata():
+    api = ProcessingFakeAPI()
+    status, out, _ = run_cli(
+        ["process", "materials/policy.md", "--metadata", '{"case_tags":["case-1"]}'],
+        api,
+    )
+    assert status == 0
+    assert api.processed == [
+        ("materials/policy.md", {"case_tags": ["case-1"]})
+    ]
+
+
+def test_ingest_process_runs_the_full_pipeline_instead_of_plain_ingest():
+    api = ProcessingFakeAPI()
+    status, out, _ = run_cli(["ingest", "input.md", "--process"], api)
+    assert status == 0
+    assert api.processed == [(Path("input.md"), None)]
+    assert all(call[0] != "ingest_material" for call in api.calls)
+
+
+def test_merge_case_defaults_to_the_full_accumulation():
+    api = ProcessingFakeAPI()
+    status, out, _ = run_cli(["merge-case", "case-1"], api)
+    assert status == 0
+    assert api.merged == [("case-1", None)]
+    assert json.loads(out)["case_id"] == "case-1"
+
+
+def test_merge_case_accepts_an_explicit_material_selection():
+    api = ProcessingFakeAPI()
+    status, _, _ = run_cli(
+        ["merge-case", "case-1", "--materials", "mat-1", "mat-2"], api
+    )
+    assert status == 0
+    assert api.merged == [("case-1", ("mat-1", "mat-2"))]
+
+
+def test_merge_case_requires_a_case_id():
+    api = ProcessingFakeAPI()
+    status, _, err = run_cli(["merge-case"], api)
+    assert status == 2 and err

@@ -35,6 +35,14 @@ class PrismAPIProtocol(Protocol):
         self, path: str | Path, metadata: dict[str, Any] | None = None
     ) -> object: ...
 
+    async def process_material(
+        self, source: str, metadata: dict[str, Any] | None = None
+    ) -> object: ...
+
+    async def merge_case(
+        self, case_id: str, materials: Sequence[str] | None = None
+    ) -> object: ...
+
     async def report_case(
         self, case_id: str, as_of: datetime | None = None, use_llm: bool = True
     ) -> object: ...
@@ -176,10 +184,60 @@ def build_parser() -> argparse.ArgumentParser:
     )
     state.set_defaults(handler=handle_state)
 
-    ingest = commands.add_parser("ingest", help="Ingest a Markdown or PDF file.")
+    ingest = commands.add_parser(
+        "ingest", help="Ingest a Markdown or PDF file and announce it."
+    )
     ingest.add_argument("input_path", type=Path, metavar="INPUT")
     ingest.add_argument("--metadata", type=_json_object, metavar="JSON")
+    ingest.add_argument(
+        "--process",
+        dest="process",
+        action="store_true",
+        help=(
+            "Wait for the automatic pipeline and print its full outcome "
+            "(index, extract, case merge, graph write).  Without it this "
+            "command prints the ingestion result; automatic processing is "
+            "still queued and completes before the command exits (a "
+            "processing failure makes the command exit non-zero)."
+        ),
+    )
     ingest.set_defaults(handler=handle_ingest)
+
+    process = commands.add_parser(
+        "process",
+        help=(
+            "Run one material through the automatic pipeline synchronously, "
+            "waiting for the pipeline and case outcome before returning."
+        ),
+    )
+    process.add_argument(
+        "source",
+        type=_nonempty,
+        metavar="MATERIAL_OR_INPUT",
+        help="An indexed material id, or a path to a Markdown/PDF input.",
+    )
+    process.add_argument("--metadata", type=_json_object, metavar="JSON")
+    process.set_defaults(handler=handle_process)
+
+    merge_case = commands.add_parser(
+        "merge-case",
+        help=(
+            "Rebuild and write one case's accumulated extractions from the "
+            "durable ledger (idempotent reconciliation, no re-extraction)."
+        ),
+    )
+    merge_case.add_argument("case_id", type=_nonempty, metavar="CASE_ID")
+    merge_case.add_argument(
+        "--materials",
+        nargs="+",
+        type=_nonempty,
+        metavar="MATERIAL_ID",
+        help=(
+            "Merge only these accumulated materials; omit to rebuild the "
+            "full accumulated case."
+        ),
+    )
+    merge_case.set_defaults(handler=handle_merge_case)
 
     report = commands.add_parser(
         "report", help="Render a case evolution report as JSON."
@@ -304,7 +362,23 @@ async def handle_state(args: argparse.Namespace, api: PrismAPIProtocol) -> objec
 
 async def handle_ingest(args: argparse.Namespace, api: PrismAPIProtocol) -> object:
     """Delegate a parsed ingest command to the injected facade."""
+    if args.process:
+        return await _await_api_call(
+            api.process_material(args.input_path, args.metadata)
+        )
     return await _await_api_call(api.ingest_material(args.input_path, args.metadata))
+
+
+async def handle_process(args: argparse.Namespace, api: PrismAPIProtocol) -> object:
+    """Delegate a parsed process command to the injected facade."""
+    return await _await_api_call(api.process_material(args.source, args.metadata))
+
+
+async def handle_merge_case(args: argparse.Namespace, api: PrismAPIProtocol) -> object:
+    """Delegate a parsed merge-case command to the injected facade."""
+    return await _await_api_call(
+        api.merge_case(args.case_id, materials=args.materials)
+    )
 
 
 async def handle_report(args: argparse.Namespace, api: PrismAPIProtocol) -> object:
@@ -431,6 +505,42 @@ def _safe_error_message(error: BaseException) -> str:
     return _BEARER_VALUE.sub(r"\1[REDACTED]", message)
 
 
+def _dispatch_error_payload(errors: Sequence[object]) -> dict[str, object]:
+    """Render the first isolated subscriber failure as an error payload.
+
+    The audit fields of one failure (subscriber, event type, material id,
+    failure time and the underlying error) are surfaced verbatim, so a
+    background processing failure never exits 0 as if it had succeeded.
+    """
+    first = errors[0]
+    subscription_id = getattr(first, "subscription_id", "?")
+    event = getattr(first, "event", None)
+    event_type = getattr(event, "event_type", "?")
+    payload = getattr(event, "payload", {})
+    material_id = payload.get("material_id") if isinstance(payload, Mapping) else None
+    exception = getattr(first, "exception", None)
+    detail = f"{type(exception).__name__}: {exception}"
+    failed_at = getattr(first, "failed_at", None)
+    when = failed_at.isoformat() if isinstance(failed_at, datetime) else "unknown"
+    message = (
+        f"automatic pipeline subscriber {subscription_id} failed while "
+        f"handling {event_type}"
+        + (
+            f" for material {material_id!r}"
+            if isinstance(material_id, str) and material_id.strip()
+            else ""
+        )
+        + f" at {when}: {_safe_error_message(detail)}"
+    )
+    return {
+        "error": {
+            "message": message,
+            "type": type(first).__name__,
+            "count": len(errors),
+        }
+    }
+
+
 async def main(
     argv: Sequence[str] | None = None,
     api: PrismAPIProtocol | None = None,
@@ -473,8 +583,16 @@ async def main(
             api = owned_runtime.api
         result = await args.handler(args, api)
         if owned_runtime is not None:
+            # Closing the owned runtime drains the event bus, so queued
+            # automatic processing has finished by this point.  A subscriber
+            # failure must flip the exit status: the command never reports a
+            # result as if background processing had succeeded.
             await owned_runtime.close()
+            dispatch_failures = owned_runtime.dispatch_errors
             owned_runtime = None
+            if dispatch_failures:
+                _write_json(_dispatch_error_payload(dispatch_failures), errors)
+                return 1
         _write_json(result, output)
     except (KeyboardInterrupt, SystemExit):
         raise
@@ -501,6 +619,8 @@ __all__ = [
     "handle_fetch",
     "handle_fetch_all",
     "handle_discover",
+    "handle_merge_case",
+    "handle_process",
     "handle_research",
     "handle_ingest",
     "handle_report",

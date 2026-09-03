@@ -12,6 +12,8 @@ from typing import Any
 
 from prism.api import PrismAPI
 from prism.analyzer import AnalyzerService
+from prism.cases import CaseBundleMerger, CaseService
+from prism.cases.ledger import CaseExtractionLedger
 from prism.config import GraphitiConfig, PathConfig, PrismConfig
 from prism.domain import Material
 from prism.events import EventBus
@@ -32,7 +34,12 @@ from prism.llm import (
     Provider,
     TaskRoute,
 )
-from prism.pipeline import PipelineService
+from prism.pipeline import (
+    MATERIAL_INGESTED,
+    PipelineOutcomeLedger,
+    PipelineService,
+    StoreMaterialResolver,
+)
 from prism.report import ReportService
 from prism.research import (
     FirecrawlJsonHttpClient,
@@ -286,6 +293,17 @@ class PrismRuntime:
     # by :meth:`close`.  None on the offline default and when a caller
     # injected ``graph_backend`` (full override).
     graph_episode_registry: SQLiteEpisodeRegistry | None = None
+    # Automatic evolution pipeline: the accumulated-case service, its durable
+    # ledger, and the event subscription that feeds material.ingested events
+    # into PipelineService.handle_event (subscribed before the bus starts and
+    # unsubscribed by :meth:`close`).
+    case_service: CaseService | None = None
+    case_ledger: CaseExtractionLedger | None = None
+    pipeline_subscription_id: str | None = None
+    # Durable pipeline-outcome ledger (per-material failed/committed states in
+    # the shared local SQLite file, hydrated into the pipeline at startup);
+    # closed by :meth:`close`.  None on runtimes that injected no pipeline.
+    pipeline_outcome_ledger: PipelineOutcomeLedger | None = None
     _closed: bool = field(default=False, init=False, repr=False)
 
     @property
@@ -316,27 +334,56 @@ class PrismRuntime:
     def sources(self) -> SourceService | None:
         return self.source_service
 
+    @property
+    def dispatch_errors(self) -> tuple:
+        """Every isolated event-subscriber failure recorded so far.
+
+        Each entry is a :class:`~prism.events.DispatchError` carrying the
+        subscription, the event (hence the material id and event time), the
+        exception and the failure time.  For the automatic pipeline the
+        material-level audit is also queryable through
+        ``pipeline.failure_for(material_id)`` (stage, error type, message,
+        time), the lifecycle state through ``pipeline.outcome_for``
+        (``pending``/``failed``/``committed``, terminal states durable across
+        restarts) and the completed outcome through ``pipeline.run_for`` —
+        a failure is never reported as a completed run."""
+
+        return self.event_bus.errors
+
     async def close(self) -> None:
         """Stop asynchronous workers, release the SQLite connection and close
         every real resource this runtime created (an owned Graphiti client
-        and its persistent episode registry included).  Idempotent;
-        caller-injected services stay open."""
+        and its persistent episode registry included).  The automatic
+        pipeline's event subscription is removed first — draining any
+        in-flight ``material.ingested`` event before the bus stops — so one
+        ingestion can never lose its index→extract→graph processing to a
+        shutdown race.  Idempotent; caller-injected services stay open."""
 
         if self._closed:
             return
         self._closed = True
         try:
-            await self.event_bus.stop()
+            if self.pipeline_subscription_id is not None:
+                await self.event_bus.unsubscribe(self.pipeline_subscription_id)
         finally:
             try:
-                self.evidence_store.close()
+                await self.event_bus.stop()
             finally:
                 try:
-                    if self.graphiti_backend is not None:
-                        await self.graphiti_backend.close()
+                    self.evidence_store.close()
                 finally:
-                    if self.graph_episode_registry is not None:
-                        self.graph_episode_registry.close()
+                    try:
+                        if self.graphiti_backend is not None:
+                            await self.graphiti_backend.close()
+                    finally:
+                        try:
+                            if self.graph_episode_registry is not None:
+                                self.graph_episode_registry.close()
+                        finally:
+                            if self.case_ledger is not None:
+                                self.case_ledger.close()
+                            if self.pipeline_outcome_ledger is not None:
+                                self.pipeline_outcome_ledger.close()
 
     async def __aenter__(self) -> PrismRuntime:
         return self
@@ -354,6 +401,7 @@ async def create_runtime(
     search_provider: SearchProvider | None = None,
     firecrawl_client: object | None = None,
     graphiti_client_factory: Callable[[GraphitiConfig], Any] | None = None,
+    extraction_service: ExtractionService | OfflineExtractor | None = None,
 ) -> PrismRuntime:
     """Construct and start a local runtime without implicit external clients.
 
@@ -374,6 +422,34 @@ async def create_runtime(
     process restarts; :meth:`PrismRuntime.close` closes both.  A
     ``graph_backend`` injection is a full override that stays fully offline
     and creates no registry.
+
+    The automatic evolution pipeline is wired unconditionally from local
+    resources only: the store-backed material resolver, the durable
+    :class:`~prism.cases.ledger.CaseExtractionLedger` and the accumulating
+    :class:`~prism.cases.CaseService`.  ``PipelineService.handle_event`` is
+    subscribed to ``material.ingested`` BEFORE the event bus starts, so one
+    ingestion automatically runs index → extract → merged-case graph write
+    without any manual pipeline call.  ``PrismAPI.ingest_material`` is the
+    asynchronous path — it returns once the material is ingested and
+    indexed, with automatic processing queued (query its outcome through
+    ``PrismAPI.process_material(material_id)``, which waits and reports the
+    authoritative pipeline/case result, or through
+    ``pipeline.run_for``/``pipeline.failure_for``/``pipeline.outcome_for``);
+    ``process_material`` is the synchronous path and never reports success
+    before the pipeline and case outcome exist.  Every material's lifecycle
+    is queryable as ``pending``/``failed``/``committed`` through
+    ``pipeline.outcome_for``, and terminal states are persisted in the local
+    ``pipeline_outcomes`` table of the shared SQLite file (hydrated on the
+    next start) — a local, single-process-file ledger, not a cross-process
+    outbox.  Subscriber failures are isolated, recorded with
+    time/stage/error type and visible as :attr:`PrismRuntime.dispatch_errors`
+    plus per-material ``pipeline.failure_for``/``pipeline.outcome_for``
+    records — they never corrupt the publisher or fake a completed run, and
+    :meth:`PrismRuntime.close` unsubscribes the pipeline subscriber after
+    draining in-flight events.
+    An injected ``extraction_service`` is a full override of the default
+    router-less/LLM-backed extraction choice, for controlled offline tests
+    and embedders; composition itself never calls it.
     """
 
     config = load_config(config_path)
@@ -401,12 +477,36 @@ async def create_runtime(
     analyzer = AnalyzerService(graph)
     report = ReportService(llm_router)
     extraction: ExtractionService | OfflineExtractor = (
-        ExtractionService(llm_router, evidence_locator=store.locate)
-        if llm_router is not None
-        else OfflineExtractor()
+        extraction_service
+        if extraction_service is not None
+        else (
+            ExtractionService(llm_router, evidence_locator=store.locate)
+            if llm_router is not None
+            else OfflineExtractor()
+        )
     )
+    if not callable(getattr(extraction, "extract", None)):
+        raise TypeError(
+            "extraction_service must provide extract()/extract_material()"
+        )
+    # Automatic evolution pipeline: resolve events from the authoritative
+    # store, accumulate successful extractions durably per case, and write
+    # merged case bundles (never one full case per material).  Terminal
+    # per-material pipeline outcomes (failed/committed) are persisted in the
+    # shared local SQLite file so failures stay auditable after a restart.
+    resolver = StoreMaterialResolver(store, paths)
+    case_ledger = CaseExtractionLedger(paths)
+    case_service = CaseService(
+        ledger=case_ledger, merger=CaseBundleMerger(), graph_service=graph
+    )
+    pipeline_outcome_ledger = PipelineOutcomeLedger(paths)
     pipeline = PipelineService(
-        indexer=store, extraction_service=extraction, graph_service=graph
+        indexer=store,
+        extraction_service=extraction,
+        graph_service=graph,
+        material_resolver=resolver,
+        case_service=case_service,
+        outcome_store=pipeline_outcome_ledger,
     )
     research_planner = ResearchPlanner(config, router=llm_router)
 
@@ -454,6 +554,11 @@ async def create_runtime(
             )
 
     try:
+        # The pipeline subscriber must exist before the bus starts so no
+        # material.ingested event published after start() can be missed.
+        pipeline_subscription_id = events.subscribe(
+            MATERIAL_INGESTED, pipeline.handle_event
+        )
         store.initialize()
         await events.start()
     except BaseException:
@@ -461,6 +566,8 @@ async def create_runtime(
             await owned_graphiti_backend.close()
         if owned_registry is not None:
             owned_registry.close()
+        case_ledger.close()
+        pipeline_outcome_ledger.close()
         await events.stop()
         store.close()
         raise
@@ -479,6 +586,8 @@ async def create_runtime(
         search_provider=effective_provider,
         scholarly_metadata_client=scholarly_metadata_client,
         extraction_service=extraction,
+        case_service=case_service,
+        material_resolver=resolver,
     )
     if effective_provider is not None:
         research_executor = ResearchExecutor(
@@ -506,6 +615,10 @@ async def create_runtime(
         llm_router=llm_router,
         graphiti_backend=owned_graphiti_backend,
         graph_episode_registry=owned_registry,
+        case_service=case_service,
+        case_ledger=case_ledger,
+        pipeline_subscription_id=pipeline_subscription_id,
+        pipeline_outcome_ledger=pipeline_outcome_ledger,
     )
 
 
