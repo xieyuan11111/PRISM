@@ -18,6 +18,11 @@ from prism.domain import (
     TemporalFact,
     TemporalRelation,
 )
+from prism.extraction.textmatch import (
+    fold_for_location,
+    paragraph_spans,
+    resolve_verbatim_spans,
+)
 
 
 _FENCED_JSON = re.compile(
@@ -120,6 +125,46 @@ class ExtractionConflict:
             raise ValueError("provenance_type must be a non-empty string")
 
 
+MATCH_TYPES = frozenset({"exact", "whitespace_normalized"})
+
+
+@dataclass(frozen=True, slots=True)
+class ExtractionEvidenceMatch:
+    """Audit record of how one evidence quote was bound to the source text.
+
+    ``whitespace_normalized`` covers the safe folding used only to locate the
+    span: collapsed whitespace plus a closed set of Unicode punctuation
+    lookalikes.  The locator quote stored on the candidate is always original
+    source text either way, and ``paragraph_recovered`` marks a claimed
+    paragraph that was wrong while the quote occurred in exactly one
+    paragraph, so the binding was re-anchored instead of dropped.
+    """
+
+    path: str
+    source_id: str
+    match_type: str
+    paragraph: int | None = None
+    requested_paragraph: int | None = None
+    paragraph_recovered: bool = False
+
+    def __post_init__(self) -> None:
+        for name in ("path", "source_id", "match_type"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{name} must be a non-empty string")
+        if self.match_type not in MATCH_TYPES:
+            allowed = ", ".join(sorted(MATCH_TYPES))
+            raise ValueError(f"match_type must be one of: {allowed}")
+        for name in ("paragraph", "requested_paragraph"):
+            value = getattr(self, name)
+            if value is not None and (
+                isinstance(value, bool) or not isinstance(value, int) or value < 1
+            ):
+                raise ValueError(f"{name} must be null or a positive integer")
+        if not isinstance(self.paragraph_recovered, bool):
+            raise ValueError("paragraph_recovered must be a boolean")
+
+
 def _text_values(name: str, value: object) -> tuple[str, ...]:
     if isinstance(value, (str, bytes)):
         raise TypeError(f"{name} must be an iterable of strings")
@@ -134,6 +179,33 @@ def _text_values(name: str, value: object) -> tuple[str, ...]:
 
 class _EvidenceBindingError(ValueError):
     pass
+
+
+@dataclass(frozen=True, slots=True)
+class _QuotePlacement:
+    """Where a model quote was anchored inside the material text."""
+
+    verbatim: str
+    paragraph: int | None
+    recovered: bool
+    exact: bool
+
+
+class _BindingAudit:
+    """Collector for evidence-binding notices and match records.
+
+    One instance is created per candidate and filled only while that
+    candidate's locators all succeed; its records are merged into the run's
+    result after — and only after — the candidate's object reaches the
+    graph-ready collections.  A candidate that ends as an evidence gap
+    leaves no trace of a partially successful binding.
+    """
+
+    __slots__ = ("notices", "matches")
+
+    def __init__(self) -> None:
+        self.notices: list[str] = []
+        self.matches: list[ExtractionEvidenceMatch] = []
 
 
 class _UnusableCaseError(ValueError):
@@ -172,6 +244,9 @@ class ExtractionResult:
     evidence_gaps: tuple[ExtractionEvidenceGap, ...] = ()
     # Optional explicit M1 relations; appended for positional compatibility.
     relations: tuple[TemporalRelation, ...] = ()
+    # Per-locator audit of how each quote was bound; appended for positional
+    # compatibility.
+    evidence_matches: tuple[ExtractionEvidenceMatch, ...] = ()
 
     def __post_init__(self) -> None:
         if self.case is not None and not isinstance(self.case, EvolutionCase):
@@ -204,6 +279,13 @@ class ExtractionResult:
             self,
             "relations",
             _typed_tuple("relations", self.relations, TemporalRelation),
+        )
+        object.__setattr__(
+            self,
+            "evidence_matches",
+            _typed_tuple(
+                "evidence_matches", self.evidence_matches, ExtractionEvidenceMatch
+            ),
         )
 
 
@@ -364,9 +446,16 @@ class ExtractionService:
             "where relation_type is supersedes, revises, contradicts, or triggered_by. "
             "Emit triggered_by only when the material explicitly supports that causal "
             "link; chronology alone is never causality.\n"
-            "evidence: [{source_id,quote,paragraph,page}], where quote is exact "
-            "text present in the material body; paragraph is the one-based "
-            "non-empty Markdown paragraph and page is normally null (PDF only).\n"
+            "evidence: [{source_id,quote,paragraph,page}]. Copy quote "
+            "verbatim, character for character, from one paragraph of "
+            "MATERIAL CONTENT — including its original spacing, quotation "
+            "marks and dashes; never retype, normalize, translate or "
+            "paraphrase it. paragraph is the 1-based number of the "
+            "non-empty line (paragraph) that contains the quote: count only "
+            "non-empty lines in order and skip blank lines. page is normally "
+            "null (PDF page number only). If you cannot copy an exact "
+            "supporting quote from the material body, do not emit that "
+            "candidate at all.\n"
             "Allowed case_type: policy, academic_discourse, public_issue. Allowed "
             "node_type: proposal, draft, publication, interpretation, "
             "implementation, response, revision, reversal, replacement, expiry, "
@@ -490,55 +579,70 @@ class ExtractionService:
             if case_reason is not None
             else []
         )
+        audit = _BindingAudit()
+        node_audits: list[_BindingAudit] = []
         nodes: list[EvolutionNode] = []
         for index, item in enumerate(self._array("nodes", payload["nodes"])):
+            candidate_audit = _BindingAudit()
             try:
-                nodes.append(
-                    self._parse_node(
-                        item,
-                        index,
-                        material,
-                        strict=strict,
-                        corpus_path=corpus_path,
-                    )
+                node = self._parse_node(
+                    item,
+                    index,
+                    material,
+                    strict=strict,
+                    corpus_path=corpus_path,
+                    audit=candidate_audit,
                 )
             except _EvidenceBindingError as error:
                 gaps.append(self._binding_gap("node", item, index, error, material))
+            else:
+                nodes.append(node)
+                node_audits.append(candidate_audit)
+        fact_audits: list[_BindingAudit] = []
         facts: list[TemporalFact] = []
         for index, item in enumerate(
             self._array("temporal_facts", payload["temporal_facts"])
         ):
+            candidate_audit = _BindingAudit()
             try:
-                facts.append(
-                    self._parse_fact(
-                        item,
-                        index,
-                        material,
-                        strict=strict,
-                        corpus_path=corpus_path,
-                    )
+                fact = self._parse_fact(
+                    item,
+                    index,
+                    material,
+                    strict=strict,
+                    corpus_path=corpus_path,
+                    audit=candidate_audit,
                 )
             except _EvidenceBindingError as error:
                 gaps.append(self._binding_gap("temporal_fact", item, index, error, material))
+            else:
+                facts.append(fact)
+                fact_audits.append(candidate_audit)
+        claim_audits: list[_BindingAudit] = []
         claims: list[Claim] = []
         for index, item in enumerate(self._array("claims", payload["claims"])):
+            candidate_audit = _BindingAudit()
             try:
-                claims.append(
-                    self._parse_claim(
-                        item,
-                        index,
-                        material,
-                        strict=strict,
-                        corpus_path=corpus_path,
-                        notices=notices,
-                    )
+                claim = self._parse_claim(
+                    item,
+                    index,
+                    material,
+                    strict=strict,
+                    corpus_path=corpus_path,
+                    notices=notices,
+                    audit=candidate_audit,
                 )
             except _EvidenceBindingError as error:
                 gaps.append(self._binding_gap("claim", item, index, error, material))
+            else:
+                claims.append(claim)
+                claim_audits.append(candidate_audit)
+        conflict_audits: list[_BindingAudit] = []
         conflicts: list[ExtractionConflict] = []
         for index, item in enumerate(
             self._array("conflicts", payload.get("conflicts", []))
         ):
+            candidate_audit = _BindingAudit()
             try:
                 conflict, conflict_gap = self._parse_conflict(
                     item,
@@ -546,23 +650,31 @@ class ExtractionService:
                     material,
                     corpus_path,
                     notices=notices,
+                    audit=candidate_audit,
                 )
-                if conflict is not None:
-                    conflicts.append(conflict)
-                if conflict_gap is not None:
-                    gaps.append(conflict_gap)
             except _EvidenceBindingError as error:
                 gaps.append(self._binding_gap("conflict", item, index, error, material))
+                continue
+            if conflict is not None:
+                conflicts.append(conflict)
+                conflict_audits.append(candidate_audit)
+            if conflict_gap is not None:
+                gaps.append(conflict_gap)
+        relation_audits: list[_BindingAudit] = []
         relations: list[TemporalRelation] = []
         for index, item in enumerate(
             self._array("relations", payload.get("relations", []))
         ):
+            candidate_audit = _BindingAudit()
             try:
-                relations.append(
-                    self._parse_relation(item, index, material, corpus_path)
+                relation = self._parse_relation(
+                    item, index, material, corpus_path, audit=candidate_audit
                 )
             except _EvidenceBindingError as error:
                 gaps.append(self._binding_gap("relation", item, index, error, material))
+            else:
+                relations.append(relation)
+                relation_audits.append(candidate_audit)
         if strict and case_reason is not None:
             # Without a usable case no candidate can be case-bound, so each
             # parsed candidate is excluded from the graph-ready collections
@@ -621,7 +733,22 @@ class ExtractionService:
                     )
                 )
             nodes, facts, claims, conflicts, relations = [], [], [], [], []
-        warnings = tuple(dict.fromkeys((*model_warnings, *notices)))
+        if not (strict and case_reason is not None):
+            # Match records and binding notices enter the result only for
+            # candidates whose object reached the graph-ready collections
+            # (the unusable-case sweep above empties them all, so nothing is
+            # merged then either); a candidate that became a gap keeps no
+            # record of a partially successful binding.
+            for candidate_audit in (
+                *node_audits,
+                *fact_audits,
+                *claim_audits,
+                *conflict_audits,
+                *relation_audits,
+            ):
+                audit.matches.extend(candidate_audit.matches)
+                audit.notices.extend(candidate_audit.notices)
+        warnings = tuple(dict.fromkeys((*model_warnings, *notices, *audit.notices)))
         nodes = self._prune_gapped_claim_references(nodes, claims, gaps)
         node_tuple = tuple(nodes)
         fact_tuple = tuple(facts)
@@ -678,6 +805,7 @@ class ExtractionService:
             tuple(conflicts),
             tuple(gaps),
             tuple(relations),
+            tuple(audit.matches),
         )
 
     def _parse_case(
@@ -752,6 +880,7 @@ class ExtractionService:
         *,
         strict: bool = False,
         corpus_path: str | Path | None = None,
+        audit: _BindingAudit | None = None,
     ) -> EvolutionNode:
         path = f"nodes[{index}]"
         obj = self._object(path, value)
@@ -780,6 +909,7 @@ class ExtractionService:
                 material,
                 corpus_path,
                 source_ids,
+                audit=audit,
             )
             provenance_type = self._required_text(
                 f"{path}.provenance_type", obj["provenance_type"]
@@ -836,6 +966,7 @@ class ExtractionService:
         *,
         strict: bool = False,
         corpus_path: str | Path | None = None,
+        audit: _BindingAudit | None = None,
     ) -> TemporalFact:
         path = f"temporal_facts[{index}]"
         obj = self._object(path, value)
@@ -871,6 +1002,7 @@ class ExtractionService:
                 material,
                 corpus_path,
                 source_ids,
+                audit=audit,
             )
             if strict
             else ()
@@ -912,6 +1044,7 @@ class ExtractionService:
         strict: bool = False,
         corpus_path: str | Path | None = None,
         notices: list[str] | None = None,
+        audit: _BindingAudit | None = None,
     ) -> Claim:
         path = f"claims[{index}]"
         obj = self._object(path, value)
@@ -955,6 +1088,7 @@ class ExtractionService:
                 material,
                 corpus_path,
                 based_on,
+                audit=audit,
             )
             if strict
             else ()
@@ -1006,6 +1140,7 @@ class ExtractionService:
         corpus_path: str | Path | None,
         *,
         notices: list[str] | None = None,
+        audit: _BindingAudit | None = None,
     ) -> tuple[ExtractionConflict | None, ExtractionEvidenceGap | None]:
         path = f"conflicts[{index}]"
         obj = self._object(path, value)
@@ -1048,6 +1183,7 @@ class ExtractionService:
             material,
             corpus_path,
             source_ids,
+            audit=audit,
         )
         conflict_id = self._required_text(
             f"{path}.conflict_id", obj["conflict_id"]
@@ -1119,6 +1255,8 @@ class ExtractionService:
         index: int,
         material: Material,
         corpus_path: str | Path | None,
+        *,
+        audit: _BindingAudit | None = None,
     ) -> TemporalRelation:
         path = f"relations[{index}]"
         obj = self._object(path, value)
@@ -1135,7 +1273,12 @@ class ExtractionService:
             f"{path}.source_ids", obj["source_ids"], material
         )
         evidence = self._bind_evidence(
-            f"{path}.evidence", obj["evidence"], material, corpus_path, source_ids
+            f"{path}.evidence",
+            obj["evidence"],
+            material,
+            corpus_path,
+            source_ids,
+            audit=audit,
         )
         relation = self._construct(
             path,
@@ -1243,6 +1386,79 @@ class ExtractionService:
             )
         return source_ids
 
+    @staticmethod
+    def _resolve_quote_placement(
+        material: Material,
+        quote: str,
+        paragraph: int | None,
+    ) -> _QuotePlacement:
+        """Anchor a model quote to verbatim material text and a paragraph.
+
+        Whitespace-run and closed-set punctuation folding is used only to
+        find the span; the span handed back is always a character-exact
+        slice of the material, so a paraphrase or summary can never become
+        evidence.  A claimed paragraph that does not contain the quote is
+        recovered only when the quote occurs in exactly one paragraph;
+        ambiguity stays an error because guessing a paragraph would
+        fabricate a locator.  ``exact`` compares the selected span with the
+        model quote, and a truly exact occurrence is preferred over
+        normalized ones inside the chosen paragraph.
+        """
+
+        spans = resolve_verbatim_spans(material.content, quote)
+        if not spans:
+            raise _EvidenceBindingError(
+                f"quote was not found verbatim in material {material.id}"
+            )
+        paragraphs = paragraph_spans(material.content)
+        contained: list[int] = []
+        for number, start, end in paragraphs:
+            if any(s >= start and e <= end for s, e in spans):
+                contained.append(number)
+        if not contained:
+            raise _EvidenceBindingError(
+                f"quote spans multiple paragraphs of material {material.id}; "
+                "evidence must sit inside a single non-empty paragraph"
+            )
+        recovered = False
+        if paragraph is not None and paragraph not in contained:
+            if len(contained) > 1:
+                raise _EvidenceBindingError(
+                    f"quote matches paragraphs {contained} of material "
+                    f"{material.id}, not the claimed paragraph {paragraph}; "
+                    "refusing to guess between paragraphs"
+                )
+            recovered = True
+            paragraph = contained[0]
+        if paragraph is None:
+            paragraph = contained[0]
+        line_start, line_end = next(
+            (start, end) for number, start, end in paragraphs if number == paragraph
+        )
+        in_paragraph = [
+            (start, end)
+            for start, end in spans
+            if start >= line_start and end <= line_end
+        ]
+        # Within the chosen paragraph a character-exact occurrence wins over
+        # normalized ones, so the audit's "exact" always describes the span
+        # that was actually selected, never some other occurrence elsewhere.
+        span_start, span_end = next(
+            (
+                (start, end)
+                for start, end in in_paragraph
+                if material.content[start:end] == quote
+            ),
+            in_paragraph[0],
+        )
+        verbatim = material.content[span_start:span_end]
+        return _QuotePlacement(
+            verbatim=verbatim,
+            paragraph=paragraph,
+            recovered=recovered,
+            exact=verbatim == quote,
+        )
+
     def _bind_evidence(
         self,
         path: str,
@@ -1250,6 +1466,8 @@ class ExtractionService:
         material: Material,
         corpus_path: str | Path | None,
         source_ids: tuple[str, ...],
+        *,
+        audit: _BindingAudit | None = None,
     ) -> tuple[EvidenceLocator, ...]:
         items = self._array(path, value)
         if not items:
@@ -1272,28 +1490,25 @@ class ExtractionService:
                     "the candidate source array"
                 )
             quote = self._required_text(f"{item_path}.quote", obj["quote"])
-            if quote not in material.content:
-                raise _EvidenceBindingError(
-                    f"quote was not found verbatim in material {material.id}"
-                )
             paragraph = self._optional_positive_int(
                 f"{item_path}.paragraph", obj["paragraph"]
             )
             page = self._optional_positive_int(f"{item_path}.page", obj["page"])
+            placement = self._resolve_quote_placement(material, quote, paragraph)
             try:
                 if self._evidence_locator is not None:
                     locator = self._evidence_locator(
                         source_id,
-                        quote=quote,
-                        paragraph=paragraph,
+                        quote=placement.verbatim,
+                        paragraph=placement.paragraph,
                         page=page,
                     )
                 else:
                     locator = self._locate_in_material(
                         material,
                         corpus_path,
-                        quote=quote,
-                        paragraph=paragraph,
+                        quote=placement.verbatim,
+                        paragraph=placement.paragraph,
                         page=page,
                     )
             except (LookupError, ValueError, TypeError) as error:
@@ -1306,18 +1521,45 @@ class ExtractionService:
                 raise _EvidenceBindingError(
                     "resolved evidence does not belong to the input material"
                 )
-            # Keep the exact model-proposed quote after the resolver has
-            # validated its position. Store-generated excerpts may contain an
-            # ellipsis and therefore are not themselves verbatim source text.
+            # Store the resolved verbatim span, not the model-proposed text:
+            # a quote whose whitespace or punctuation differed from the
+            # material must still point at character-exact source text, and
+            # store-generated excerpts may contain an ellipsis and therefore
+            # are not themselves verbatim source text.
             bound.append(
                 EvidenceLocator(
                     source_id=locator.source_id,
                     corpus_path=locator.corpus_path,
                     paragraph=locator.paragraph,
                     page=locator.page,
-                    quote=quote,
+                    quote=placement.verbatim,
                 )
             )
+            if audit is not None:
+                match_type = "exact" if placement.exact else "whitespace_normalized"
+                audit.matches.append(
+                    ExtractionEvidenceMatch(
+                        item_path,
+                        locator.source_id,
+                        match_type,
+                        paragraph=locator.paragraph,
+                        requested_paragraph=paragraph,
+                        paragraph_recovered=placement.recovered,
+                    )
+                )
+                if placement.recovered:
+                    audit.notices.append(
+                        f"{item_path}: claimed paragraph {paragraph} does not "
+                        f"contain the quote; recovered to paragraph "
+                        f"{placement.paragraph} where the quote occurs in "
+                        "exactly one paragraph"
+                    )
+                if match_type == "whitespace_normalized":
+                    audit.notices.append(
+                        f"{item_path}: quote matched the material only after "
+                        "whitespace/punctuation normalization; bound to "
+                        "verbatim source text"
+                    )
         return tuple(bound)
 
     @staticmethod
@@ -1352,11 +1594,15 @@ class ExtractionService:
                     f"paragraph {paragraph} is outside material {material.id}"
                 )
             candidates = ((paragraph, paragraphs[paragraph - 1]),)
-        compact_quote = re.sub(r"\s+", "", quote)
+        # The locator only ever receives already-verified verbatim spans, but
+        # the containment check uses the same safe fold as the placement
+        # resolver so no whitespace-deleting comparison remains anywhere in
+        # the binding path.
+        folded_quote = fold_for_location(quote)
         matched = tuple(
             item
             for item in candidates
-            if compact_quote in re.sub(r"\s+", "", item[1])
+            if folded_quote in fold_for_location(item[1])
         )
         if not matched:
             where = f" paragraph {paragraph}" if paragraph is not None else ""

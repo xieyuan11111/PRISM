@@ -6,7 +6,12 @@ from datetime import datetime, timezone
 import pytest
 
 from prism.domain import Claim, EvolutionCase, EvolutionNode, Material, TemporalFact
-from prism.extraction import ExtractionError, ExtractionResult, ExtractionService
+from prism.extraction import (
+    ExtractionError,
+    ExtractionEvidenceMatch,
+    ExtractionResult,
+    ExtractionService,
+)
 from prism.llm import Completion
 
 
@@ -331,3 +336,16 @@ def test_legacy_unusable_case_id_records_gap_and_keeps_tag_bound_nodes():
     assert result.case is None
     assert result.nodes[0].id == "node-1"
     assert any(gap.gap_type == "unusable_case" for gap in result.evidence_gaps)
+
+
+def test_evidence_match_records_are_validated_and_default_empty():
+    assert ExtractionResult().evidence_matches == ()
+
+    with pytest.raises(ValueError, match="match_type"):
+        ExtractionEvidenceMatch("nodes[0].evidence[0]", "material-1", "semantic")
+    with pytest.raises(ValueError, match="paragraph"):
+        ExtractionEvidenceMatch(
+            "nodes[0].evidence[0]", "material-1", "exact", paragraph=0
+        )
+    with pytest.raises(ValueError, match="path"):
+        ExtractionEvidenceMatch(" ", "material-1", "exact")
