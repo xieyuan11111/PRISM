@@ -5,8 +5,15 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass
 
-from prism.domain import Claim, EvolutionCase, EvolutionNode, Material, TemporalFact
-from prism.extraction import ExtractionResult
+from prism.domain import (
+    Claim,
+    EvolutionCase,
+    EvolutionNode,
+    Material,
+    TemporalFact,
+    TemporalRelation,
+)
+from prism.extraction import ExtractionConflict, ExtractionResult
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,6 +54,8 @@ class MergedCaseBundle:
     claims: tuple[Claim, ...] = ()
     materials: tuple[Material, ...] = ()
     warnings: tuple[str, ...] = ()
+    relations: tuple[TemporalRelation, ...] = ()
+    conflicts: tuple[ExtractionConflict, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.case, EvolutionCase):
@@ -56,6 +65,8 @@ class MergedCaseBundle:
             ("temporal_facts", TemporalFact),
             ("claims", Claim),
             ("materials", Material),
+            ("relations", TemporalRelation),
+            ("conflicts", ExtractionConflict),
         ):
             values = tuple(getattr(self, name))
             if any(not isinstance(value, expected) for value in values):
@@ -124,6 +135,10 @@ class CaseBundleMerger:
         claims: list[Claim] = []
         claim_by_id: dict[str, Claim] = {}
         warnings: list[str] = []
+        relations: list[TemporalRelation] = []
+        relation_seen: set[TemporalRelation] = set()
+        conflicts: list[ExtractionConflict] = []
+        conflict_seen: set[ExtractionConflict] = set()
 
         for item in evidence_items:
             material = item.material
@@ -193,6 +208,36 @@ class CaseBundleMerger:
                 self._append_by_id(
                     normalized.id, normalized, node_by_id, nodes, "node"
                 )
+
+            for relation in item.extraction.relations:
+                if any(
+                    source_id not in material_by_id
+                    for source_id in relation.source_ids
+                ):
+                    raise ValueError("relation references an unknown source")
+                if material.id not in relation.source_ids:
+                    raise ValueError(
+                        f"relation {relation.relation_id!r} from material "
+                        f"{material.id!r} has no matching source id"
+                    )
+                if relation not in relation_seen:
+                    relation_seen.add(relation)
+                    relations.append(relation)
+
+            for conflict in item.extraction.conflicts:
+                if any(
+                    source_id not in material_by_id
+                    for source_id in conflict.source_ids
+                ):
+                    raise ValueError("conflict references an unknown source")
+                if material.id not in conflict.source_ids:
+                    raise ValueError(
+                        f"conflict {conflict.conflict_id!r} from material "
+                        f"{material.id!r} has no matching source id"
+                    )
+                if conflict not in conflict_seen:
+                    conflict_seen.add(conflict)
+                    conflicts.append(conflict)
 
             for fact in item.extraction.temporal_facts:
                 if any(source_id not in material_by_id for source_id in fact.source_ids):
@@ -282,6 +327,8 @@ class CaseBundleMerger:
             claims=tuple(claims),
             materials=tuple(materials),
             warnings=tuple(dict.fromkeys(warnings)),
+            relations=tuple(relations),
+            conflicts=tuple(conflicts),
         )
 
     @staticmethod

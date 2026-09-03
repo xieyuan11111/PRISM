@@ -28,6 +28,9 @@ NODE_TYPES = frozenset(
 )
 CLAIM_STANCES = frozenset({"support", "oppose", "conditional", "uncertain"})
 CLAIM_TYPES = frozenset({"interpretation", "value_judgment", "prediction"})
+RELATION_TYPES = frozenset(
+    {"supersedes", "revises", "contradicts", "triggered_by"}
+)
 ORIGINAL_FORMATS = frozenset({"md", "pdf", "html"})
 
 
@@ -265,6 +268,9 @@ class TemporalFact:
     confidence: float
     provenance_type: str
     evidence: tuple[EvidenceLocator, ...] = ()
+    # Optional stable reference for M1 relations/version coalescing.  Appended
+    # so every pre-M1 positional constructor remains valid.
+    fact_id: str | None = None
 
     def __post_init__(self) -> None:
         for name in ("subject", "predicate", "object", "provenance_type"):
@@ -284,6 +290,50 @@ class TemporalFact:
         )
         if not {item.source_id for item in self.evidence}.issubset(set(self.source_ids)):
             raise ValueError("fact evidence source_id must be present in source_ids")
+        _validate_optional_text("fact_id", self.fact_id)
+
+
+@dataclass(frozen=True, slots=True)
+class TemporalRelation:
+    """A source-backed, time-bounded relationship between recorded items.
+
+    ``source_ref`` is the item asserting the relationship (for example the
+    replacement fact); ``target_ref`` is the item it supersedes/revises,
+    contradicts, or was explicitly triggered by.  A ``triggered_by`` relation
+    is the only relation interpreted as causal by the deterministic analyzer.
+    """
+
+    relation_id: str
+    relation_type: str
+    source_ref: str
+    target_ref: str
+    valid_at: datetime
+    invalid_at: datetime | None
+    observed_at: datetime
+    source_ids: tuple[str, ...]
+    evidence: tuple[EvidenceLocator, ...] = ()
+    confidence: float = 1.0
+    provenance_type: str = "source_explicit"
+
+    def __post_init__(self) -> None:
+        for name in ("relation_id", "source_ref", "target_ref", "provenance_type"):
+            _require_text(name, getattr(self, name))
+        _require_choice("relation_type", self.relation_type, RELATION_TYPES)
+        _require_aware_datetime("valid_at", self.valid_at)
+        if self.invalid_at is not None:
+            _require_aware_datetime("invalid_at", self.invalid_at)
+            if self.invalid_at < self.valid_at:
+                raise ValueError("invalid_at must not be earlier than valid_at")
+        _require_aware_datetime("observed_at", self.observed_at)
+        object.__setattr__(
+            self, "source_ids", _text_tuple("source_ids", self.source_ids)
+        )
+        object.__setattr__(
+            self, "evidence", _typed_tuple("evidence", self.evidence, EvidenceLocator)
+        )
+        if not {item.source_id for item in self.evidence}.issubset(set(self.source_ids)):
+            raise ValueError("relation evidence source_id must be present in source_ids")
+        _require_confidence(self.confidence)
 
 
 @dataclass(frozen=True, slots=True)

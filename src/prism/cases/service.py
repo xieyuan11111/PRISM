@@ -21,6 +21,7 @@ extraction warnings are retained in the ledger verbatim and surfaced in every
 from __future__ import annotations
 
 import asyncio
+import inspect
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Protocol
@@ -40,6 +41,8 @@ class _GraphWriter(Protocol):
         nodes: Iterable = (),
         facts: Iterable = (),
         claims: Iterable = (),
+        relations: Iterable = (),
+        conflicts: Iterable = (),
         materials: Iterable = (),
     ) -> GraphWriteResult: ...
 
@@ -239,13 +242,18 @@ class CaseService:
         for entry in entries:
             self._collect_audit_warnings(entry, warnings)
 
-        write = await self._graph.add_case(
-            bundle.case,
-            nodes=bundle.nodes,
-            facts=bundle.temporal_facts,
-            claims=bundle.claims,
-            materials=bundle.materials,
-        )
+        graph_arguments = {
+            "nodes": bundle.nodes,
+            "facts": bundle.temporal_facts,
+            "claims": bundle.claims,
+            "materials": bundle.materials,
+        }
+        add_case = self._graph.add_case
+        if bundle.relations and self._accepts_kwarg(add_case, "relations"):
+            graph_arguments["relations"] = bundle.relations
+        if bundle.conflicts and self._accepts_kwarg(add_case, "conflicts"):
+            graph_arguments["conflicts"] = bundle.conflicts
+        write = await add_case(bundle.case, **graph_arguments)
         if not isinstance(write, GraphWriteResult):
             raise TypeError(
                 "graph_service must return a GraphWriteResult, got "
@@ -329,6 +337,18 @@ class CaseService:
             warnings.append(
                 f"material {material_id!r} extraction warning: {warning}"
             )
+
+    @staticmethod
+    def _accepts_kwarg(method: object, name: str) -> bool:
+        try:
+            parameters = inspect.signature(method).parameters.values()
+        except (TypeError, ValueError):
+            return False
+        return any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD
+            or parameter.name == name
+            for parameter in parameters
+        )
 
 
 __all__ = ["CaseService", "CaseWriteOutcome"]

@@ -91,6 +91,7 @@ class ReportService:
             citations=citations,
             markdown=markdown,
             case_status=analysis.case_status,
+            invalidated_stages=analysis.invalidated_stages,
         )
 
     async def _summarize(self, analysis: EvolutionAnalysis) -> ReportSummary:
@@ -131,6 +132,10 @@ def _analysis_payload(analysis: EvolutionAnalysis) -> dict[str, Any]:
                 "source_ids": list(stage.source_ids),
                 "node_type": stage.node_type,
                 "claim_type": stage.claim_type,
+                "relation_type": stage.relation_type,
+                "source_ref": stage.source_ref,
+                "target_ref": stage.target_ref,
+                "record_id": stage.record_id,
                 "confidence": stage.confidence,
                 "provenance_type": stage.provenance_type,
                 "stance": stage.stance,
@@ -147,6 +152,31 @@ def _analysis_payload(analysis: EvolutionAnalysis) -> dict[str, Any]:
                 ],
             }
             for stage in analysis.stages
+        ],
+        "invalidated_stages": [
+            {
+                "episode_key": stage.episode_key,
+                "kind": stage.kind,
+                "layer": stage.layer,
+                "summary": stage.summary,
+                "valid_at": _iso(stage.valid_at),
+                "invalid_at": _iso(stage.invalid_at),
+                "reference_time": stage.reference_time.isoformat(),
+                "source_ids": list(stage.source_ids),
+                "confidence": stage.confidence,
+                "provenance_type": stage.provenance_type,
+                "evidence": [
+                    {
+                        "source_id": item.source_id,
+                        "corpus_path": item.corpus_path,
+                        "paragraph": item.paragraph,
+                        "page": item.page,
+                        "quote": item.quote,
+                    }
+                    for item in stage.evidence
+                ],
+            }
+            for stage in analysis.invalidated_stages
         ],
         "turning_points": [
             {
@@ -166,6 +196,16 @@ def _analysis_payload(analysis: EvolutionAnalysis) -> dict[str, Any]:
                 "at": reason.at.isoformat(),
                 "summary": reason.summary,
                 "source_ids": list(reason.source_ids),
+                "evidence": [
+                    {
+                        "source_id": item.source_id,
+                        "corpus_path": item.corpus_path,
+                        "paragraph": item.paragraph,
+                        "page": item.page,
+                        "quote": item.quote,
+                    }
+                    for item in reason.evidence
+                ],
             }
             for reason in analysis.change_reasons
         ],
@@ -345,6 +385,8 @@ def _evidence_bindings(analysis: EvolutionAnalysis) -> dict[str, frozenset[str]]
 
     for stage in analysis.stages:
         add(stage.episode_key, stage.source_ids)
+    for stage in analysis.invalidated_stages:
+        add(stage.episode_key, stage.source_ids)
     for point in analysis.turning_points:
         add(point.episode_key, point.source_ids)
     for reason in analysis.change_reasons:
@@ -369,6 +411,9 @@ def _fallback_summary(analysis: EvolutionAnalysis) -> ReportSummary:
         if stage.kind == "evolution_node" and stage.node_type != "publication"
     )
     fact_count = sum(1 for stage in analysis.stages if stage.kind == "temporal_fact")
+    relation_count = sum(
+        1 for stage in analysis.stages if stage.kind == "temporal_relation"
+    )
     claim_count = sum(1 for stage in analysis.stages if stage.kind == "claim")
     stage_count = len(analysis.stages)
     if stage_count:
@@ -392,7 +437,9 @@ def _fallback_summary(analysis: EvolutionAnalysis) -> ReportSummary:
             f"({substantive_node_count} substantive evolution node(s) and "
             f"{publication_node_count} publication node(s))"
             f"{type_label}, {fact_count} fact(s) and {claim_count} claim(s) as "
-            f"of {analysis.as_of.isoformat()}, with "
+            f"of {analysis.as_of.isoformat()}, plus {relation_count} explicit "
+            f"relation(s) and {len(analysis.invalidated_stages)} invalidated "
+            f"historical item(s), with "
             f"{len(analysis.turning_points)} turning point(s), "
             f"{len(analysis.change_reasons)} recorded change reason(s) and "
             f"{len(analysis.evidence_gaps)} evidence gap(s)."
@@ -473,6 +520,10 @@ def _document_citations(
             merged.setdefault(source_id, set()).add(episode_key)
 
     for stage in analysis.stages:
+        add(stage.source_ids, stage.episode_key)
+        for item in stage.evidence:
+            locations.setdefault(item.source_id, set()).add(item)
+    for stage in analysis.invalidated_stages:
         add(stage.source_ids, stage.episode_key)
         for item in stage.evidence:
             locations.setdefault(item.source_id, set()).add(item)
@@ -594,6 +645,8 @@ def _render_markdown(
                     for part in (stage.claim_type, stage.stance)
                     if part
                 )
+            elif stage.kind == "temporal_relation":
+                discriminator = stage.relation_type or ""
             else:
                 discriminator = stage.node_type or ""
             kind = stage.kind + (f" / {discriminator}" if discriminator else "")
@@ -606,6 +659,43 @@ def _render_markdown(
             )
     else:
         lines.append(_EMPTY_SECTION)
+    lines.append("")
+
+    lines.append("## Invalidated Facts")
+    lines.append("")
+    invalidated_facts = tuple(
+        stage
+        for stage in analysis.invalidated_stages
+        if stage.kind == "temporal_fact"
+    )
+    if invalidated_facts:
+        for stage in invalidated_facts:
+            label = stage.record_id or stage.episode_key
+            lines.append(
+                f"- `{_md(label)}` — {_md(stage.summary)}; valid "
+                f"{_iso(stage.valid_at)} until {_iso(stage.invalid_at)}; "
+                f"sources: {_sources_label(stage.source_ids)}"
+            )
+    else:
+        lines.append(f"- {_EMPTY_SECTION}")
+    lines.append("")
+
+    lines.append("## Revision and Conflict Relations")
+    lines.append("")
+    relations = tuple(
+        stage for stage in analysis.stages if stage.kind == "temporal_relation"
+    )
+    if relations:
+        for stage in relations:
+            lines.append(
+                f"- **{_md(stage.relation_type or 'relation')}**: "
+                f"`{_md(stage.source_ref or 'unknown')}` → "
+                f"`{_md(stage.target_ref or 'unknown')}` at "
+                f"{_iso(stage.valid_at)} (episode `{_md(stage.episode_key)}`; "
+                f"sources: {_sources_label(stage.source_ids)})"
+            )
+    else:
+        lines.append(f"- {_EMPTY_SECTION}")
     lines.append("")
 
     lines.append("## Turning Points")

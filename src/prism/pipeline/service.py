@@ -22,7 +22,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Protocol
 
-from prism.domain import Claim, EvolutionCase, EvolutionNode, Material, TemporalFact
+from prism.domain import (
+    Claim,
+    EvolutionCase,
+    EvolutionNode,
+    Material,
+    TemporalFact,
+    TemporalRelation,
+)
 from prism.events import Event
 from prism.extraction import ExtractionResult
 from prism.graph import GraphWriteResult
@@ -81,6 +88,8 @@ class _GraphWriter(Protocol):
         nodes: Iterable[EvolutionNode] = (),
         facts: Iterable[TemporalFact] = (),
         claims: Iterable[Claim] = (),
+        relations: Iterable[TemporalRelation] = (),
+        conflicts: Iterable[object] = (),
         materials: Iterable[Material] = (),
     ) -> GraphWriteResult: ...
 
@@ -579,12 +588,18 @@ class PipelineService:
                 )
             else:
                 try:
+                    graph_arguments = {
+                        "nodes": extraction.nodes,
+                        "facts": extraction.temporal_facts,
+                        "claims": extraction.claims,
+                        "materials": (result.material,),
+                    }
+                    if extraction.relations:
+                        graph_arguments["relations"] = extraction.relations
+                    if extraction.conflicts:
+                        graph_arguments["conflicts"] = extraction.conflicts
                     write = await self._graph.add_case(
-                        extraction.case,
-                        nodes=extraction.nodes,
-                        facts=extraction.temporal_facts,
-                        claims=extraction.claims,
-                        materials=(result.material,),
+                        extraction.case, **graph_arguments
                     )
                     if not isinstance(write, GraphWriteResult):
                         raise TypeError(

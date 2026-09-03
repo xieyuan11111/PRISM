@@ -15,6 +15,7 @@ from prism.domain import (
     EvolutionNode,
     Material,
     TemporalFact,
+    TemporalRelation,
 )
 
 from .backend import GraphBackend
@@ -68,6 +69,8 @@ class GraphService:
         nodes: Iterable[EvolutionNode] = (),
         facts: Iterable[TemporalFact] = (),
         claims: Iterable[Claim] = (),
+        relations: Iterable[TemporalRelation] = (),
+        conflicts: Iterable[object] = (),
         materials: Iterable[Material] = (),
     ) -> GraphWriteResult:
         """Incrementally add a case and its source-backed evolution records.
@@ -81,6 +84,8 @@ class GraphService:
         earliest.
         """
         material_list = tuple(materials)
+        claim_list = tuple(claims)
+        relation_list = tuple(relations)
         availability: dict[str, datetime] | None = None
         if material_list:
             availability = {
@@ -97,8 +102,21 @@ class GraphService:
             self._fact_episode(case.case_id, fact, availability) for fact in facts
         )
         episodes.extend(
-            self._claim_episode(case.case_id, claim, availability) for claim in claims
+            self._claim_episode(case.case_id, claim, availability)
+            for claim in claim_list
         )
+        episodes.extend(
+            self._relation_episode(case.case_id, relation, availability)
+            for relation in relation_list
+        )
+        episodes.extend(
+            self._relation_episode(case.case_id, relation, availability)
+            for relation in self._claim_revision_relations(claim_list)
+        )
+        for conflict in conflicts:
+            episodes.extend(
+                self._conflict_episodes(case.case_id, conflict, availability)
+            )
         episodes.extend(
             self._material_episode(case.case_id, material) for material in material_list
         )
@@ -120,13 +138,42 @@ class GraphService:
         require_text("case_id", case_id)
         require_aware("as_of", as_of)
         results = await self.backend.search(f"PRISM timeline for case_id={case_id}")
-        entries = [
-            self._timeline_entry(episode, as_of=as_of)
+        eligible = [
+            episode
             for episode in results
             if episode.case_id == case_id
             and episode.reference_time <= as_of
             and episode.valid_at <= as_of
-            and (episode.invalid_at is None or as_of < episode.invalid_at)
+        ]
+        # Explicit logical ids let a later observation refine/invalidate one
+        # recorded item without making an earlier immutable episode current
+        # forever.  Episodes without a logical id remain independent, which
+        # preserves same-predicate observations and source conflicts.
+        latest: dict[str, GraphEpisode] = {}
+        for episode in eligible:
+            payload = self._payload(episode)
+            logical_key = payload.get("logical_key")
+            key = logical_key if isinstance(logical_key, str) else episode.episode_key
+            incumbent = latest.get(key)
+            if incumbent is None or (
+                episode.reference_time,
+                episode.episode_key,
+            ) > (incumbent.reference_time, incumbent.episode_key):
+                latest[key] = episode
+        active_episodes = [
+            episode
+            for episode in latest.values()
+            if episode.invalid_at is None or as_of < episode.invalid_at
+        ]
+        invalidated_episodes = [
+            episode
+            for episode in latest.values()
+            if episode.invalid_at is not None and episode.invalid_at <= as_of
+        ]
+        entries = [self._timeline_entry(episode, as_of=as_of) for episode in active_episodes]
+        invalidated = [
+            self._timeline_entry(episode, as_of=as_of)
+            for episode in invalidated_episodes
         ]
         entries.sort(
             key=lambda entry: (
@@ -136,7 +183,15 @@ class GraphService:
                 entry.episode_key,
             )
         )
-        return GraphTimeline(case_id, as_of, tuple(entries))
+        invalidated.sort(
+            key=lambda entry: (
+                entry.invalid_at or entry.valid_at,
+                entry.reference_time,
+                entry.kind,
+                entry.episode_key,
+            )
+        )
+        return GraphTimeline(case_id, as_of, tuple(entries), tuple(invalidated))
 
     def _make_episode(
         self,
@@ -152,6 +207,7 @@ class GraphService:
         confidence: float | None = None,
         provenance_type: str | None = None,
         evidence: tuple[EvidenceLocator, ...] = (),
+        logical_key: str | None = None,
     ) -> GraphEpisode:
         payload: dict[str, Any] = {
             "schema": SCHEMA,
@@ -168,6 +224,8 @@ class GraphService:
             payload["confidence"] = confidence
         if provenance_type is not None:
             payload["provenance_type"] = provenance_type
+        if logical_key is not None:
+            payload["logical_key"] = logical_key
         fingerprint = uuid5(NAMESPACE_URL, _json(payload))
         episode_key = str(fingerprint)
         payload["episode_key"] = episode_key
@@ -196,6 +254,7 @@ class GraphService:
             invalid_at=None,
             source_ids=(),
             fields={
+                "logical_key": f"case:{case.case_id}",
                 "case_type": case.case_type,
                 "canonical_name": case.canonical_name,
                 "status": case.status,
@@ -286,7 +345,9 @@ class GraphService:
             confidence=fact.confidence,
             provenance_type=fact.provenance_type,
             evidence=fact.evidence,
+            logical_key=(f"fact:{fact.fact_id}" if fact.fact_id is not None else None),
             fields={
+                "fact_id": fact.fact_id,
                 "subject": fact.subject,
                 "predicate": fact.predicate,
                 "object": fact.object,
@@ -319,6 +380,7 @@ class GraphService:
             evidence=claim.evidence,
             confidence=claim.confidence,
             provenance_type=claim.provenance_type,
+            logical_key=f"claim:{claim.claim_id}",
             fields={
                 "claim_id": claim.claim_id,
                 "actor": claim.actor,
@@ -330,6 +392,128 @@ class GraphService:
                 "claim_type": claim.claim_type,
             },
         )
+
+    def _relation_episode(
+        self,
+        case_id: str,
+        relation: TemporalRelation,
+        availability: dict[str, datetime] | None = None,
+    ) -> GraphEpisode:
+        if not isinstance(relation, TemporalRelation):
+            raise TypeError("relations must contain only TemporalRelation objects")
+        observed_at = relation.observed_at
+        floor = self._material_floor(availability, relation.source_ids)
+        if floor is not None and floor > observed_at:
+            observed_at = floor
+        return self._make_episode(
+            case_id=case_id,
+            kind="temporal_relation",
+            identity=relation.relation_id,
+            reference_time=observed_at,
+            valid_at=relation.valid_at,
+            invalid_at=relation.invalid_at,
+            source_ids=relation.source_ids,
+            confidence=relation.confidence,
+            provenance_type=relation.provenance_type,
+            evidence=relation.evidence,
+            logical_key=f"relation:{relation.relation_id}",
+            fields={
+                "relation_id": relation.relation_id,
+                "relation_type": relation.relation_type,
+                "source_ref": relation.source_ref,
+                "target_ref": relation.target_ref,
+                "observed_at": _iso(observed_at),
+            },
+        )
+
+    @staticmethod
+    def _claim_revision_relations(
+        claims: tuple[Claim, ...],
+    ) -> tuple[TemporalRelation, ...]:
+        by_id = {claim.claim_id: claim for claim in claims}
+        relations: list[TemporalRelation] = []
+        for old in claims:
+            if old.revised_by is None:
+                continue
+            new = by_id.get(old.revised_by)
+            # A dangling identifier stays on the claim for audit, but cannot
+            # become a traceable relation until the replacing claim exists.
+            if new is None:
+                continue
+            valid_at = new.stated_at if new is not None else (old.observed_at or old.stated_at)
+            observed_candidates = [old.observed_at or old.stated_at]
+            sources = list(old.based_on)
+            evidence = list(old.evidence)
+            confidence = old.confidence
+            observed_candidates.append(new.observed_at or new.stated_at)
+            sources.extend(new.based_on)
+            evidence.extend(new.evidence)
+            confidence = min(confidence, new.confidence)
+            relations.append(
+                TemporalRelation(
+                    relation_id=f"claim-revision:{old.revised_by}:{old.claim_id}",
+                    relation_type="revises",
+                    source_ref=old.revised_by,
+                    target_ref=old.claim_id,
+                    valid_at=valid_at,
+                    invalid_at=None,
+                    observed_at=max(observed_candidates),
+                    source_ids=tuple(dict.fromkeys(sources)),
+                    evidence=tuple(dict.fromkeys(evidence)),
+                    confidence=confidence,
+                    provenance_type="source_explicit",
+                )
+            )
+        return tuple(relations)
+
+    def _conflict_episodes(
+        self,
+        case_id: str,
+        conflict: object,
+        availability: dict[str, datetime] | None,
+    ) -> tuple[GraphEpisode, ...]:
+        try:
+            conflict_id = require_text("conflict_id", getattr(conflict, "conflict_id"))
+            subject = require_text("subject", getattr(conflict, "subject"))
+            predicate = require_text("predicate", getattr(conflict, "predicate"))
+            alternatives = tuple(getattr(conflict, "alternatives"))
+            source_ids = tuple(getattr(conflict, "source_ids"))
+            evidence = tuple(getattr(conflict, "evidence"))
+        except (AttributeError, TypeError) as error:
+            raise TypeError("conflicts must contain extraction conflict objects") from error
+        if len(alternatives) < 2:
+            raise ValueError("conflict alternatives must contain at least two values")
+        observed_at = getattr(conflict, "observed_at", None)
+        floor = self._material_floor(availability, source_ids)
+        if observed_at is None:
+            observed_at = floor
+        elif floor is not None and floor > observed_at:
+            observed_at = floor
+        if observed_at is None:
+            raise ValueError("conflict observed_at or bound material is required")
+        valid_at = getattr(conflict, "valid_at", None) or observed_at
+        invalid_at = getattr(conflict, "invalid_at", None)
+        confidence = getattr(conflict, "confidence", 1.0)
+        provenance_type = getattr(conflict, "provenance_type", "reported_conflict")
+        episodes: list[GraphEpisode] = []
+        for left_index, left in enumerate(alternatives):
+            for right_index in range(left_index + 1, len(alternatives)):
+                right = alternatives[right_index]
+                relation = TemporalRelation(
+                    relation_id=f"conflict:{conflict_id}:{left_index}:{right_index}",
+                    relation_type="contradicts",
+                    source_ref=f"{subject}|{predicate}|{left}",
+                    target_ref=f"{subject}|{predicate}|{right}",
+                    valid_at=valid_at,
+                    invalid_at=invalid_at,
+                    observed_at=observed_at,
+                    source_ids=source_ids,
+                    evidence=evidence,
+                    confidence=confidence,
+                    provenance_type=provenance_type,
+                )
+                episodes.append(self._relation_episode(case_id, relation, availability))
+        return tuple(episodes)
 
     def _material_episode(self, case_id: str, material: Material) -> GraphEpisode:
         # Raw content, filesystem paths and URLs are deliberately excluded. The
@@ -382,6 +566,10 @@ class GraphService:
                 for field in ("subject", "predicate", "object")
             ).strip(),
             "claim": payload.get("proposition"),
+            "temporal_relation": " ".join(
+                str(payload.get(field, ""))
+                for field in ("source_ref", "relation_type", "target_ref")
+            ).strip(),
             "material_provenance": payload.get("title"),
         }
         summary = summaries.get(episode.kind) or episode.name
@@ -400,3 +588,11 @@ class GraphService:
             payload=_json(payload),
             evidence=episode.evidence,
         )
+
+    @staticmethod
+    def _payload(episode: GraphEpisode) -> dict[str, Any]:
+        try:
+            value = json.loads(episode.episode_body)
+        except (TypeError, ValueError):
+            return {}
+        return value if isinstance(value, dict) else {}

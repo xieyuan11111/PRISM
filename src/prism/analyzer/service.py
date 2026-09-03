@@ -30,6 +30,7 @@ from .models import (
     GAP_UNATTRIBUTED_ENTRY,
     INTERPRETATION_CHANGE,
     ORIGIN_OPEN_QUESTION_NODE,
+    ORIGIN_UNCONFIRMED_CHANGE_CAUSE,
     ORIGIN_UNCERTAIN_CLAIM,
     REASON_NODE_TYPES,
     SUBSTANTIVE_KINDS,
@@ -115,17 +116,21 @@ class AnalyzerService:
         timeline = await self._fetch(case_id, as_of)
         case_type, case_status = self._case_metadata(timeline.entries, as_of)
         staged = self._staged(self._visible(timeline, kind_filter))
+        invalidated = self._staged(
+            self._visible_entries(timeline.invalidated_entries, kind_filter)
+        )
 
         return EvolutionAnalysis(
             case_id=case_id,
             as_of=as_of,
             case_type=case_type,
             stages=tuple(item.stage for item in staged),
-            turning_points=self._turning_points(staged),
+            turning_points=self._turning_points(staged, invalidated, as_of),
             change_reasons=self._change_reasons(staged),
             evidence_gaps=self._evidence_gaps(case_id, as_of, staged, kind_filter),
-            open_questions=self._open_questions(staged),
+            open_questions=self._open_questions(staged, invalidated),
             case_status=case_status,
+            invalidated_stages=tuple(item.stage for item in invalidated),
         )
 
     async def state(
@@ -151,6 +156,16 @@ class AnalyzerService:
                 stage for stage in analysis.stages if stage.kind == "claim"
             ),
             evidence_gaps=analysis.evidence_gaps,
+            invalidated_facts=tuple(
+                stage
+                for stage in analysis.invalidated_stages
+                if stage.kind == "temporal_fact"
+            ),
+            relations=tuple(
+                stage
+                for stage in analysis.stages
+                if stage.kind == "temporal_relation"
+            ),
         )
 
     async def compare(
@@ -223,7 +238,13 @@ class AnalyzerService:
     def _visible(
         timeline: GraphTimeline, kind_filter: frozenset[str] | None
     ) -> tuple[TimelineEntry, ...]:
-        entries = timeline.entries
+        return AnalyzerService._visible_entries(timeline.entries, kind_filter)
+
+    @staticmethod
+    def _visible_entries(
+        entries: tuple[TimelineEntry, ...],
+        kind_filter: frozenset[str] | None,
+    ) -> tuple[TimelineEntry, ...]:
         if kind_filter is not None:
             entries = tuple(entry for entry in entries if entry.kind in kind_filter)
         return tuple(
@@ -255,6 +276,22 @@ class AnalyzerService:
             candidate = payload.get("claim_type")
             if isinstance(candidate, str) and candidate.strip():
                 claim_type = candidate
+        relation_type = None
+        source_ref = None
+        target_ref = None
+        if entry.kind == "temporal_relation":
+            relation_type = AnalyzerService._payload_text(payload, "relation_type")
+            source_ref = AnalyzerService._payload_text(payload, "source_ref")
+            target_ref = AnalyzerService._payload_text(payload, "target_ref")
+        record_fields = {
+            "evolution_node": "node_id",
+            "temporal_fact": "fact_id",
+            "claim": "claim_id",
+            "temporal_relation": "relation_id",
+        }
+        record_id = AnalyzerService._payload_text(
+            payload, record_fields.get(entry.kind, "")
+        )
         happened_at = None
         happened_value = payload.get("happened_at")
         if isinstance(happened_value, str):
@@ -278,11 +315,19 @@ class AnalyzerService:
             happened_at=happened_at,
             evidence=entry.evidence,
             claim_type=claim_type,
+            relation_type=relation_type,
+            source_ref=source_ref,
+            target_ref=target_ref,
+            record_id=record_id,
         )
         return _Staged(entry, stage, payload)
 
     @staticmethod
-    def _turning_points(staged: tuple[_Staged, ...]) -> tuple[TurningPoint, ...]:
+    def _turning_points(
+        staged: tuple[_Staged, ...],
+        invalidated: tuple[_Staged, ...] = (),
+        as_of: datetime | None = None,
+    ) -> tuple[TurningPoint, ...]:
         points: list[TurningPoint] = []
         for item in staged:
             stage = item.stage
@@ -294,9 +339,16 @@ class AnalyzerService:
                         stage.valid_at,
                         stage.summary,
                         stage.source_ids,
+                        stage.evidence,
                     )
                 )
             elif stage.kind == "temporal_fact" and stage.invalid_at is not None:
+                if (
+                    item.payload.get("schema") == "prism.graph.episode.v2"
+                    and as_of is not None
+                    and stage.invalid_at > as_of
+                ):
+                    continue
                 points.append(
                     TurningPoint(
                         stage.episode_key,
@@ -304,6 +356,34 @@ class AnalyzerService:
                         stage.invalid_at,
                         stage.summary,
                         stage.source_ids,
+                        stage.evidence,
+                    )
+                )
+            elif (
+                stage.kind == "temporal_relation"
+                and stage.relation_type in {"supersedes", "revises"}
+            ):
+                points.append(
+                    TurningPoint(
+                        stage.episode_key,
+                        stage.relation_type,
+                        stage.valid_at,
+                        stage.summary,
+                        stage.source_ids,
+                        stage.evidence,
+                    )
+                )
+        for item in invalidated:
+            stage = item.stage
+            if stage.kind == "temporal_fact" and stage.invalid_at is not None:
+                points.append(
+                    TurningPoint(
+                        stage.episode_key,
+                        FACT_SUPERSEDED,
+                        stage.invalid_at,
+                        stage.summary,
+                        stage.source_ids,
+                        stage.evidence,
                     )
                 )
         return tuple(
@@ -315,14 +395,37 @@ class AnalyzerService:
         reasons: list[ChangeReason] = []
         for item in staged:
             stage = item.stage
+            is_v2 = item.payload.get("schema") == "prism.graph.episode.v2"
+            if (
+                stage.kind == "temporal_relation"
+                and stage.relation_type == "triggered_by"
+                and stage.evidence
+                and stage.source_ref is not None
+                and stage.target_ref is not None
+            ):
+                reasons.append(
+                    ChangeReason(
+                        stage.episode_key,
+                        "triggered_by",
+                        FACT_CHANGE,
+                        stage.valid_at,
+                        f"{stage.source_ref} was explicitly triggered by "
+                        f"{stage.target_ref}.",
+                        stage.source_ids,
+                        stage.evidence,
+                    )
+                )
+                continue
             if stage.kind == "evolution_node" and stage.node_type in REASON_NODE_TYPES:
                 reason_summary = cls._payload_text(item.payload, "change_reason")
                 # v2 does not infer causality from a node type or summary.
                 # Legacy episodes retain their historical projection behavior.
                 if (
                     reason_summary is None
-                    and item.payload.get("schema") == "prism.graph.episode.v2"
+                    and is_v2
                 ):
+                    continue
+                if is_v2 and not stage.evidence:
                     continue
                 reasons.append(
                     ChangeReason(
@@ -335,6 +438,8 @@ class AnalyzerService:
                     )
                 )
             elif stage.kind == "temporal_fact" and stage.invalid_at is not None:
+                if is_v2:
+                    continue
                 reasons.append(
                     ChangeReason(
                         stage.episode_key,
@@ -348,7 +453,7 @@ class AnalyzerService:
                 )
             elif stage.kind == "claim":
                 revised_by = cls._payload_text(item.payload, "revised_by")
-                if revised_by is not None:
+                if revised_by is not None and not is_v2:
                     claim_id = cls._payload_text(item.payload, "claim_id")
                     reasons.append(
                         ChangeReason(
@@ -423,7 +528,11 @@ class AnalyzerService:
         )
 
     @classmethod
-    def _open_questions(cls, staged: tuple[_Staged, ...]) -> tuple[OpenQuestion, ...]:
+    def _open_questions(
+        cls,
+        staged: tuple[_Staged, ...],
+        invalidated: tuple[_Staged, ...] = (),
+    ) -> tuple[OpenQuestion, ...]:
         questions: list[OpenQuestion] = []
         for item in staged:
             stage = item.stage
@@ -449,6 +558,60 @@ class AnalyzerService:
                         stage.source_ids,
                     )
                 )
+        triggered_refs = {
+            item.stage.source_ref
+            for item in staged
+            if item.stage.kind == "temporal_relation"
+            and item.stage.relation_type == "triggered_by"
+            and item.stage.evidence
+            and item.stage.source_ref is not None
+        }
+        superseded_targets = {
+            item.stage.target_ref
+            for item in staged
+            if item.stage.kind == "temporal_relation"
+            and item.stage.relation_type == "supersedes"
+            and item.stage.target_ref is not None
+        }
+        change_markers: list[tuple[_Staged, str]] = []
+        for item in staged:
+            stage = item.stage
+            if item.payload.get("schema") != "prism.graph.episode.v2":
+                continue
+            if (
+                stage.kind == "temporal_relation"
+                and stage.relation_type in {"supersedes", "revises"}
+                and stage.source_ref is not None
+            ):
+                change_markers.append((item, stage.source_ref))
+            elif (
+                stage.kind == "evolution_node"
+                and stage.node_type in {"revision", "reversal", "replacement"}
+            ):
+                reference = cls._payload_text(item.payload, "node_id")
+                if reference is not None:
+                    change_markers.append((item, reference))
+        for item in invalidated:
+            if item.stage.kind != "temporal_fact":
+                continue
+            fact_id = cls._payload_text(item.payload, "fact_id")
+            if fact_id is not None and fact_id not in superseded_targets:
+                change_markers.append((item, fact_id))
+        for item, reference in change_markers:
+            stage = item.stage
+            if reference in triggered_refs:
+                continue
+            questions.append(
+                OpenQuestion(
+                    stage.episode_key,
+                    ORIGIN_UNCONFIRMED_CHANGE_CAUSE,
+                    f"The cause of change {reference!r} is unconfirmed; no "
+                    "evidence-backed triggered_by relation is recorded.",
+                    None,
+                    stage.invalid_at or stage.valid_at,
+                    stage.source_ids,
+                )
+            )
         return tuple(
             sorted(
                 questions,

@@ -11,7 +11,14 @@ from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 from uuid import uuid4
 
 from prism.analyzer import EvolutionAnalysis, HistoricalCaseState
-from prism.domain import Claim, EvolutionCase, EvolutionNode, Material, TemporalFact
+from prism.domain import (
+    Claim,
+    EvolutionCase,
+    EvolutionNode,
+    Material,
+    TemporalFact,
+    TemporalRelation,
+)
 from prism.events import Event
 from prism.extraction import ExtractionResult
 from prism.graph import GraphTimeline, GraphWriteResult
@@ -108,6 +115,8 @@ class _GraphService(Protocol):
         nodes: Iterable[EvolutionNode] = (),
         facts: Iterable[TemporalFact] = (),
         claims: Iterable[Claim] = (),
+        relations: Iterable[TemporalRelation] = (),
+        conflicts: Iterable[object] = (),
         materials: Iterable[Material] = (),
     ) -> GraphWriteResult: ...
 
@@ -877,16 +886,24 @@ class PrismAPI:
         nodes: Iterable[EvolutionNode] = (),
         facts: Iterable[TemporalFact] = (),
         claims: Iterable[Claim] = (),
+        relations: Iterable[TemporalRelation] = (),
+        conflicts: Iterable[object] = (),
         materials: Iterable[Material] = (),
     ) -> GraphWriteResult:
         """Add one case and its related domain objects to the graph."""
-        return await self._graph.add_case(
-            case,
-            nodes=nodes,
-            facts=facts,
-            claims=claims,
-            materials=materials,
-        )
+        graph_arguments = {
+            "nodes": nodes,
+            "facts": facts,
+            "claims": claims,
+            "materials": materials,
+        }
+        relation_items = tuple(relations)
+        conflict_items = tuple(conflicts)
+        if relation_items:
+            graph_arguments["relations"] = relation_items
+        if conflict_items:
+            graph_arguments["conflicts"] = conflict_items
+        return await self._graph.add_case(case, **graph_arguments)
 
     async def report_case(
         self,

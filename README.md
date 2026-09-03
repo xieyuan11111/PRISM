@@ -13,6 +13,8 @@ Current foundation modules:
 - a durable per-case extraction ledger that rebuilds accumulated cases from
   local PRISM data after a restart;
 - dependency-optional Graphiti/GTI temporal graph adapter and historical timeline contract;
+- M1 source-backed change relations (`supersedes`, `revises`, `contradicts`,
+  `triggered_by`), invalidated-fact audit views and two-cutoff comparison;
 - opt-in Graphiti/Neo4j spike scaffolding (config, deploy template, live-test gate) that stays fully offline by default;
 - offline tests for every completed module.
 
@@ -36,6 +38,8 @@ python -m prism.cli process MATERIAL_ID        # synchronous pipeline run (or ex
 python -m prism.cli merge-case CASE_ID         # rebuild and write the accumulated case from the durable ledger
 python -m prism.cli discover MATERIAL_ID
 python -m prism.cli state CASE_ID --cutoff-at 2026-09-01T00:00:00+00:00
+python -m prism.cli timeline CASE_ID --as-of 2026-09-01T00:00:00+00:00
+python -m prism.cli report CASE_ID --as-of 2026-09-01T00:00:00+00:00 --no-llm
 ```
 
 Every `ingest` run announces the material on the event bus, so the automatic
@@ -57,6 +61,46 @@ corpus-relative path, paragraph/page and source excerpt; reports render those
 locations alongside `source_ids` and preserve fact/interpretation/provenance
 labels.
 
+## M1 Temporal Evolution Core
+
+PRISM now represents a change as evidence-bearing temporal data rather than
+as last-write-wins state. `TemporalFact.fact_id` is an optional stable logical
+reference; a later observation with the same id can close its validity
+interval without deleting the earlier graph episode. `TemporalRelation`
+records `supersedes`, `revises`, `contradicts`, or `triggered_by` with separate
+validity and observation time, sources, confidence, provenance and portable
+evidence locators. All new fields are appended defaults or new frozen/slotted
+contracts, so legacy positional construction remains valid.
+
+`GraphService.timeline(case_id, as_of)` returns the effective state in
+`entries` and known-but-no-longer-valid history in `invalidated_entries`.
+Therefore an old fact is absent from the effective state after `invalid_at`
+but remains traceable; its replacement is visible from its own `valid_at` and
+observation boundary. Different fact ids and different source observations
+are never collapsed merely because they share subject and predicate, so
+contradictory facts can coexist with their individual source, evidence,
+confidence and provenance records. The analyzer's `compare`, `state` and
+`analyze` views expose cutoff differences, turning points, invalidated facts,
+relations and unresolved questions.
+
+Causality is intentionally narrower than chronology. A revision,
+supersession or invalidation proves that a change was recorded; it does not
+prove why it occurred. `AnalyzerService` emits a change reason only for an
+explicit `triggered_by` relation carrying verified evidence (or for the
+legacy compatibility projection of older payloads). Otherwise the M1 view
+adds an `unconfirmed_change_cause` open question. Reports render revision and
+conflict relations, invalidated facts and their citation locations. The
+optional LLM summary is accepted only when all cited episode/source bindings
+exist in the analysis; malformed or unverifiable output falls back to the
+deterministic, non-causal summary.
+
+Extraction and accumulation preserve `invalid_at`, claim `revised_by`,
+explicit relations and unresolved conflicts through the pipeline and durable
+case ledger into graph writes. `abstract_only`, `metadata_only`, and `blocked`
+materials remain index-only and are not extracted or written. See
+[`docs/m1-temporal.md`](docs/m1-temporal.md) for the offline acceptance scope
+and the live-service boundary.
+
 ## Evolution Extraction v0
 
 `ExtractionService.extract_material(material, corpus_path=...)` is the public,
@@ -71,7 +115,7 @@ exposes the same operation when an extraction service is configured.
 The schema keeps event occurrence (`happened_at`), effective validity
 (`valid_at`), and observation/publication (`observed_at`) separate. Forecasts
 remain uncertain claims rather than confirmed temporal facts, and contradictory
-alternatives remain reportable conflict audit items. A document publication is
+alternatives remain reportable conflict audit items and graph relations. A document publication is
 counted separately from substantive evolution in deterministic reports; a
 material with no supported change produces no padding publication node.
 

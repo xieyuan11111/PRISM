@@ -148,6 +148,7 @@ class ReportDocument:
     citations: tuple[ReportCitation, ...]
     markdown: str
     case_status: str | None = None
+    invalidated_stages: tuple[TimelineStage, ...] = ()
     publication_node_count: int = field(init=False)
     substantive_node_count: int = field(init=False)
 
@@ -185,6 +186,13 @@ class ReportDocument:
             self,
             "citations",
             _typed_tuple("citations", self.citations, ReportCitation),
+        )
+        object.__setattr__(
+            self,
+            "invalidated_stages",
+            _typed_tuple(
+                "invalidated_stages", self.invalidated_stages, TimelineStage
+            ),
         )
         publication_count = sum(
             1

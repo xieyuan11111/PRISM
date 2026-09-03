@@ -27,6 +27,7 @@ ENTRY_KINDS = frozenset(
         "evolution_node",
         "temporal_fact",
         "claim",
+        "temporal_relation",
         "material_provenance",
     }
 )
@@ -36,11 +37,14 @@ KIND_LAYERS = {
     "evolution_node": FACT_LAYER,
     "temporal_fact": FACT_LAYER,
     "claim": INTERPRETATION_LAYER,
+    "temporal_relation": FACT_LAYER,
     "material_provenance": PROVENANCE_LAYER,
 }
 
 # Kinds whose entries assert substantive content and therefore require sources.
-SUBSTANTIVE_KINDS = frozenset({"evolution_node", "temporal_fact", "claim"})
+SUBSTANTIVE_KINDS = frozenset(
+    {"evolution_node", "temporal_fact", "claim", "temporal_relation"}
+)
 
 # Node types that mark a pivot in the policy chain (FR-4.5) or the academic
 # discourse chain (FR-4.6).
@@ -92,7 +96,14 @@ GAP_TYPES = frozenset(
 
 ORIGIN_OPEN_QUESTION_NODE = "open_question_node"
 ORIGIN_UNCERTAIN_CLAIM = "uncertain_claim"
-QUESTION_ORIGINS = frozenset({ORIGIN_OPEN_QUESTION_NODE, ORIGIN_UNCERTAIN_CLAIM})
+ORIGIN_UNCONFIRMED_CHANGE_CAUSE = "unconfirmed_change_cause"
+QUESTION_ORIGINS = frozenset(
+    {
+        ORIGIN_OPEN_QUESTION_NODE,
+        ORIGIN_UNCERTAIN_CLAIM,
+        ORIGIN_UNCONFIRMED_CHANGE_CAUSE,
+    }
+)
 
 
 def require_text(name: str, value: str) -> str:
@@ -182,6 +193,10 @@ class TimelineStage:
     happened_at: datetime | None = None
     evidence: tuple[EvidenceLocator, ...] = ()
     claim_type: str | None = None
+    relation_type: str | None = None
+    source_ref: str | None = None
+    target_ref: str | None = None
+    record_id: str | None = None
 
     def __post_init__(self) -> None:
         for name in ("episode_key", "kind", "layer", "summary"):
@@ -193,7 +208,10 @@ class TimelineStage:
         object.__setattr__(
             self, "source_ids", _source_tuple("source_ids", self.source_ids)
         )
-        for name in ("node_type", "provenance_type", "stance", "claim_type"):
+        for name in (
+            "node_type", "provenance_type", "stance", "claim_type",
+            "relation_type", "source_ref", "target_ref", "record_id",
+        ):
             _optional_text(name, getattr(self, name))
         if self.happened_at is not None:
             require_aware("happened_at", self.happened_at)
@@ -212,6 +230,7 @@ class TurningPoint:
     at: datetime
     summary: str
     source_ids: tuple[str, ...]
+    evidence: tuple[EvidenceLocator, ...] = ()
 
     def __post_init__(self) -> None:
         for name in ("episode_key", "category", "summary"):
@@ -219,6 +238,9 @@ class TurningPoint:
         require_aware("at", self.at)
         object.__setattr__(
             self, "source_ids", _source_tuple("source_ids", self.source_ids)
+        )
+        object.__setattr__(
+            self, "evidence", _typed_tuple("evidence", self.evidence, EvidenceLocator)
         )
 
 
@@ -232,6 +254,7 @@ class ChangeReason:
     at: datetime
     summary: str
     source_ids: tuple[str, ...]
+    evidence: tuple[EvidenceLocator, ...] = ()
 
     def __post_init__(self) -> None:
         for name in ("episode_key", "reason_type", "summary"):
@@ -242,6 +265,9 @@ class ChangeReason:
         require_aware("at", self.at)
         object.__setattr__(
             self, "source_ids", _source_tuple("source_ids", self.source_ids)
+        )
+        object.__setattr__(
+            self, "evidence", _typed_tuple("evidence", self.evidence, EvidenceLocator)
         )
 
 
@@ -303,6 +329,7 @@ class EvolutionAnalysis:
     evidence_gaps: tuple[EvidenceGap, ...]
     open_questions: tuple[OpenQuestion, ...]
     case_status: str | None = None
+    invalidated_stages: tuple[TimelineStage, ...] = ()
 
     def __post_init__(self) -> None:
         require_text("case_id", self.case_id)
@@ -331,6 +358,13 @@ class EvolutionAnalysis:
             self,
             "open_questions",
             _typed_tuple("open_questions", self.open_questions, OpenQuestion),
+        )
+        object.__setattr__(
+            self,
+            "invalidated_stages",
+            _typed_tuple(
+                "invalidated_stages", self.invalidated_stages, TimelineStage
+            ),
         )
 
 
@@ -379,6 +413,8 @@ class HistoricalCaseState:
     facts: tuple[TimelineStage, ...]
     interpretations: tuple[TimelineStage, ...]
     evidence_gaps: tuple[EvidenceGap, ...]
+    invalidated_facts: tuple[TimelineStage, ...] = ()
+    relations: tuple[TimelineStage, ...] = ()
 
     def __post_init__(self) -> None:
         require_text("case_id", self.case_id)
@@ -394,6 +430,10 @@ class HistoricalCaseState:
             "evidence_gaps",
             _typed_tuple("evidence_gaps", self.evidence_gaps, EvidenceGap),
         )
+        for name in ("invalidated_facts", "relations"):
+            object.__setattr__(
+                self, name, _typed_tuple(name, getattr(self, name), TimelineStage)
+            )
 
 
 @dataclass(frozen=True, slots=True)

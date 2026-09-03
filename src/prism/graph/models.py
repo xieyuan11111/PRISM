@@ -136,11 +136,15 @@ class GraphTimeline:
     case_id: str
     as_of: datetime
     entries: tuple[TimelineEntry, ...]
+    # Entries known by the cutoff but no longer valid remain separately
+    # auditable without contaminating the effective state in ``entries``.
+    invalidated_entries: tuple[TimelineEntry, ...] = ()
 
     def __post_init__(self) -> None:
         require_text("case_id", self.case_id)
         require_aware("as_of", self.as_of)
         object.__setattr__(self, "entries", tuple(self.entries))
+        object.__setattr__(self, "invalidated_entries", tuple(self.invalidated_entries))
 
 
 @dataclass(frozen=True, slots=True)

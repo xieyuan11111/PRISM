@@ -11,7 +11,14 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timedelta, timezone
 
-from prism.domain import EvolutionCase, EvolutionNode, Material, TemporalFact
+from prism.domain import (
+    EvidenceLocator,
+    EvolutionCase,
+    EvolutionNode,
+    Material,
+    TemporalFact,
+    TemporalRelation,
+)
 from prism.graph import GraphService
 from prism.graph.backend import GraphitiBackend
 
@@ -270,3 +277,112 @@ def test_two_cutoffs_see_different_historical_states_with_material_boundary():
     assert fact_objects(early) == {"draft"}
     # Later cutoff: the draft expired and the final state is what is known.
     assert fact_objects(later) == {"final"}
+
+
+def _locator(source_id: str, quote: str) -> EvidenceLocator:
+    return EvidenceLocator(source_id, f"corpus/{source_id}.md", paragraph=1, quote=quote)
+
+
+def _m1_fact(fact_id: str, value: str, *, valid_at, observed_at, source_id,
+             invalid_at=None) -> TemporalFact:
+    return TemporalFact(
+        "Policy",
+        "status",
+        value,
+        valid_at,
+        invalid_at,
+        observed_at,
+        (source_id,),
+        1.0,
+        "source_explicit",
+        (_locator(source_id, f"status is {value}"),),
+        fact_id=fact_id,
+    )
+
+
+def _m1_relation(relation_id: str, relation_type: str, source_ref: str,
+                 target_ref: str, *, at, source_id: str) -> TemporalRelation:
+    return TemporalRelation(
+        relation_id,
+        relation_type,
+        source_ref,
+        target_ref,
+        at,
+        None,
+        at,
+        (source_id,),
+        (_locator(source_id, f"{source_ref} {relation_type} {target_ref}"),),
+        1.0,
+        "source_explicit",
+    )
+
+
+def test_relation_episodes_survive_adapter_restart_with_invalidated_view():
+    """M1 relation episodes round-trip through the Graphiti adapter.
+
+    The GraphService relation signature is backend-independent (only
+    add_episode/search are used), so after a restart that rebuilds episodes
+    from stored bodies the timeline still separates effective from
+    invalidated facts and the analyzer still derives only the evidenced
+    triggered_by change reason.
+    """
+    import json
+
+    from prism.analyzer import AnalyzerService
+
+    case = EvolutionCase("case-m1", "policy", "M1 policy", T0, "active", ())
+    old = _m1_fact(
+        "fact-old", "draft", valid_at=T0, invalid_at=T0 + timedelta(days=10),
+        observed_at=T0, source_id="material-a",
+    )
+    replacement = _m1_fact(
+        "fact-new", "revised", valid_at=T0 + timedelta(days=10),
+        observed_at=T0 + timedelta(days=10), source_id="material-b",
+    )
+    relations = (
+        _m1_relation(
+            "rel-supersedes", "supersedes", "fact-new", "fact-old",
+            at=T0 + timedelta(days=10), source_id="material-b",
+        ),
+        _m1_relation(
+            "rel-trigger", "triggered_by", "fact-new", "event-review",
+            at=T0 + timedelta(days=10), source_id="material-b",
+        ),
+    )
+
+    client = FakeGraphitiClient()
+    registry = FakeRegistry()
+    first = GraphService(make_backend(client, registry=registry))
+    write = run(
+        first.add_case(
+            case,
+            facts=[old, replacement],
+            relations=relations,
+            materials=[material("material-a", T0), material("material-b", T0 + timedelta(days=10))],
+        )
+    )
+    assert write.added_keys
+
+    # Process 2: a fresh backend with the same store and registry must map
+    # every relation episode back from stored bodies.
+    second = GraphService(make_backend(client, registry=registry))
+    timeline = run(second.timeline("case-m1", T0 + timedelta(days=20)))
+    relation_ids = {
+        json.loads(entry.payload).get("relation_id")
+        for entry in timeline.entries
+        if entry.kind == "temporal_relation"
+    }
+    assert relation_ids == {"rel-supersedes", "rel-trigger"}
+    assert {
+        json.loads(entry.payload).get("fact_id")
+        for entry in timeline.entries
+        if entry.kind == "temporal_fact"
+    } == {"fact-new"}
+    assert [
+        json.loads(entry.payload).get("fact_id")
+        for entry in timeline.invalidated_entries
+        if entry.kind == "temporal_fact"
+    ] == ["fact-old"]
+
+    analysis = run(AnalyzerService(second).analyze("case-m1", T0 + timedelta(days=20)))
+    assert [reason.reason_type for reason in analysis.change_reasons] == ["triggered_by"]

@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from dataclasses import dataclass, is_dataclass
+from dataclasses import MISSING, dataclass, fields, is_dataclass
 from datetime import datetime, timezone
 from types import NoneType, UnionType
 from typing import Any, Union, get_args, get_origin, get_type_hints
@@ -69,6 +69,18 @@ ON CONFLICT(case_id, material_id) DO UPDATE SET
 
 
 _HINT_CACHE: dict[type, dict[str, Any]] = {}
+
+_BACKWARD_DEFAULT_FIELDS = frozenset(
+    {
+        ("ExtractionResult", "relations"),
+        ("TemporalFact", "fact_id"),
+        ("ExtractionConflict", "valid_at"),
+        ("ExtractionConflict", "invalid_at"),
+        ("ExtractionConflict", "observed_at"),
+        ("ExtractionConflict", "confidence"),
+        ("ExtractionConflict", "provenance_type"),
+    }
+)
 
 
 def _hints(model: type) -> dict[str, Any]:
@@ -165,8 +177,22 @@ def _decode(hint: Any, value: Any, path: str) -> Any:
                 f"{path} has unexpected field(s): {', '.join(extra)}"
             )
         kwargs: dict[str, Any] = {}
+        declared_fields = {field.name: field for field in fields(hint)}
         for name, field_hint in field_hints.items():
             if name not in value:
+                declared = declared_fields[name]
+                if (
+                    (hint.__name__, name) in _BACKWARD_DEFAULT_FIELDS
+                    and declared.default is not MISSING
+                ):
+                    kwargs[name] = declared.default
+                    continue
+                if (
+                    (hint.__name__, name) in _BACKWARD_DEFAULT_FIELDS
+                    and declared.default_factory is not MISSING
+                ):
+                    kwargs[name] = declared.default_factory()
+                    continue
                 raise ValueError(f"{path}.{name} is missing")
             kwargs[name] = _decode(field_hint, value[name], f"{path}.{name}")
         try:

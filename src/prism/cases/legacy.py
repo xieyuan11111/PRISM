@@ -638,6 +638,7 @@ class LegacyCaseLoader:
                     f"{path}.provenance_type", record.get("provenance_type")
                 ),
                 evidence=evidence,
+                fact_id=record.get("fact_id"),
             )
         except (TypeError, ValueError) as error:
             issues.append(
