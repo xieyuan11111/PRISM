@@ -278,6 +278,7 @@ class PrismAPI:
         extraction_service: _ExtractionService | None = None,
         case_service: _CaseService | None = None,
         material_resolver: _MaterialResolver | None = None,
+        adjudicator: object | None = None,
     ) -> None:
         self._ingestion = _required_dependency(
             "ingestion_service", ingestion_service, "ingest"
@@ -337,6 +338,7 @@ class PrismAPI:
         self._material_resolver = _optional_dependency(
             "material_resolver", material_resolver, "resolve"
         )
+        self._adjudicator = adjudicator
 
     async def search(
         self,
@@ -1048,6 +1050,15 @@ class PrismAPI:
             raise ValueError("analyzer_service is required for report_case()")
         analysis = await self._analyzer.analyze(case_id, as_of)
         return await self._report_service_for(use_llm).report(analysis)
+
+    def adjudication_history(self, material_id: str | None = None) -> tuple:
+        """Read durable LLM automatic-adjudication audit records."""
+        if self._adjudicator is None:
+            return ()
+        history = getattr(self._adjudicator, "history", None)
+        if not callable(history):
+            return ()
+        return tuple(history(material_id))
 
     def _report_service_for(self, use_llm: bool) -> _ReportService:
         if use_llm:

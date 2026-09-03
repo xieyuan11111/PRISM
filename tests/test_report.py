@@ -475,3 +475,15 @@ def test_service_rejects_invalid_dependencies_and_inputs():
         run_report("not-an-analysis")
     with pytest.raises(TypeError):
         run_report(None)
+
+
+def test_offline_report_marks_adjudication_records_as_non_facts():
+    """The report header tells readers LLM adjudication never enters the
+    fact timeline as a fact itself."""
+    doc = run_report(make_analysis())
+    assert (
+        "LLM automatic adjudication: candidate decisions are audit records, "
+        "not facts" in doc.markdown
+    )
+    # The header note never fabricates timeline rows on its own.
+    assert "adjudication" not in doc.stages[0].summary

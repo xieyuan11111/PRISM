@@ -412,3 +412,85 @@ def test_record_validates_row_integrity(tmp_path):
         assert ledger.entries("case-1") == ()
     finally:
         ledger.close()
+
+
+def _payload_gap() -> ExtractionEvidenceGap:
+    return ExtractionEvidenceGap(
+        "candidate_validation_failed",
+        "node candidate 9 was not graph-ready: bad time",
+        "node",
+        "node-9",
+        ("mat-1",),
+        candidate_payload={
+            "id": "node-9",
+            "case_id": "case-1",
+            "node_type": "publication",
+            "assertion_type": "fact",
+            "happened_at": "2026-09-01T00:00:00+00:00",
+            "valid_at": "2026-09-01T00:00:00+00:00",
+            "observed_at": "2026-09-01T00:00:00+00:00",
+            "summary": "The revised policy was published.",
+            "source_ids": ["mat-1"],
+            "claim_ids": [],
+            "provenance_type": "source_explicit",
+            "evidence": [
+                {
+                    "source_id": "mat-1",
+                    "quote": "The agency published the revised policy.",
+                    "paragraph": 1,
+                    "page": None,
+                }
+            ],
+        },
+    )
+
+
+def test_extraction_json_roundtrip_preserves_gap_candidate_payloads():
+    extraction = replace(make_extraction(), evidence_gaps=(_payload_gap(),))
+    encoded = extraction_to_json(extraction)
+
+    decoded = extraction_from_json(encoded)
+    assert decoded == extraction
+    gap = decoded.evidence_gaps[0]
+    assert gap.candidate_payload is not None
+    assert gap.candidate_payload["id"] == "node-9"
+    assert gap.candidate_payload["evidence"][0]["quote"] in make_material().content
+    assert isinstance(gap.candidate_payload["evidence"], list)
+    # The snapshot itself is plain JSON without the internal corpus path
+    # (graph-candidate locators above it legitimately keep theirs).
+    assert "corpus_path" not in json.dumps(dict(gap.candidate_payload))
+    # Re-serialization is stable across the round trip.
+    assert extraction_to_json(decoded) == encoded
+
+
+def test_old_extraction_json_without_gap_payloads_stays_compatible():
+    encoded = json.loads(extraction_to_json(make_extraction()))
+    for gap in encoded["evidence_gaps"]:
+        gap.pop("candidate_payload")
+
+    decoded = extraction_from_json(json.dumps(encoded))
+    assert decoded == make_extraction()
+    assert decoded.evidence_gaps[0].candidate_payload is None
+
+
+def test_payload_gap_roundtrip_through_the_material_ledger(tmp_path):
+    caseless = ExtractionResult(
+        case=None,
+        nodes=(replace(NODE, claim_ids=()),),
+        evidence_gaps=(_payload_gap(),),
+    )
+    assert caseless.accumulation_status == "awaiting_case_binding"
+
+    ledger = CaseExtractionLedger(make_paths(tmp_path))
+    try:
+        entry = ledger.record_material(make_material(), caseless)
+        assert entry.extraction == caseless
+        assert entry.extraction.evidence_gaps[0].candidate_payload["id"] == "node-9"
+    finally:
+        ledger.close()
+
+    reopened = CaseExtractionLedger(make_paths(tmp_path))
+    try:
+        assert reopened.material_entry("mat-1").extraction == caseless
+    finally:
+        reopened.close()

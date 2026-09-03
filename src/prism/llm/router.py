@@ -36,6 +36,7 @@ class TaskRole(str, Enum):
     DEBATE = "debate"
     SUMMARIZE_REPORT = "summarize_report"
     SOURCE_SELECTOR = "source_selector"
+    ADJUDICATE = "adjudicate"
 
 
 @dataclass(frozen=True, slots=True)

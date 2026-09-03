@@ -318,3 +318,166 @@ def test_facade_does_not_wrap_graph_errors(tmp_path):
         run(api.build_timeline("missing", NOW))
 
     assert raised.value is expected
+
+
+class _Audit:
+    def __init__(self, material_id: str, decision: str):
+        self.material_id = material_id
+        self.decision = decision
+
+
+class FakeAdjudicator:
+    def __init__(self, records=()):
+        self.records = tuple(records)
+        self.calls: list[str | None] = []
+
+    def history(self, material_id=None):
+        self.calls.append(material_id)
+        if material_id is None:
+            return self.records
+        return tuple(record for record in self.records if record.material_id == material_id)
+
+
+def _api_with_adjudicator(tmp_path: Path, adjudicator: object | None) -> PrismAPI:
+    return PrismAPI(
+        FakeIngestionService(ingestion_result(tmp_path)),
+        FakeEvidenceStore(index_outcome()),
+        FakeGraphService(),
+        FakeEventBus(),
+        adjudicator=adjudicator,
+    )
+
+
+def test_adjudication_history_delegates_and_preserves_records(tmp_path):
+    records = (_Audit("mat-1", "rejected"), _Audit("mat-2", "accepted"))
+    adjudicator = FakeAdjudicator(records)
+    api = _api_with_adjudicator(tmp_path, adjudicator)
+
+    all_records = api.adjudication_history()
+    assert all_records == records
+    assert adjudicator.calls == [None]
+
+    scoped = api.adjudication_history("mat-1")
+    assert scoped == (records[0],)
+    assert adjudicator.calls == [None, "mat-1"]
+
+
+def test_adjudication_history_is_empty_without_an_adjudicator(tmp_path):
+    api = facade(tmp_path)[0]
+    assert api.adjudication_history() == ()
+    assert api.adjudication_history("mat-1") == ()
+
+
+def test_adjudication_history_surfaces_batch_failure_records(tmp_path):
+    """The audit API shows candidate_kind='batch' adjudication failures."""
+    from prism.adjudication import (
+        AdjudicationBatchFailure,
+        AdjudicationLedger,
+        AdjudicationService,
+    )
+    from prism.domain import EvidenceLocator, EvolutionNode
+    from prism.extraction import ExtractionResult
+
+    now = datetime(2026, 9, 1, 9, 0, tzinfo=timezone.utc)
+    material = Material(
+        id="mat-1",
+        title="t",
+        source="s",
+        published_at=now,
+        fetched_at=now,
+        type="news",
+        content="A quote",
+    )
+    evidence = EvidenceLocator("mat-1", "corpus/a.md", paragraph=1, quote="A quote")
+    node = EvolutionNode(
+        "n1", "case-x", "publication", now, "A quote", ("mat-1",),
+        evidence=(evidence,), valid_at=now, observed_at=now,
+        provenance_type="source_explicit", evidence_role="primary_observation",
+    )
+    extraction = ExtractionResult(nodes=(node,))
+
+    class _BadRouter:
+        async def complete(self, role, prompt):
+            return type("C", (), {"text": '{"decisions":[{"candidate_kind":"node",'
+                                          '"candidate_id":"n1","decision":"accepted",'
+                                          '"reason":"ok","extra":1}]}'})()
+
+    db_path = tmp_path / "adjudication.db"
+    service = AdjudicationService(_BadRouter(), ledger=AdjudicationLedger(db_path))
+    with pytest.raises(AdjudicationBatchFailure):
+        run(service.adjudicate(material, extraction))
+
+    api = _api_with_adjudicator(tmp_path, service)
+    records = api.adjudication_history("mat-1")
+    assert len(records) == 1
+    assert records[0].candidate_kind == "batch"
+    assert records[0].decision == "adjudication_failed"
+    assert records[0].revalidation_outcome == "adjudication_failed"
+    # The history view is durable: a fresh ledger read sees the same row.
+    assert len(AdjudicationLedger(db_path).entries("mat-1")) == 1
+
+
+def test_adjudication_history_batch_failure_decision_is_a_formal_enum(
+    tmp_path,
+):
+    """Batch-failure records served by the audit API after a ledger restart
+    keep decision as the AdjudicationDecision enum member ADJUDICATION_FAILED
+    (with .value), never a bare string that breaks decision.value callers."""
+    from prism.adjudication import (
+        AdjudicationBatchFailure,
+        AdjudicationDecision,
+        AdjudicationLedger,
+        AdjudicationService,
+    )
+    from prism.domain import EvidenceLocator
+    from prism.extraction import ExtractionResult
+
+    now = datetime(2026, 9, 1, 9, 0, tzinfo=timezone.utc)
+    material = Material(
+        id="mat-1",
+        title="t",
+        source="s",
+        published_at=now,
+        fetched_at=now,
+        type="news",
+        content="A quote",
+    )
+    evidence = EvidenceLocator("mat-1", "corpus/a.md", paragraph=1, quote="A quote")
+    node = EvolutionNode(
+        "n1", "case-x", "publication", now, "A quote", ("mat-1",),
+        evidence=(evidence,), valid_at=now, observed_at=now,
+        provenance_type="source_explicit", evidence_role="primary_observation",
+    )
+    extraction = ExtractionResult(nodes=(node,))
+
+    class _BadRouter:
+        async def complete(self, role, prompt):
+            return type("C", (), {"text": '{"decisions":[{"candidate_kind":"node",'
+                                          '"candidate_id":"n1","decision":"accepted",'
+                                          '"reason":"ok","extra":1}]}'})()
+
+    db_path = tmp_path / "adjudication.db"
+    first = AdjudicationService(_BadRouter(), ledger=AdjudicationLedger(db_path))
+    with pytest.raises(AdjudicationBatchFailure):
+        run(first.adjudicate(material, extraction))
+
+    # Restart: a fresh service and ledger over the same durable SQLite file.
+    restarted = AdjudicationService(_BadRouter(), ledger=AdjudicationLedger(db_path))
+    api = _api_with_adjudicator(tmp_path, restarted)
+    records = api.adjudication_history("mat-1")
+    assert len(records) == 1
+    batch = records[0]
+    assert batch.candidate_kind == "batch"
+    assert isinstance(batch.decision, AdjudicationDecision)
+    assert batch.decision is AdjudicationDecision.ADJUDICATION_FAILED
+    assert batch.decision.value == "adjudication_failed"
+    assert batch.revalidation_outcome == "adjudication_failed"
+    # Consumers may safely use decision.value on every API-surfaced record.
+    assert {record.decision.value for record in api.adjudication_history()} == {
+        "adjudication_failed"
+    }
+
+
+def test_adjudication_history_tolerates_an_adjudicator_without_history(tmp_path):
+    api = _api_with_adjudicator(tmp_path, object())
+    assert api.adjudication_history("mat-1") == ()

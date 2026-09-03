@@ -191,3 +191,73 @@ def test_incomplete_llm_configuration_is_rejected_clearly(
 
     with pytest.raises(ValueError, match=message):
         run(create_runtime(config_path, llm_transport=OfflineTransport()))
+
+
+def test_adjudicate_role_wires_the_adjudicator_into_pipeline_and_api(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("PRISM_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("PRISM_TEST_API_KEY", "key")
+    transport = OfflineTransport()
+
+    async def exercise():
+        runtime = await create_runtime(
+            configured_runtime_file(tmp_path),
+            llm_transport=transport,
+        )
+        try:
+            # Default task_roles (extract/summarize) never create an
+            # adjudicator, so the pipeline keeps its pre-adjudication
+            # behaviour without any LLM role.
+            assert runtime.adjudicator is None
+            assert runtime.pipeline._adjudicator is None
+            assert runtime.api.adjudication_history() == ()
+        finally:
+            await runtime.close()
+
+    run(exercise())
+
+
+def test_adjudicate_role_creates_a_durable_ledger_backed_adjudicator(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("PRISM_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("PRISM_TEST_API_KEY", "key")
+    config_path = tmp_path / "config.json"
+    PrismConfig(
+        llm=LLMConfig(
+            providers={
+                "primary": LLMProviderConfig(
+                    model="provider/model-v1",
+                    base_url="https://llm.example.test/v1",
+                    api_key_env="PRISM_TEST_API_KEY",
+                )
+            },
+            task_roles={
+                "extract": "primary",
+                "summarize": "primary",
+                "adjudicate": "primary",
+            },
+        )
+    ).save(config_path)
+    transport = OfflineTransport()
+
+    async def exercise():
+        runtime = await create_runtime(config_path, llm_transport=transport)
+        try:
+            from prism.adjudication import AdjudicationService
+
+            assert isinstance(runtime.adjudicator, AdjudicationService)
+            assert runtime.pipeline._adjudicator is runtime.adjudicator
+            assert runtime.api._adjudicator is runtime.adjudicator
+            # The durable ledger lives in the shared data-dir SQLite file.
+            ledger = runtime.adjudicator._ledger
+            assert ledger is not None
+            assert ledger._db_path == runtime.paths.data_dir / "index.db"
+            # Nothing was called and nothing was recorded at wiring time.
+            assert transport.calls == []
+            assert runtime.api.adjudication_history() == ()
+        finally:
+            await runtime.close()
+
+    run(exercise())

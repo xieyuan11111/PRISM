@@ -3,6 +3,7 @@
 from .main import (
     PrismAPIProtocol,
     build_parser,
+    handle_adjudication_history,
     handle_discover,
     handle_fetch,
     handle_fetch_all,
@@ -18,6 +19,7 @@ from .main import (
 __all__ = [
     "PrismAPIProtocol",
     "build_parser",
+    "handle_adjudication_history",
     "handle_discover",
     "handle_fetch",
     "handle_fetch_all",

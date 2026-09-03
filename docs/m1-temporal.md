@@ -54,6 +54,19 @@ real-provider extraction or a real case has passed live acceptance.
   optional `cited_source_ref`; `current_synthesis` identifies the current
   authors' synthesis. Both reach the graph only after a case is present, and
   reports/CLI serialization expose the layer and citation reference.
+- The optional `adjudicate` LLM role is a second automatic pass over validated
+  candidates, candidate-level gaps, and conflicts. It can accept, revise,
+  reject, preserve a conflict, or hold a candidate pending case binding. Every
+  decision is durably versioned in the project-owned `adjudication_audit`
+  table with the original candidate, revision, safe reason, deterministic
+  revalidation result, and any graph episode keys. A revised candidate must
+  pass the same verbatim quote, source, time, target-case, and evidence-role
+  checks as first-pass extraction; a decision is never itself a graph fact.
+- If the second LLM emits malformed/unsupported decision JSON or is unavailable,
+  the pipeline records an `adjudication_failed` batch audit and retains the
+  already validated first-pass extraction for case merge and graph write. A
+  first-pass extraction failure, target-case drift, unsafe revision, or graph
+  write failure remains fail-closed; no unvalidated candidate is promoted.
 - Model-distilled summaries must cite episode/source pairs present in the
   analyzed evidence. Invalid output is rejected and deterministically
   downgraded without adding an unsupported conclusion.

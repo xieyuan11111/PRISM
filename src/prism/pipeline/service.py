@@ -10,7 +10,14 @@ case binding. Every collaborator (indexer,
 extractor, graph writer, clock, and the event-to-material resolver) is
 injected, so the service is fully testable offline.  Failures raise
 :class:`PipelineError` with the audit trail of already-completed stages; no
-partial or fabricated results are ever returned.  Each material's lifecycle
+partial or fabricated results are ever returned.  The one deliberate
+exception is the LLM automatic-adjudication layer: it runs AFTER the
+deterministic extractor has produced a strictly verified
+:class:`~prism.extraction.ExtractionResult`, so a second-layer batch/role/
+transport failure fails OPEN on that verified extraction (one canonical
+warning appended, durable batch audit record written by the adjudicator,
+case merge and graph write continue) instead of discarding verified first-
+layer work.  Each material's lifecycle
 is queryable as a structured :class:`~prism.pipeline.outcomes.PipelineOutcome`
 (``pending``/``failed``/``committed``); terminal outcomes may additionally be
 persisted through an injected local outcome ledger.
@@ -20,11 +27,12 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Protocol
 
+from prism.adjudication import AdjudicationBatchFailure
 from prism.domain import (
     Claim,
     EvolutionCase,
@@ -37,6 +45,7 @@ from prism.events import Event
 from prism.extraction import ExtractionResult
 from prism.graph import GraphWriteResult
 from prism.ingestion import IngestionResult
+from prism.llm import LLMRouterError, MissingRoleError
 from prism.sources import redact_audit_text
 from prism.store import IndexOutcome
 
@@ -123,6 +132,17 @@ class _CaseRecorder(Protocol):
 
     async def record_material_extraction(
         self, material: Material, extraction: ExtractionResult
+    ) -> object: ...
+
+
+class _Adjudicator(Protocol):
+    async def adjudicate(
+        self,
+        material: Material,
+        extraction: ExtractionResult,
+        *,
+        target_case: EvolutionCase | None = ...,
+        corpus_path: str | Path | None = ...,
     ) -> object: ...
 
 
@@ -312,6 +332,7 @@ class PipelineService:
         material_resolver: _MaterialResolver | None = None,
         case_service: _CaseRecorder | None = None,
         outcome_store: _OutcomeStore | None = None,
+        adjudicator: _Adjudicator | None = None,
     ) -> None:
         self._indexer = _required_dependency("indexer", indexer, "index_file")
         self._extraction = _required_dependency(
@@ -333,6 +354,9 @@ class PipelineService:
         self._clock: _Clock = clock or (lambda: datetime.now(timezone.utc))
         self._resolver = material_resolver
         self._case_recorder = case_service
+        if adjudicator is not None and not callable(getattr(adjudicator, "adjudicate", None)):
+            raise TypeError("adjudicator must provide adjudicate()")
+        self._adjudicator = adjudicator
         self._outcome_store = outcome_store
         self._lock = asyncio.Lock()
         self._completed: dict[str, PipelineRun] = {}
@@ -594,7 +618,78 @@ class PipelineService:
                 raise self._stage_failure(
                     _STAGE_EXTRACT, material_id, stages, exc
                 ) from exc
-            stages.append(PipelineStage(_STAGE_EXTRACT, "extracted", extraction))
+            # The adjudication layer (when wired) runs between the verified
+            # deterministic extraction and the case/graph recording.  Only
+            # adjudication-layer failures — a structured AdjudicationBatchFailure
+            # (malformed decisions JSON, invalid decision fields) or a missing
+            # role / transport / timeout error — fail OPEN: the first-layer
+            # extraction is already strictly verified, so it is kept verbatim
+            # with one canonical warning appended, and case merge + graph
+            # write continue on it.  The failure reason is audit text only and
+            # never becomes a fact candidate or graph episode body.  Any other
+            # exception (a service bug, a ledger write failure) stays a
+            # fail-closed extract-stage failure.
+            adjudication_note = None
+            if self._adjudicator is not None and (
+                extraction.nodes
+                or extraction.temporal_facts
+                or extraction.claims
+                or extraction.conflicts
+                or extraction.relations
+                # Candidates the deterministic layer demoted to evidence gaps
+                # stay adjudicable when their gap carries the original
+                # candidate payload; without such a payload the historical
+                # gap-only behaviour (no adjudication round trip) is kept.
+                or any(
+                    gap.candidate_payload is not None
+                    for gap in extraction.evidence_gaps
+                )
+            ):
+                try:
+                    adjudicated = await self._adjudicator.adjudicate(
+                        result.material,
+                        extraction,
+                        target_case=target_case,
+                        corpus_path=result.corpus_path,
+                    )
+                    candidate = getattr(adjudicated, "extraction", None)
+                    if isinstance(candidate, ExtractionResult):
+                        extraction = candidate
+                except AdjudicationBatchFailure as exc:
+                    extraction = self._adjudication_fallback(
+                        extraction, exc.error_code, exc.field
+                    )
+                    adjudication_note = (
+                        "LLM automatic adjudication failed open "
+                        f"({exc.error_code}); the original verified "
+                        "extraction was retained for case merge and graph "
+                        "write"
+                    )
+                except (MissingRoleError, LLMRouterError, TimeoutError) as exc:
+                    # A role/transport failure of the adjudication layer
+                    # fails open the same way; only the exception TYPE name
+                    # is used, never its (possibly sensitive) message.
+                    extraction = self._adjudication_fallback(
+                        extraction, type(exc).__name__
+                    )
+                    adjudication_note = (
+                        "LLM automatic adjudication failed open "
+                        f"({type(exc).__name__}); the original verified "
+                        "extraction was retained for case merge and graph "
+                        "write"
+                    )
+                except Exception as exc:
+                    raise self._stage_failure(
+                        _STAGE_EXTRACT, material_id, stages, exc
+                    ) from exc
+            stages.append(
+                PipelineStage(
+                    _STAGE_EXTRACT,
+                    "extracted",
+                    extraction,
+                    detail=adjudication_note,
+                )
+            )
 
             if extraction.case is None:
                 has_candidates = bool(
@@ -738,6 +833,32 @@ class PipelineService:
             stage=stage,
             material_id=material_id,
             stages=stages,
+        )
+
+    @staticmethod
+    def _adjudication_fallback(
+        extraction: ExtractionResult,
+        code: str,
+        field: str | None = None,
+    ) -> ExtractionResult:
+        """Fail-open fallback for an adjudication-layer failure.
+
+        The original, already strictly verified extraction is kept verbatim
+        (only the warning tuple changes), so case merge and graph write
+        proceed on the first layer's candidates.  The appended warning is
+        canonical audit text — error code plus optional field path — never
+        raw model output, secrets, or absolute paths, and it can never reach
+        a fact timeline or graph episode body.
+        """
+        warning = (
+            f"LLM automatic adjudication skipped ({code}"
+            + (f" at {field}" if field is not None else "")
+            + "); the original verified extraction was retained for case "
+            "merge and graph write"
+        )
+        return replace(
+            extraction,
+            warnings=tuple(dict.fromkeys(extraction.warnings + (warning,))),
         )
 
     def _record_failure(self, material_id: str, exc: Exception) -> None:

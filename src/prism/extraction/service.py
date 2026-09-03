@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass, replace
+from collections.abc import Mapping
+from dataclasses import dataclass, fields, is_dataclass, replace
 from datetime import datetime
 from pathlib import Path, PurePosixPath, PureWindowsPath
+from types import MappingProxyType
 from typing import Any, Callable, Protocol
 
 from prism.domain import (
@@ -88,18 +90,165 @@ class _RouterLike(Protocol):
     async def complete(self, role: str, prompt: str) -> _CompletionLike: ...
 
 
+# The strict parser's per-candidate schemas, shared by the evidence-gap
+# candidate snapshots (built here) and the adjudication revalidation layer
+# (prism.adjudication), so a snapshot saved on a gap is exactly re-parseable
+# by the same parser that demoted the candidate.
+GAP_PAYLOAD_FIELDS: dict[str, frozenset[str]] = {
+    "node": frozenset({
+        "id", "case_id", "node_type", "assertion_type", "happened_at",
+        "valid_at", "observed_at", "summary", "source_ids", "claim_ids",
+        "provenance_type", "evidence", "evidence_role",
+    }),
+    "temporal_fact": frozenset({
+        "subject", "predicate", "object", "valid_at", "invalid_at",
+        "observed_at", "confidence", "provenance_type", "source_ids",
+        "assertion_type", "evidence", "fact_id", "evidence_role",
+        "cited_source_ref",
+    }),
+    "claim": frozenset({
+        "claim_id", "actor", "proposition", "stance", "stated_at",
+        "claim_type", "observed_at", "based_on", "revised_by",
+        "provenance_type", "confidence", "evidence", "evidence_role",
+    }),
+    "conflict": frozenset({
+        "conflict_id", "subject", "predicate", "alternatives", "source_ids",
+        "evidence", "valid_at", "invalid_at", "observed_at", "confidence",
+        "provenance_type", "evidence_role", "cited_source_ref",
+    }),
+    "relation": frozenset({
+        "relation_id", "relation_type", "source_ref", "target_ref",
+        "valid_at", "invalid_at", "observed_at", "source_ids", "evidence",
+        "confidence", "provenance_type", "evidence_role", "cited_source_ref",
+    }),
+}
+
+# The strict parser's per-locator schema.  The resolved locator dataclass
+# additionally carries the internal ``corpus_path`` (a project-relative
+# storage pointer the parser re-derives from the material), which never
+# belongs in a model-facing candidate snapshot.
+GAP_PAYLOAD_EVIDENCE_FIELDS = frozenset({"source_id", "quote", "paragraph", "page"})
+
+
+def _validate_gap_payload(value: object, path: str = "candidate_payload") -> None:
+    """Reject anything that is not plain, JSON-safe candidate data.
+
+    Gap payloads feed LLM prompts, durable audit records and SQLite ledgers:
+    they may contain only JSON primitives (never datetimes or domain
+    objects), and they must never smuggle the internal ``corpus_path``
+    locator field that points at corpus storage.
+    """
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise ValueError(f"{path} keys must be strings")
+            if key == "corpus_path":
+                raise ValueError(
+                    f"{path} must not carry the internal corpus_path field"
+                )
+            _validate_gap_payload(item, f"{path}.{key}")
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            _validate_gap_payload(item, f"{path}[{index}]")
+    elif value is None or isinstance(value, (bool, int, float, str)):
+        return
+    else:
+        raise ValueError(f"{path} must contain only JSON-safe values")
+
+
+def _json_plain(value: object) -> Any:
+    """Lossless plain conversion of parsed candidates (no internal fields).
+
+    Dataclass round-trips keep every annotated field — including internal
+    fields such as ``node.change_reason`` and the evidence locator's
+    ``corpus_path`` — so callers must filter the result through
+    :data:`GAP_PAYLOAD_FIELDS` / :data:`GAP_PAYLOAD_EVIDENCE_FIELDS` before
+    anything model-facing is built from it.
+    """
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if is_dataclass(value):
+        return {
+            field.name: _json_plain(getattr(value, field.name))
+            for field in fields(value)
+        }
+    if isinstance(value, Mapping):
+        return {str(key): _json_plain(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_plain(item) for item in value]
+    return value
+
+
+def _candidate_payload_snapshot(
+    kind: str, item_id: str | None, candidate: object
+) -> dict[str, Any] | None:
+    """The strict-schema snapshot of one demoted candidate, or ``None``.
+
+    Only candidates the adjudicator can locate (a non-empty ``item_id``)
+    receive a snapshot.  The snapshot is filtered to exactly the fields the
+    strict parser accepts for that kind, with evidence locators reduced to
+    their model-facing fields — ``corpus_path`` and any invented or internal
+    key never survive the filter.
+    """
+    if item_id is None or candidate is None:
+        return None
+    allowed = GAP_PAYLOAD_FIELDS.get(kind)
+    if allowed is None:
+        return None
+    if is_dataclass(candidate):
+        plain = _json_plain(candidate)
+    elif isinstance(candidate, Mapping):
+        plain = candidate
+    else:
+        return None
+    result: dict[str, Any] = {}
+    for key in allowed:
+        if key not in plain:
+            continue
+        value = plain[key]
+        if key == "evidence" and isinstance(value, (list, tuple)):
+            result[key] = [
+                {
+                    item_key: item_value
+                    for item_key, item_value in item.items()
+                    if item_key in GAP_PAYLOAD_EVIDENCE_FIELDS
+                }
+                if isinstance(item, Mapping)
+                else item
+                for item in value
+            ]
+        else:
+            result[key] = value
+    if kind in ("node", "temporal_fact"):
+        # The strict parser validates assertion_type on the model JSON but
+        # does not store it on the parsed object; snapshots derived from
+        # parsed candidates restore the only value that parsed successfully.
+        result.setdefault("assertion_type", "fact")
+    return result or None
+
+
 _EvidenceLocator = Callable[..., EvidenceLocator]
 
 
 @dataclass(frozen=True, slots=True)
 class ExtractionEvidenceGap:
-    """One candidate that could not be bound to the source text."""
+    """One candidate that could not be bound to the source text.
+
+    ``candidate_payload`` is optional: when the gap describes a concrete
+    model candidate, it carries that candidate's strict-schema snapshot
+    (immutable, JSON-safe, never containing the internal ``corpus_path``)
+    so a later review layer can adjudicate and repair the demoted candidate.
+    Document-level gaps and gaps without a locatable candidate id carry no
+    payload and keep their historical behaviour.
+    """
 
     gap_type: str
     detail: str
     item_kind: str | None = None
     item_id: str | None = None
     source_ids: tuple[str, ...] = ()
+    # Appended for positional compatibility; adjudication input closure.
+    candidate_payload: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
         for name in ("gap_type", "detail"):
@@ -111,6 +260,14 @@ class ExtractionEvidenceGap:
             if value is not None and (not isinstance(value, str) or not value.strip()):
                 raise ValueError(f"{name} must be a non-empty string")
         object.__setattr__(self, "source_ids", _text_values("source_ids", self.source_ids))
+        payload = self.candidate_payload
+        if payload is not None:
+            if not isinstance(payload, Mapping):
+                raise TypeError("candidate_payload must be a mapping or None")
+            _validate_gap_payload(payload)
+            object.__setattr__(
+                self, "candidate_payload", MappingProxyType(dict(payload))
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -929,7 +1086,7 @@ class ExtractionService:
                     gaps.append(
                         self._review_context_gap(
                             material_role, "node", node.id, node.source_ids,
-                            node.evidence_role,
+                            node.evidence_role, candidate=node,
                         )
                     )
                     continue
@@ -975,6 +1132,7 @@ class ExtractionService:
                         self._review_context_gap(
                             material_role, "temporal_fact", fact.fact_id,
                             fact.source_ids, fact.evidence_role,
+                            candidate=fact,
                         )
                     )
                     continue
@@ -1028,6 +1186,7 @@ class ExtractionService:
                         self._review_context_gap(
                             material_role, "claim", claim.claim_id,
                             claim.based_on, claim.evidence_role,
+                            candidate=claim,
                         )
                     )
                     continue
@@ -1068,6 +1227,7 @@ class ExtractionService:
                         self._review_context_gap(
                             material_role, "conflict", conflict.conflict_id,
                             conflict.source_ids, conflict.evidence_role,
+                            candidate=conflict,
                         )
                     )
                 else:
@@ -1103,6 +1263,7 @@ class ExtractionService:
                         self._review_context_gap(
                             material_role, "relation", relation.relation_id,
                             relation.source_ids, relation.evidence_role,
+                            candidate=relation,
                         )
                     )
                     continue
@@ -1128,6 +1289,7 @@ class ExtractionService:
                         "node",
                         node.id,
                         node.source_ids,
+                        _candidate_payload_snapshot("node", node.id, node),
                     )
                 )
             nodes = []
@@ -1162,6 +1324,7 @@ class ExtractionService:
                         "node",
                         node.id,
                         node.source_ids,
+                        _candidate_payload_snapshot("node", node.id, node),
                     )
                 )
             for index, fact in enumerate(facts):
@@ -1172,6 +1335,9 @@ class ExtractionService:
                         "temporal_fact",
                         fact.fact_id,
                         fact.source_ids,
+                        _candidate_payload_snapshot(
+                            "temporal_fact", fact.fact_id, fact
+                        ),
                     )
                 )
             for claim in claims:
@@ -1182,6 +1348,9 @@ class ExtractionService:
                         "claim",
                         claim.claim_id,
                         claim.based_on,
+                        _candidate_payload_snapshot(
+                            "claim", claim.claim_id, claim
+                        ),
                     )
                 )
             for conflict in conflicts:
@@ -1193,6 +1362,9 @@ class ExtractionService:
                         "conflict",
                         conflict.conflict_id,
                         conflict.source_ids,
+                        _candidate_payload_snapshot(
+                            "conflict", conflict.conflict_id, conflict
+                        ),
                     )
                 )
             for relation in relations:
@@ -1204,6 +1376,9 @@ class ExtractionService:
                         "relation",
                         relation.relation_id,
                         relation.source_ids,
+                        _candidate_payload_snapshot(
+                            "relation", relation.relation_id, relation
+                        ),
                     )
                 )
             nodes, facts, claims, conflicts, relations = [], [], [], [], []
@@ -1360,6 +1535,7 @@ class ExtractionService:
         item_id: str | None,
         source_ids: tuple[str, ...],
         evidence_role: str | None,
+        candidate: object | None = None,
     ) -> ExtractionEvidenceGap:
         return ExtractionEvidenceGap(
             "review_context",
@@ -1369,6 +1545,7 @@ class ExtractionService:
             item_kind,
             item_id,
             source_ids,
+            _candidate_payload_snapshot(item_kind, item_id, candidate),
         )
 
     @staticmethod
@@ -1835,6 +2012,7 @@ class ExtractionService:
                     "conflict",
                     conflict_id,
                     source_ids,
+                    _candidate_payload_snapshot("conflict", conflict_id, obj),
                 )
             raise ExtractionError(
                 f"{alternative_path} must contain at least two distinct values"
@@ -1946,7 +2124,7 @@ class ExtractionService:
         item_id = None
         source_ids: tuple[str, ...] = (material.id,)
         if isinstance(value, dict):
-            for field in ("id", "claim_id", "conflict_id", "relation_id"):
+            for field in ("id", "fact_id", "claim_id", "conflict_id", "relation_id"):
                 candidate = value.get(field)
                 if isinstance(candidate, str) and candidate.strip():
                     item_id = candidate
@@ -1964,6 +2142,7 @@ class ExtractionService:
             kind,
             item_id,
             source_ids,
+            _candidate_payload_snapshot(kind, item_id, value),
         )
 
     @staticmethod
@@ -1995,6 +2174,7 @@ class ExtractionService:
             kind,
             item_id,
             source_ids,
+            _candidate_payload_snapshot(kind, item_id, value),
         )
 
     @staticmethod

@@ -10,6 +10,7 @@ from pathlib import Path
 
 from prism.cli import (
     build_parser,
+    handle_adjudication_history,
     handle_ingest,
     handle_search,
     handle_state,
@@ -410,3 +411,186 @@ def test_bind_material_requires_explicit_material_and_case_ids():
     assert status == 0 and err == ""
     assert api.bound == [("mat-review", "case-1")]
     assert json.loads(out)["case_id"] == "case-1"
+
+
+class AdjudicationFakeAPI(FakeAPI):
+    def __init__(self, records=None):
+        super().__init__()
+        self.records = records if records is not None else []
+
+    def adjudication_history(self, material_id=None):
+        self.calls.append(("adjudication_history", (material_id,), {}))
+        return [
+            {key: value for key, value in record.items()}
+            for record in self.records
+            if material_id is None or record["material_id"] == material_id
+        ]
+
+
+def test_build_parser_exposes_adjudication_history_subcommand():
+    parser = build_parser()
+    listed = parser.parse_args(["adjudication-history"])
+    assert listed.handler is handle_adjudication_history
+    assert listed.material_id is None
+    scoped = parser.parse_args(["adjudication-history", "mat-1"])
+    assert scoped.handler is handle_adjudication_history
+    assert scoped.material_id == "mat-1"
+
+
+def test_adjudication_history_delegates_and_prints_stable_json():
+    api = AdjudicationFakeAPI(
+        records=[
+            {
+                "decision_id": "d-1",
+                "material_id": "mat-1",
+                "decision": "rejected",
+                "reason": "unsupported",
+                "decided_at": "2026-09-01T09:30:00+00:00",
+            }
+        ]
+    )
+    status, out, err = run_cli(["adjudication-history", "mat-1"], api)
+    assert status == 0 and err == ""
+    assert api.calls == [
+        ("adjudication_history", ("mat-1",), {}),
+    ]
+    assert json.loads(out) == [
+        {
+            "decision_id": "d-1",
+            "material_id": "mat-1",
+            "decision": "rejected",
+            "reason": "unsupported",
+            "decided_at": "2026-09-01T09:30:00+00:00",
+        }
+    ]
+
+
+def test_adjudication_history_without_filter_lists_every_record():
+    api = AdjudicationFakeAPI(
+        records=[
+            {
+                "decision_id": "d-1",
+                "material_id": "mat-1",
+                "decision": "accepted",
+                "reason": "ok",
+                "decided_at": "2026-09-01T09:30:00+00:00",
+            },
+            {
+                "decision_id": "d-2",
+                "material_id": "mat-2",
+                "decision": "rejected",
+                "reason": "no",
+                "decided_at": "2026-09-01T09:31:00+00:00",
+            },
+        ]
+    )
+    status, out, _ = run_cli(["adjudication-history"], api)
+    assert status == 0
+    assert api.calls == [("adjudication_history", (None,), {})]
+    assert len(json.loads(out)) == 2
+
+
+def test_adjudication_history_displays_batch_failure_records():
+    """A batch-level failure record (candidate_kind='batch') is displayed as
+    audit text, never disguised as a candidate decision."""
+    api = AdjudicationFakeAPI(
+        records=[
+            {
+                "decision_id": "d-batch-1",
+                "material_id": "mat-1",
+                "candidate_kind": "batch",
+                "candidate_id": "adjudication_batch",
+                "decision": "adjudication_failed",
+                "reason": (
+                    "unknown_decision_fields at decisions[0]: decision "
+                    "object contains fields outside the allowed schema"
+                ),
+                "revalidation_outcome": "adjudication_failed",
+                "decided_at": "2026-09-01T09:30:00+00:00",
+            }
+        ]
+    )
+    status, out, err = run_cli(["adjudication-history", "mat-1"], api)
+    assert status == 0 and err == ""
+    rendered = json.loads(out)
+    assert len(rendered) == 1
+    assert rendered[0]["candidate_kind"] == "batch"
+    assert rendered[0]["decision"] == "adjudication_failed"
+    assert rendered[0]["revalidation_outcome"] == "adjudication_failed"
+    assert "unknown_decision_fields" in rendered[0]["reason"]
+
+
+def test_adjudication_history_cli_json_renders_real_batch_failure_records(
+    tmp_path,
+):
+    """CLI JSON over a real ledger restart read-back: the batch-failure
+    record's decision stays the AdjudicationDecision enum ADJUDICATION_FAILED
+    (with .value) and renders as the stable 'adjudication_failed' string."""
+    from prism.adjudication import (
+        AdjudicationBatchFailure,
+        AdjudicationDecision,
+        AdjudicationLedger,
+        AdjudicationService,
+    )
+    from prism.domain import EvidenceLocator, EvolutionNode, Material
+    from prism.extraction import ExtractionResult
+
+    now = datetime(2026, 9, 1, 9, 0, tzinfo=timezone.utc)
+    material = Material("mat-1", "t", "s", now, now, "news", "A quote")
+    evidence = EvidenceLocator("mat-1", "corpus/a.md", paragraph=1, quote="A quote")
+    node = EvolutionNode(
+        "n1", "case-x", "publication", now, "A quote", ("mat-1",),
+        evidence=(evidence,), valid_at=now, observed_at=now,
+        provenance_type="source_explicit", evidence_role="primary_observation",
+    )
+    extraction = ExtractionResult(nodes=(node,))
+
+    class _BadRouter:
+        async def complete(self, role, prompt):
+            return type("C", (), {"text": '{"decisions":[{"candidate_kind":"node",'
+                                          '"candidate_id":"n1","decision":"accepted",'
+                                          '"reason":"ok","extra":1}]}'})()
+
+    db_path = tmp_path / "adjudication.db"
+    service = AdjudicationService(_BadRouter(), ledger=AdjudicationLedger(db_path))
+    try:
+        asyncio.run(service.adjudicate(material, extraction))
+    except AdjudicationBatchFailure:
+        pass
+    else:
+        raise AssertionError("the malformed batch must raise a batch failure")
+
+    class _LedgerAPI(FakeAPI):
+        def __init__(self, records):
+            super().__init__()
+            self.records = tuple(records)
+
+        def adjudication_history(self, material_id=None):
+            self.calls.append(("adjudication_history", (material_id,), {}))
+            if material_id is None:
+                return self.records
+            return tuple(
+                record
+                for record in self.records
+                if record.material_id == material_id
+            )
+
+    # Restart read-back: the records the CLI renders come from the durable
+    # SQLite file, so decision must be the enum there too.
+    records = AdjudicationLedger(db_path).entries("mat-1")
+    assert len(records) == 1
+    batch = records[0]
+    assert batch.candidate_kind == "batch"
+    assert isinstance(batch.decision, AdjudicationDecision)
+    assert batch.decision is AdjudicationDecision.ADJUDICATION_FAILED
+    assert batch.decision.value == "adjudication_failed"
+
+    status, out, err = run_cli(
+        ["adjudication-history", "mat-1"], _LedgerAPI(records)
+    )
+    assert status == 0 and err == ""
+    rendered = json.loads(out)
+    assert len(rendered) == 1
+    assert rendered[0]["candidate_kind"] == "batch"
+    assert rendered[0]["decision"] == "adjudication_failed"
+    assert rendered[0]["revalidation_outcome"] == "adjudication_failed"

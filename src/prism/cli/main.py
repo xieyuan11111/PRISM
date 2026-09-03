@@ -68,6 +68,8 @@ class PrismAPIProtocol(Protocol):
 
     async def execute_research(self, plan: object, *, process: bool = True) -> object: ...
 
+    def adjudication_history(self, material_id: str | None = None) -> object: ...
+
 
 class _ParserExit(Exception):
     def __init__(self, status: int, message: str) -> None:
@@ -361,6 +363,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     report.set_defaults(handler=handle_report)
 
+    adjudication = commands.add_parser(
+        "adjudication-history", help="Read LLM automatic-adjudication audit records."
+    )
+    adjudication.add_argument("material_id", nargs="?", type=_nonempty, metavar="MATERIAL_ID")
+    adjudication.set_defaults(handler=handle_adjudication_history)
+
     fetch = commands.add_parser(
         "fetch", help="Fetch one whitelisted public source URL."
     )
@@ -507,6 +515,11 @@ async def handle_report(args: argparse.Namespace, api: PrismAPIProtocol) -> obje
     return await _await_api_call(
         api.report_case(args.case_id, args.as_of, use_llm=not args.no_llm)
     )
+
+
+async def handle_adjudication_history(args: argparse.Namespace, api: PrismAPIProtocol) -> object:
+    result = api.adjudication_history(args.material_id)
+    return await _await_api_call(result) if inspect.isawaitable(result) else result
 
 
 def _resolve_url_source(value: str) -> list[str]:
@@ -746,6 +759,7 @@ __all__ = [
     "handle_research",
     "handle_ingest",
     "handle_report",
+    "handle_adjudication_history",
     "handle_search",
     "handle_state",
     "handle_timeline",

@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Mapping
 from dataclasses import MISSING, dataclass, fields, is_dataclass
 from datetime import datetime, timezone
 from types import NoneType, UnionType
@@ -113,6 +114,7 @@ _BACKWARD_DEFAULT_FIELDS = frozenset(
         ("ExtractionConflict", "provenance_type"),
         ("ExtractionConflict", "evidence_role"),
         ("ExtractionConflict", "cited_source_ref"),
+        ("ExtractionEvidenceGap", "candidate_payload"),
     }
 )
 
@@ -133,6 +135,10 @@ def _encode(value: Any) -> Any:
         }
     if isinstance(value, datetime):
         return value.isoformat()
+    if isinstance(value, Mapping):
+        # Candidate payloads on evidence gaps are exposed as read-only
+        # mapping proxies; the ledger stores the plain JSON form.
+        return {str(name): _encode(item) for name, item in value.items()}
     if isinstance(value, (list, tuple)):
         return [_encode(item) for item in value]
     if value is None or isinstance(value, (str, int, float, bool)):
@@ -201,6 +207,13 @@ def _decode(hint: Any, value: Any, path: str) -> Any:
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise TypeError(f"{path} must be a number")
         return float(value)
+    if origin is Mapping:
+        # Evidence-gap candidate payloads: plain JSON objects decoded
+        # verbatim; the gap model revalidates JSON-safety and re-freezes the
+        # mapping when the extraction is reconstructed.
+        if not isinstance(value, dict):
+            raise TypeError(f"{path} must be a JSON object")
+        return value
     if is_dataclass(hint):
         if not isinstance(value, dict):
             raise TypeError(f"{path} must be a JSON object")

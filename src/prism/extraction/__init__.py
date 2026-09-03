@@ -2,6 +2,8 @@
 
 from .service import (
     ACCUMULATION_STATUSES,
+    GAP_PAYLOAD_EVIDENCE_FIELDS,
+    GAP_PAYLOAD_FIELDS,
     ExtractionConflict,
     ExtractionError,
     ExtractionEvidenceGap,
@@ -13,6 +15,8 @@ from .service import (
 
 __all__ = [
     "ACCUMULATION_STATUSES",
+    "GAP_PAYLOAD_EVIDENCE_FIELDS",
+    "GAP_PAYLOAD_FIELDS",
     "ExtractionConflict",
     "ExtractionError",
     "ExtractionEvidenceGap",

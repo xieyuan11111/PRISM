@@ -599,6 +599,7 @@ def _render_markdown(
     lines.append(f"- Case type: {analysis.case_type or 'unknown'}")
     lines.append(f"- Recorded status: {analysis.case_status or 'unknown'}")
     lines.append(f"- As of: {analysis.as_of.isoformat()}")
+    lines.append("- LLM automatic adjudication: candidate decisions are audit records, not facts")
     lines.append("")
 
     lines.append("## Executive Summary")

@@ -2,12 +2,14 @@ import asyncio
 import json
 from dataclasses import FrozenInstanceError
 from datetime import datetime, timezone
+from types import MappingProxyType
 
 import pytest
 
 from prism.domain import Claim, EvolutionCase, EvolutionNode, Material, TemporalFact
 from prism.extraction import (
     ExtractionError,
+    ExtractionEvidenceGap,
     ExtractionEvidenceMatch,
     ExtractionResult,
     ExtractionService,
@@ -418,3 +420,45 @@ def test_evidence_match_records_are_validated_and_default_empty():
         )
     with pytest.raises(ValueError, match="path"):
         ExtractionEvidenceMatch(" ", "material-1", "exact")
+
+
+def test_evidence_gap_payload_is_optional_frozen_and_positional_compatible():
+    # Legacy positional constructors keep working and default the payload.
+    gap = ExtractionEvidenceGap(
+        "evidence_location_failed", "not found", "node", "n1", ("material-1",)
+    )
+    assert gap.candidate_payload is None
+    # The payload is exposed as an immutable mapping proxy and never
+    # aliases the caller's dict.
+    payload = {
+        "id": "n1",
+        "summary": "x",
+        "evidence": [{"quote": "q", "page": None}],
+    }
+    gap = ExtractionEvidenceGap(
+        "candidate_validation_failed", "bad", "node", "n1", ("material-1",), payload
+    )
+    assert isinstance(gap.candidate_payload, MappingProxyType)
+    payload["summary"] = "mutated after construction"
+    assert gap.candidate_payload["summary"] == "x"
+    with pytest.raises(FrozenInstanceError):
+        gap.candidate_payload = None  # type: ignore[misc]
+    with pytest.raises(TypeError):
+        gap.candidate_payload["summary"] = "changed"
+
+
+def test_evidence_gap_payload_must_be_a_json_safe_mapping():
+    with pytest.raises(TypeError, match="mapping"):
+        ExtractionEvidenceGap("t", "d", candidate_payload=["not-a-mapping"])
+    with pytest.raises(ValueError, match="JSON"):
+        ExtractionEvidenceGap(
+            "t", "d", candidate_payload={"at": datetime.now(timezone.utc)}
+        )
+    with pytest.raises(ValueError, match="corpus_path"):
+        ExtractionEvidenceGap(
+            "t",
+            "d",
+            candidate_payload={
+                "evidence": [{"corpus_path": "C:\\secret\\file.md", "quote": "q"}]
+            },
+        )

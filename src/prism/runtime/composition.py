@@ -12,6 +12,7 @@ from typing import Any
 
 from prism.api import PrismAPI
 from prism.analyzer import AnalyzerService
+from prism.adjudication import AdjudicationLedger, AdjudicationService
 from prism.cases import CaseBundleMerger, CaseService
 from prism.cases.ledger import CaseExtractionLedger
 from prism.config import GraphitiConfig, PathConfig, PrismConfig
@@ -308,6 +309,7 @@ class PrismRuntime:
     # the shared local SQLite file, hydrated into the pipeline at startup);
     # closed by :meth:`close`.  None on runtimes that injected no pipeline.
     pipeline_outcome_ledger: PipelineOutcomeLedger | None = None
+    adjudicator: AdjudicationService | None = None
     _closed: bool = field(default=False, init=False, repr=False)
 
     @property
@@ -388,6 +390,10 @@ class PrismRuntime:
                                 self.case_ledger.close()
                             if self.pipeline_outcome_ledger is not None:
                                 self.pipeline_outcome_ledger.close()
+                            if self.adjudicator is not None:
+                                ledger = getattr(self.adjudicator, "_ledger", None)
+                                if ledger is not None and callable(getattr(ledger, "close", None)):
+                                    ledger.close()
 
     async def __aenter__(self) -> PrismRuntime:
         return self
@@ -504,6 +510,13 @@ async def create_runtime(
         ledger=case_ledger, merger=CaseBundleMerger(), graph_service=graph
     )
     pipeline_outcome_ledger = PipelineOutcomeLedger(paths)
+    adjudicator = None
+    if llm_router is not None and "adjudicate" in config.llm.task_roles:
+        adjudicator = AdjudicationService(
+            llm_router,
+            ledger=AdjudicationLedger(paths),
+            extraction_service=extraction if callable(getattr(extraction, "_parse_payload", None)) else None,
+        )
     pipeline = PipelineService(
         indexer=store,
         extraction_service=extraction,
@@ -511,6 +524,7 @@ async def create_runtime(
         material_resolver=resolver,
         case_service=case_service,
         outcome_store=pipeline_outcome_ledger,
+        adjudicator=adjudicator,
     )
     research_planner = ResearchPlanner(config, router=llm_router)
 
@@ -592,6 +606,7 @@ async def create_runtime(
         extraction_service=extraction,
         case_service=case_service,
         material_resolver=resolver,
+        adjudicator=adjudicator,
     )
     if effective_provider is not None:
         research_executor = ResearchExecutor(
@@ -623,6 +638,7 @@ async def create_runtime(
         case_ledger=case_ledger,
         pipeline_subscription_id=pipeline_subscription_id,
         pipeline_outcome_ledger=pipeline_outcome_ledger,
+        adjudicator=adjudicator,
     )
 
 

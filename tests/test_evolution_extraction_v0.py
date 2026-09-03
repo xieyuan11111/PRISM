@@ -2131,3 +2131,206 @@ def test_pipeline_falls_back_to_legacy_extract_method():
     )
     assert legacy.calls == [result.material]
     assert pipeline_result.stages[2].status == "skipped"
+
+
+# --- Gap candidate payload retention ----------------------------------------
+#
+# The adjudication layer must be able to re-review candidates that the
+# deterministic layer demoted to evidence gaps.  Candidate-level gaps
+# therefore retain a schema-filtered snapshot of the original model
+# candidate (evidence locators stripped of the internal ``corpus_path``),
+# so a later adjudicator can repair and strictly revalidate it.
+
+_NODE_GAP_FIELDS = frozenset(
+    {
+        "id", "case_id", "node_type", "assertion_type", "happened_at",
+        "valid_at", "observed_at", "summary", "source_ids", "claim_ids",
+        "provenance_type", "evidence", "evidence_role",
+    }
+)
+_LOCATOR_FIELDS = frozenset({"source_id", "quote", "paragraph", "page"})
+
+
+def _assert_safe_locators(payload):
+    assert "corpus_path" not in json.dumps(dict(payload))
+    for item in payload["evidence"]:
+        assert set(item) <= _LOCATOR_FIELDS
+
+
+def test_validation_gap_retains_a_filtered_candidate_payload():
+    bad = payload()
+    bad["nodes"][1]["assertion_type"] = "claim"
+
+    result = run(
+        service(bad)[0].extract_material(
+            material(), corpus_path="corpus/2026-03/disclosure.md"
+        )
+    )
+
+    gap = next(gap for gap in result.evidence_gaps if gap.item_id == "implementation")
+    assert gap.gap_type == "candidate_validation_failed"
+    saved = gap.candidate_payload
+    assert saved is not None
+    # The raw candidate is retained (the failing raw value stays visible to
+    # the adjudicator) but only its strict-schema fields survive.
+    assert saved["id"] == "implementation"
+    assert saved["assertion_type"] == "claim"
+    assert set(saved) <= _NODE_GAP_FIELDS
+    assert saved["happened_at"] == "2026-02-15T00:00:00+00:00"
+    assert saved["evidence"][0]["quote"] in BODY
+    _assert_safe_locators(saved)
+
+
+def test_binding_gap_retains_the_raw_candidate_for_adjudication():
+    bad = payload()
+    bad["nodes"][1]["evidence"][0]["quote"] = "words absent from the material"
+
+    result = run(
+        service(bad)[0].extract_material(
+            material(), corpus_path="corpus/2026-03/disclosure.md"
+        )
+    )
+
+    gap = result.evidence_gaps[0]
+    assert gap.gap_type == "evidence_location_failed"
+    assert gap.item_id == "implementation"
+    saved = gap.candidate_payload
+    assert saved is not None
+    assert saved["id"] == "implementation"
+    assert set(saved) <= _NODE_GAP_FIELDS
+    # The unverifiable quote is kept in the snapshot: the adjudicator sees
+    # exactly what the deterministic layer could not bind.
+    assert saved["evidence"][0]["quote"] == "words absent from the material"
+    _assert_safe_locators(saved)
+
+
+def test_review_context_gap_retains_the_parsed_candidate_payload():
+    background = "Researchers have long discussed this intervention."
+    review = material(type="academic", content=background)
+    extracted = payload()
+    extracted["material_role"] = "review"
+    extracted["case"]["case_type"] = "academic_discourse"
+    extracted["case"]["start_at"] = "2020-01-01T00:00:00+00:00"
+    extracted["case"]["node_ids"] = []
+    extracted["nodes"] = []
+    extracted["claims"] = []
+    extracted["temporal_facts"] = [
+        {
+            "fact_id": "generic-background",
+            "subject": "Researchers",
+            "predicate": "discussed",
+            "object": "the intervention",
+            "assertion_type": "fact",
+            "valid_at": "2020-01-01T00:00:00+00:00",
+            "invalid_at": None,
+            "observed_at": PUBLISHED.isoformat(),
+            "source_ids": ["material-evolution"],
+            "confidence": 0.4,
+            "provenance_type": "context_only",
+            "evidence_role": "context_only",
+            "evidence": evidence(background, 1),
+        }
+    ]
+
+    result = run(
+        service(extracted)[0].extract_material(
+            review, corpus_path="corpus/2026-03/context.md"
+        )
+    )
+
+    gap = next(
+        gap for gap in result.evidence_gaps if gap.item_id == "generic-background"
+    )
+    assert gap.gap_type == "review_context"
+    saved = gap.candidate_payload
+    assert saved is not None
+    # The parsed candidate snapshot is plain-JSON: datetimes became ISO
+    # strings and the internal locator corpus_path never leaks.
+    assert saved["fact_id"] == "generic-background"
+    assert saved["evidence_role"] == "context_only"
+    assert isinstance(saved["valid_at"], str)
+    assert set(saved["evidence"][0]) == _LOCATOR_FIELDS
+    assert "corpus_path" not in json.dumps(dict(saved))
+
+
+def test_unusable_case_sweep_gaps_retain_candidate_payloads():
+    degraded = payload()
+    degraded["case"]["case_id"] = ""
+
+    result = run(
+        service(degraded)[0].extract_material(
+            material(), corpus_path="corpus/2026-03/disclosure.md"
+        )
+    )
+
+    identity_key = {
+        "node": "id",
+        "temporal_fact": "fact_id",
+        "claim": "claim_id",
+        "conflict": "conflict_id",
+        "relation": "relation_id",
+    }
+    for gap in result.evidence_gaps:
+        if gap.gap_type != "unusable_case" or gap.item_id is None:
+            continue
+        assert gap.candidate_payload is not None
+        assert gap.candidate_payload[identity_key[gap.item_kind]] == gap.item_id
+        assert "corpus_path" not in json.dumps(dict(gap.candidate_payload))
+    node_gap = next(gap for gap in result.evidence_gaps if gap.item_id == "proposal")
+    assert node_gap.candidate_payload["assertion_type"] == "fact"
+
+
+def test_unknown_candidate_fields_still_fail_instead_of_becoming_payloads():
+    smuggled = payload()
+    smuggled["nodes"][1]["api_key"] = "must-not-become-a-gap-payload"
+
+    with pytest.raises(ExtractionError, match="unexpected field"):
+        run(
+            service(smuggled)[0].extract_material(
+                material(), corpus_path="corpus/2026-03/disclosure.md"
+            )
+        )
+
+
+def test_extracted_payload_gap_can_be_revived_by_the_adjudicator():
+    """Input-closure integration: a strict extraction that demoted one node
+    to a payload-bearing gap is directly adjudicable; a corrected revision
+    passes the same strict parser and re-enters the graph collections."""
+    from prism.adjudication import AdjudicationService
+
+    bad = payload()
+    bad["nodes"][1]["assertion_type"] = "claim"
+    extractor, _ = service(bad)
+    extraction = run(
+        extractor.extract_material(
+            material(), corpus_path="corpus/2026-03/disclosure.md"
+        )
+    )
+    gap = next(
+        gap for gap in extraction.evidence_gaps if gap.item_id == "implementation"
+    )
+    assert gap.gap_type == "candidate_validation_failed"
+    assert gap.candidate_payload is not None
+    assert gap.candidate_payload["assertion_type"] == "claim"
+
+    text = json.dumps({"decisions": [
+        {"candidate_kind": "node", "candidate_id": "implementation",
+         "decision": "revised", "reason": "assertion corrected",
+         "revised_payload": {"assertion_type": "fact"}},
+    ]})
+    adjudicator = AdjudicationService(FakeRouter(text), extraction_service=extractor)
+    adjudicated = run(adjudicator.adjudicate(material(), extraction))
+
+    assert [node.id for node in adjudicated.extraction.nodes] == [
+        "proposal",
+        "implementation",
+    ]
+    assert adjudicated.extraction.case.node_ids == ("proposal", "implementation")
+    assert not any(
+        gap.item_id == "implementation"
+        for gap in adjudicated.extraction.evidence_gaps
+    )
+    assert adjudicated.audits[0].revalidation_outcome == "revalidated"
+    # The original extraction never mutated.
+    assert [node.id for node in extraction.nodes] == ["proposal"]
+    assert extraction.evidence_gaps[0].candidate_payload is not None
