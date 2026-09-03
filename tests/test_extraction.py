@@ -285,3 +285,49 @@ def test_unsupported_types_enums_and_naive_timestamps_are_rejected(mutate):
 
     with pytest.raises(ExtractionError):
         run_extract(payload)
+
+
+# --- Real-LLM output compatibility (narrow recovery, audited) -------------
+
+
+def test_missing_warnings_and_scalar_based_on_are_recovered_with_audit():
+    payload = valid_payload()
+    del payload["warnings"]
+    payload["claims"][0]["based_on"] = "material-1"
+
+    result, _ = run_extract(payload)
+
+    assert result.claims[0].based_on == ("material-1",)
+    assert any("warnings" in warning for warning in result.warnings)
+    assert any(
+        "based_on" in warning and "normalized" in warning
+        for warning in result.warnings
+    )
+
+
+def test_legacy_top_level_evidence_field_is_ignored_with_warning():
+    payload = valid_payload()
+    payload["evidence"] = [
+        {
+            "source_id": "material-1",
+            "quote": "The agency published the revised policy.",
+            "paragraph": 1,
+            "page": None,
+        }
+    ]
+
+    result, _ = run_extract(payload)
+
+    assert result.nodes[0].source_ids == ("material-1",)
+    assert any("top-level evidence" in warning for warning in result.warnings)
+
+
+def test_legacy_unusable_case_id_records_gap_and_keeps_tag_bound_nodes():
+    payload = valid_payload()
+    payload["case"]["case_id"] = ""
+
+    result, _ = run_extract(payload)
+
+    assert result.case is None
+    assert result.nodes[0].id == "node-1"
+    assert any(gap.gap_type == "unusable_case" for gap in result.evidence_gaps)

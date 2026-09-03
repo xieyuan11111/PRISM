@@ -273,6 +273,142 @@ def test_source_conflict_is_preserved_with_verified_evidence():
 
     assert result.conflicts[0].alternatives == ("increased", "decreased")
     assert result.conflicts[0].evidence[0].paragraph == 4
+    prompt = service(conflicted)[0]._prompt(material(), strict=True)
+    assert "at least two non-empty strings" in prompt
+
+
+def test_blank_conflict_alternatives_are_filtered_without_losing_valid_conflict():
+    conflicted = payload()
+    conflicted["conflicts"] = [
+        {
+            "conflict_id": "adoption-direction",
+            "subject": "Rule adoption",
+            "predicate": "changed",
+            "alternatives": ["", "increased", "   ", "decreased"],
+            "source_ids": ["material-evolution"],
+            "evidence": evidence(
+                "The ministry said adoption increased; researchers said adoption decreased.",
+                4,
+            ),
+        }
+    ]
+
+    result = run(
+        service(conflicted)[0].extract_material(
+            material(), corpus_path="corpus/2026-03/disclosure.md"
+        )
+    )
+
+    assert len(result.conflicts) == 1
+    assert result.conflicts[0].alternatives == ("increased", "decreased")
+    assert result.conflicts[0].source_ids == ("material-evolution",)
+    assert result.conflicts[0].evidence[0].paragraph == 4
+    assert any(
+        "conflicts[0].alternatives" in warning and "filtered" in warning
+        for warning in result.warnings
+    )
+
+
+def test_conflict_with_one_valid_alternative_becomes_an_auditable_gap():
+    conflicted = payload()
+    conflicted["conflicts"] = [
+        {
+            "conflict_id": "adoption-direction",
+            "subject": "Rule adoption",
+            "predicate": "changed",
+            "alternatives": ["", "increased", "   "],
+            "source_ids": ["material-evolution"],
+            "evidence": evidence(
+                "The ministry said adoption increased; researchers said adoption decreased.",
+                4,
+            ),
+        }
+    ]
+
+    result = run(
+        service(conflicted)[0].extract_material(
+            material(), corpus_path="corpus/2026-03/disclosure.md"
+        )
+    )
+
+    assert result.conflicts == ()
+    assert [node.id for node in result.nodes] == ["proposal", "implementation"]
+    gaps = [gap for gap in result.evidence_gaps if gap.item_kind == "conflict"]
+    assert len(gaps) == 1
+    assert gaps[0].gap_type == "insufficient_conflict_alternatives"
+    assert gaps[0].item_id == "adoption-direction"
+    assert gaps[0].source_ids == ("material-evolution",)
+    assert "at least two distinct non-empty alternatives" in gaps[0].detail
+
+
+@pytest.mark.parametrize(
+    "alternatives",
+    [
+        ["increased"],
+        ["increased", "increased"],
+        ["increased", None],
+    ],
+)
+def test_conflict_alternative_recovery_does_not_relax_other_shape_rules(
+    alternatives,
+):
+    conflicted = payload()
+    conflicted["conflicts"] = [
+        {
+            "conflict_id": "adoption-direction",
+            "subject": "Rule adoption",
+            "predicate": "changed",
+            "alternatives": alternatives,
+            "source_ids": ["material-evolution"],
+            "evidence": evidence(
+                "The ministry said adoption increased; researchers said adoption decreased.",
+                4,
+            ),
+        }
+    ]
+
+    with pytest.raises(ExtractionError, match="alternatives"):
+        run(
+            service(conflicted)[0].extract_material(
+                material(), corpus_path="corpus/2026-03/disclosure.md"
+            )
+        )
+
+
+@pytest.mark.parametrize("invalid_boundary", ["source", "evidence"])
+def test_conflict_alternative_recovery_still_enforces_evidence_boundaries(
+    invalid_boundary,
+):
+    conflicted = payload()
+    candidate = {
+        "conflict_id": "adoption-direction",
+        "subject": "Rule adoption",
+        "predicate": "changed",
+        "alternatives": ["", "increased"],
+        "source_ids": ["material-evolution"],
+        "evidence": evidence(
+            "The ministry said adoption increased; researchers said adoption decreased.",
+            4,
+        ),
+    }
+    if invalid_boundary == "source":
+        candidate["source_ids"] = ["material-other"]
+    else:
+        candidate["evidence"][0]["quote"] = "words absent from the material"
+    conflicted["conflicts"] = [candidate]
+
+    result = run(
+        service(conflicted)[0].extract_material(
+            material(), corpus_path="corpus/2026-03/disclosure.md"
+        )
+    )
+
+    assert result.conflicts == ()
+    conflict_gaps = [
+        gap for gap in result.evidence_gaps if gap.item_kind == "conflict"
+    ]
+    assert len(conflict_gaps) == 1
+    assert conflict_gaps[0].gap_type == "evidence_location_failed"
 
 
 @pytest.mark.parametrize(
@@ -283,17 +419,236 @@ def test_source_conflict_is_preserved_with_verified_evidence():
         ),
         lambda value: value["nodes"][0].update({"node_type": "policy_change"}),
         lambda value: value["nodes"][0].update({"source_ids": "material-evolution"}),
-        lambda value: value["nodes"][0].update({"source_ids": ["material-other"]}),
         lambda value: value["claims"][0].update({"based_on": []}),
-        lambda value: value["claims"][0].update(
-            {"evidence": [{"source_id": "material-other", "quote": "Analysts said the rule may expand next year.", "paragraph": 3, "page": None}]}
-        ),
         lambda value: value["temporal_facts"][0].update(
             {"assertion_type": "prediction"}
         ),
     ],
 )
 def test_strict_schema_rejects_future_illegal_missing_source_and_array_errors(mutation):
+    invalid = payload()
+    mutation(invalid)
+    with pytest.raises(ExtractionError):
+        run(
+            service(invalid)[0].extract_material(
+                material(), corpus_path="corpus/2026-03/disclosure.md"
+            )
+        )
+
+
+# --- Real-LLM output compatibility (narrow recovery, audited) ---------------
+#
+# The recoveries below never fabricate evidence: each deviation is answered
+# with a safe default, a dropped candidate, or an ignored field, and every
+# recovery leaves an explicit warning or evidence gap in the result.
+
+
+def test_missing_warnings_field_defaults_to_empty_with_audit_notice():
+    quiet = payload()
+    del quiet["warnings"]
+    result = run(
+        service(quiet)[0].extract_material(
+            material(), corpus_path="corpus/2026-03/disclosure.md"
+        )
+    )
+
+    assert [node.id for node in result.nodes] == ["proposal", "implementation"]
+    assert result.claims[0].claim_id == "forecast"
+    assert len(result.warnings) == 1
+    assert "warnings" in result.warnings[0]
+
+
+def test_scalar_based_on_string_is_normalized_with_audit_notice():
+    normalized = payload()
+    normalized["claims"][0]["based_on"] = "material-evolution"
+    result = run(
+        service(normalized)[0].extract_material(
+            material(), corpus_path="corpus/2026-03/disclosure.md"
+        )
+    )
+
+    assert result.claims[0].based_on == ("material-evolution",)
+    assert result.claims[0].evidence[0].quote in BODY
+    assert any(
+        "based_on" in warning and "normalized" in warning
+        for warning in result.warnings
+    )
+
+
+def test_scalar_based_on_referencing_other_material_drops_only_that_claim():
+    foreign = payload()
+    foreign["claims"][0]["based_on"] = "material-other"
+    result = run(
+        service(foreign)[0].extract_material(
+            material(), corpus_path="corpus/2026-03/disclosure.md"
+        )
+    )
+
+    assert result.claims == ()
+    assert [node.id for node in result.nodes] == ["proposal", "implementation"]
+    gap = result.evidence_gaps[0]
+    assert gap.item_kind == "claim" and gap.item_id == "forecast"
+    assert "may reference only input material" in gap.detail
+
+
+def test_foreign_based_on_reference_drops_only_that_claim():
+    foreign = payload()
+    foreign["claims"][0]["based_on"] = ["material-other"]
+    result = run(
+        service(foreign)[0].extract_material(
+            material(), corpus_path="corpus/2026-03/disclosure.md"
+        )
+    )
+
+    assert result.claims == ()
+    assert [node.id for node in result.nodes] == ["proposal", "implementation"]
+    assert result.temporal_facts[0].object == "implemented"
+    gap = result.evidence_gaps[0]
+    assert gap.item_kind == "claim" and gap.item_id == "forecast"
+    assert "may reference only input material" in gap.detail
+
+
+def test_foreign_evidence_source_id_drops_only_that_claim():
+    foreign = payload()
+    foreign["claims"][0]["evidence"] = [
+        {
+            "source_id": "material-other",
+            "quote": "Analysts said the rule may expand next year.",
+            "paragraph": 3,
+            "page": None,
+        }
+    ]
+    result = run(
+        service(foreign)[0].extract_material(
+            material(), corpus_path="corpus/2026-03/disclosure.md"
+        )
+    )
+
+    assert result.claims == ()
+    assert [node.id for node in result.nodes] == ["proposal", "implementation"]
+    gap = result.evidence_gaps[0]
+    assert gap.item_kind == "claim" and gap.item_id == "forecast"
+    assert "material-other" in gap.detail
+
+
+def test_foreign_node_source_reference_drops_only_that_node():
+    foreign = payload()
+    foreign["nodes"][0]["source_ids"] = ["material-other"]
+    result = run(
+        service(foreign)[0].extract_material(
+            material(), corpus_path="corpus/2026-03/disclosure.md"
+        )
+    )
+
+    assert [node.id for node in result.nodes] == ["implementation"]
+    assert result.case.node_ids == ("implementation",)
+    assert result.claims[0].claim_id == "forecast"
+    gap = result.evidence_gaps[0]
+    assert gap.item_kind == "node" and gap.item_id == "proposal"
+    assert "may reference only input material" in gap.detail
+
+
+@pytest.mark.parametrize("case_id", ["", None])
+def test_unusable_case_id_degrades_to_no_case_with_candidate_gaps(case_id):
+    degraded = payload()
+    degraded["case"]["case_id"] = case_id
+    result = run(
+        service(degraded)[0].extract_material(
+            material(), corpus_path="corpus/2026-03/disclosure.md"
+        )
+    )
+
+    assert result.case is None
+    assert result.nodes == () and result.temporal_facts == ()
+    assert result.claims == () and result.conflicts == ()
+    kinds = {(gap.gap_type, gap.item_kind) for gap in result.evidence_gaps}
+    assert ("unusable_case", "node") in kinds
+    assert ("unusable_case", "temporal_fact") in kinds
+    assert ("unusable_case", "claim") in kinds
+    case_gaps = [gap for gap in result.evidence_gaps if gap.item_kind is None]
+    assert len(case_gaps) == 1
+    assert "case_id" in case_gaps[0].detail
+    # The dropped candidate ids stay auditable, and the result never claims
+    # the material lacked substantive evolution when it merely lacked a case.
+    assert {"proposal", "implementation", "forecast"} <= {
+        gap.item_id for gap in result.evidence_gaps
+    }
+    assert all(
+        gap.gap_type != "no_substantive_evolution" for gap in result.evidence_gaps
+    )
+
+
+def test_unusable_case_id_with_no_candidates_records_single_gap():
+    degraded = payload()
+    degraded["case"]["case_id"] = ""
+    degraded.update(nodes=[], temporal_facts=[], claims=[], conflicts=[])
+    result = run(
+        service(degraded)[0].extract_material(
+            material(), corpus_path="corpus/2026-03/disclosure.md"
+        )
+    )
+
+    assert result.case is None
+    assert len(result.evidence_gaps) == 1
+    assert result.evidence_gaps[0].gap_type == "unusable_case"
+
+
+def test_case_null_with_candidates_is_still_rejected():
+    contradictory = payload()
+    contradictory["case"] = None
+    with pytest.raises(ExtractionError, match="case must be non-null"):
+        run(
+            service(contradictory)[0].extract_material(
+                material(), corpus_path="corpus/2026-03/disclosure.md"
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    "hoisted",
+    [
+        [
+            {
+                "source_id": "material-evolution",
+                "quote": "On 2026-01-10, the ministry proposed the disclosure rule.",
+                "paragraph": 1,
+                "page": None,
+            }
+        ],
+        "material-evolution paragraph 1",
+    ],
+)
+def test_top_level_evidence_field_is_ignored_never_bound(hoisted):
+    payload_value = payload()
+    payload_value["evidence"] = hoisted
+    result = run(
+        service(payload_value)[0].extract_material(
+            material(), corpus_path="corpus/2026-03/disclosure.md"
+        )
+    )
+
+    assert [node.id for node in result.nodes] == ["proposal", "implementation"]
+    assert result.claims[0].claim_id == "forecast"
+    assert len(result.warnings) == 1
+    assert "top-level evidence" in result.warnings[0]
+    # Accepted locators still come only from per-candidate evidence fields.
+    assert result.nodes[0].evidence[0].paragraph == 1
+    assert all(
+        locator.quote in BODY
+        for node in result.nodes
+        for locator in node.evidence
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda value: value.update({"warnings": {"message": "not an array"}}),
+        lambda value: value["claims"][0].update({"based_on": ""}),
+        lambda value: value.update({"api_key": "untrusted"}),
+    ],
+)
+def test_compat_recovery_never_weakens_remaining_strict_validation(mutation):
     invalid = payload()
     mutation(invalid)
     with pytest.raises(ExtractionError):
