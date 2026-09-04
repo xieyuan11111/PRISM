@@ -124,6 +124,17 @@ def test_extract_calls_extract_role_and_maps_domain_objects_without_secret_leaka
         result.warnings = ()
 
 
+def test_provider_case_audit_metadata_is_ignored_with_warning():
+    payload = valid_payload()
+    payload["case"]["node_ids_verified"] = True
+
+    result, _ = run_extract(payload)
+
+    assert result.case is not None
+    assert result.case.node_ids == ("node-1",)
+    assert any("node_ids_verified" in warning for warning in result.warnings)
+
+
 def test_explicit_evidence_and_uncertainty_are_preserved():
     payload = valid_payload()
     payload["nodes"][0]["source_ids"] = ["source-a", "source-b"]

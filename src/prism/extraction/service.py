@@ -1027,8 +1027,16 @@ class ExtractionService:
             model_warnings = self._parse_warnings(raw_warnings)
 
         case_reason: str | None = None
+        case_payload = payload["case"]
+        if isinstance(case_payload, dict) and "node_ids_verified" in case_payload:
+            notices.append(
+                "case.node_ids_verified was ignored as provider audit metadata; "
+                "only case.node_ids is persisted"
+            )
+            case_payload = dict(case_payload)
+            case_payload.pop("node_ids_verified", None)
         try:
-            case = self._parse_case(payload["case"], material)
+            case = self._parse_case(case_payload, material)
         except _UnusableCaseError as error:
             # The model returned a case object whose case_id identifies no
             # case.  Rather than failing the whole material, no case is
