@@ -334,7 +334,7 @@ python -m pytest tests/test_graphiti_integration.py -v
 
 | 里程碑 | 已完成 | 尚未完成或未验收 |
 |---|---|---|
-| M0 基础闭环 | 领域模型、可移植配置、Markdown/PDF/OCR 摄入、raw 留存、SQLite/FTS5、自动管线、持久案例账本与离线测试 | 仓库测试使用合成 fixture；README 不据此宣称已经完成一套真实政策/新闻案例的完整语义验收 |
+| M0 基础能力 | 领域模型、可移植配置、Markdown/PDF/OCR 摄入、raw 留存、SQLite/FTS5、自动管线、持久案例账本与离线测试 | 需求基线中的真实单案例闭环尚无完整验收记录；仓库测试使用合成 fixture，README 不据此宣称已经完成真实政策/新闻案例的完整语义验收 |
 | M1 时序核心 | 时序事实/关系、事实失效与修订、冲突并存、历史截止点、双截止点比较、证据定位；合成数据的 Graphiti live round-trip 已通过 | 真实 LLM extraction、真实 entity/edge 质量、真实案例端到端重跑仍未验收 |
 | M2 自动辩论 | 3–4 个视角、同一 EvidenceBundle、陈述分类、单轮交叉质询、证据约束综合、SQLite 审计与两类真实 provider smoke | 多轮辩论、运行中用户中断、NiceGUI 辩论剧场仍未完成 |
 | M3 产品切片 | `snapshot`/`compare`、`--stage`/`--kind`、报告版本与 PDF、指定视角追问、材料/父辩论关联、NiceGUI 案例主页与 Plotly 时间线 | 辩论中的阶段重建、证据上传/浏览、模型设置、认证、远程暴露和完整多并行案例交互仍未完成 |
