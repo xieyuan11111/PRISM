@@ -514,7 +514,7 @@ subagent 应分别从制度目标、执行成本、产业利益、受影响群�
 
 ### M3：用户互动与报告
 
-- [ ] 用户可在讨论中追加材料；
+- [x] 用户可在讨论中追加材料（API/CLI `add-material --parent-debate-run`，自动更新材料、GTI 快照关联和报告版本；不自动重跑辩论）；
 - [x] 用户可指定历史时间点和阶段（API/CLI 查询级：`snapshot --as-of/--stage`、`compare --earlier/--later`；辩论进行中重建阶段属后续）；
 - [x] 用户可点名主体或 subagent 追问（API/CLI 单视角追问）；
 - [x] 支持报告版本化与 PDF 导出；

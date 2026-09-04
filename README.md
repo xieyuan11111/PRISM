@@ -284,6 +284,22 @@ hash. It is persisted separately with a parent link and is idempotent; a
 changed evidence snapshot is rejected rather than silently used. This is an
 API/CLI slice, not yet the NiceGUI debate theater.
 
+Appending evidence to an active discussion can also preserve its context:
+
+```console
+python -m prism.cli add-material INPUT.md \
+  --case-id CASE_ID \
+  --parent-debate-run PARENT_RUN_ID
+```
+
+PRISM validates the durable parent first, processes the material through the
+existing pipeline, then recomputes the GTI/analyzer evidence-bundle hash at
+the parent's cutoff without calling the debate LLM. The result exposes the
+prior/current hashes and whether the parent is stale; a changed snapshot is
+not silently reused and no debate is re-run automatically. A successful
+append creates the usual immutable `material_added` report version at that
+cutoff. See `docs/m3-material-debate-link.md`.
+
 ## M3 Report Versioning v0
 
 PRISM now has an API/CLI product base for multi-case operation. `cases` reads only

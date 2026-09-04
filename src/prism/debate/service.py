@@ -1268,6 +1268,24 @@ class DebateService:
         self._configured = _configured_profiles(profiles)
         self._clock = clock or (lambda: datetime.now(timezone.utc))
 
+    async def evidence_bundle_hash(self, case_id: str, as_of: datetime) -> str:
+        """Hash the current evidence bundle at ``as_of`` without any LLM call.
+
+        Uses exactly the analyzer projection and hashing the debate phases
+        use, so a caller can compare a recorded run's
+        ``evidence_bundle_hash`` against the present historical snapshot.
+        The router is never contacted: staleness detection is deterministic.
+        """
+
+        _require_text("case_id", case_id)
+        _require_aware("as_of", as_of)
+        analysis = await self._analyzer.analyze(case_id, as_of)
+        if not isinstance(analysis, EvolutionAnalysis):
+            raise TypeError("analyzer must return an EvolutionAnalysis")
+        if analysis.case_id != case_id:
+            raise ValueError("analyzer returned another case")
+        return _hash(_analysis_payload(analysis))
+
     async def follow_up(
         self,
         parent_run_id: str,

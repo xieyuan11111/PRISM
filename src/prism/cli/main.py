@@ -101,6 +101,7 @@ class PrismAPIProtocol(Protocol):
         metadata: dict[str, Any] | None = None,
         as_of: datetime | None = None,
         use_llm: bool = True,
+        parent_debate_run_id: str | None = None,
     ) -> object: ...
 
     async def rebuild_report(
@@ -580,6 +581,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--case-id", required=True, type=_nonempty, metavar="CASE_ID"
     )
     add_material.add_argument("--as-of", type=_aware_datetime, metavar="TIMESTAMP")
+    add_material.add_argument(
+        "--parent-debate-run",
+        dest="parent_debate_run",
+        required=False,
+        type=_nonempty,
+        metavar="RUN_ID",
+        help=(
+            "Link the append to this immutable parent debate run; --as-of "
+            "then defaults to the parent cutoff and must match it."
+        ),
+    )
     add_material.add_argument("--no-llm", action="store_true")
     add_material.set_defaults(handler=handle_add_material)
 
@@ -851,6 +863,18 @@ async def handle_add_material(
     args: argparse.Namespace, api: PrismAPIProtocol
 ) -> object:
     """Append one material and recompute the target case report."""
+    if args.parent_debate_run is None:
+        # The parent link is forwarded only when supplied, so older
+        # add_material implementations never receive an unknown keyword.
+        return await _await_api_call(
+            api.add_material(
+                args.source,
+                args.case_id,
+                args.metadata,
+                as_of=args.as_of,
+                use_llm=not args.no_llm,
+            )
+        )
     return await _await_api_call(
         api.add_material(
             args.source,
@@ -858,6 +882,7 @@ async def handle_add_material(
             args.metadata,
             as_of=args.as_of,
             use_llm=not args.no_llm,
+            parent_debate_run_id=args.parent_debate_run,
         )
     )
 

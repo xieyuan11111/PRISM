@@ -60,6 +60,48 @@ _INPUT_SUFFIXES = (".md", ".markdown", ".pdf")
 
 
 @dataclass(frozen=True, slots=True)
+class MaterialDebateLink:
+    """Immutable link between one appended material and a parent debate run.
+
+    ``prior_evidence_bundle_hash`` is the hash the parent debate recorded at
+    its cutoff; ``current_evidence_bundle_hash`` is the same bundle
+    recomputed at that cutoff after the material was processed — never
+    through an LLM call. ``affected`` says the evidence bundle at the cutoff
+    changed; ``stale`` says the parent debate no longer describes it, so the
+    caller may start an explicit new debate or named follow-up from
+    ``parent_run_id``/``as_of``. Nothing is rerun automatically and the
+    parent run stays immutable and readable.
+    """
+
+    parent_run_id: str
+    case_id: str
+    as_of: datetime
+    prior_evidence_bundle_hash: str
+    current_evidence_bundle_hash: str
+    affected: bool
+    stale: bool
+
+    def __post_init__(self) -> None:
+        for name in ("parent_run_id", "case_id"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{name} must be a non-empty string")
+        if not isinstance(self.as_of, datetime):
+            raise TypeError("as_of must be a datetime")
+        if self.as_of.tzinfo is None or self.as_of.utcoffset() is None:
+            raise ValueError("as_of must be timezone-aware")
+        for name in (
+            "prior_evidence_bundle_hash",
+            "current_evidence_bundle_hash",
+        ):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{name} must be a non-empty string")
+        if not isinstance(self.affected, bool) or not isinstance(self.stale, bool):
+            raise TypeError("affected and stale must be bools")
+
+
+@dataclass(frozen=True, slots=True)
 class ProcessMaterialResult:
     """The end-to-end outcome of processing one material automatically.
 
@@ -83,6 +125,7 @@ class ProcessMaterialResult:
     warnings: tuple[str, ...] = ()
     replayed: bool = False
     report_version: object | None = None
+    debate_link: MaterialDebateLink | None = None
 
 
 def _is_pathlike_input(source: object) -> bool:
@@ -176,6 +219,10 @@ class _DebateService(Protocol):
     async def follow_up(
         self, parent_run_id: str, question: str, perspective: str
     ) -> FollowUpResult: ...
+
+    async def evidence_bundle_hash(
+        self, case_id: str, as_of: datetime
+    ) -> str: ...
 
 
 class _ReportService(Protocol):
@@ -353,6 +400,7 @@ class PrismAPI:
         case_overview_service: _CaseOverviewService | None = None,
         report_version_service: _ReportVersionService | None = None,
         material_resolver: _MaterialResolver | None = None,
+        debate_ledger: object | None = None,
         adjudicator: object | None = None,
     ) -> None:
         self._ingestion = _required_dependency(
@@ -434,6 +482,11 @@ class PrismAPI:
         self._material_resolver = _optional_dependency(
             "material_resolver", material_resolver, "resolve"
         )
+        if debate_ledger is not None and not callable(
+            getattr(debate_ledger, "result_by_run_id", None)
+        ):
+            raise TypeError("debate_ledger must provide result_by_run_id()")
+        self._debate_ledger = debate_ledger
         self._adjudicator = adjudicator
 
     async def search(
@@ -771,6 +824,7 @@ class PrismAPI:
         *,
         as_of: datetime | None = None,
         use_llm: bool = True,
+        parent_debate_run_id: str | None = None,
     ) -> ProcessMaterialResult:
         """Append one material to a known case, then save a report version.
 
@@ -778,11 +832,29 @@ class PrismAPI:
         extraction, merge or graph failure propagates before any report version
         is created; a cross-case binding refusal surfaces as the typed
         :class:`~prism.cases.MaterialCaseConflict`.
+
+        ``parent_debate_run_id`` optionally links the append to an immutable
+        debate run (FR-5.7 appending material at a discussion time point).
+        The parent must exist in the durable debate ledger, must have debated
+        the target case, and ``as_of`` defaults to the parent's cutoff or must
+        match it; an unknown parent, a case mismatch or an ``as_of`` mismatch
+        fails before anything is processed or written.  After the material
+        version is saved at that cutoff, the returned
+        :attr:`ProcessMaterialResult.debate_link` carries the prior and
+        current evidence-bundle hashes with the affected/stale status,
+        recomputed deterministically through the debate service's analyzer —
+        never through an LLM call, and no debate is rerun automatically.
         """
 
         resolved = self._resolve_target_case(target_case)
         if resolved is None:
             raise ValueError("target_case is required for add_material()")
+        link: MaterialDebateLink | None = None
+        if parent_debate_run_id is not None:
+            link = self._resolve_parent_debate(
+                parent_debate_run_id, resolved.case_id, as_of
+            )
+            as_of = link.as_of
         result = await self.process_material(
             source, metadata, target_case=resolved
         )
@@ -790,13 +862,85 @@ class PrismAPI:
             raise ValueError(
                 f"material was not accumulated under target case {resolved.case_id!r}"
             )
+        if link is not None:
+            link = await self._refresh_debate_link(link)
         version = await self.save_report_version(
             resolved.case_id,
             as_of,
             use_llm=use_llm,
             trigger="material_added",
         )
-        return replace(result, report_version=version)
+        return replace(result, report_version=version, debate_link=link)
+
+    def _resolve_parent_debate(
+        self,
+        parent_debate_run_id: str,
+        case_id: str,
+        as_of: datetime | None,
+    ) -> MaterialDebateLink:
+        """Validate the parent debate link before anything is processed.
+
+        The parent is resolved only through the durable debate ledger, so a
+        fresh process finds the same immutable run.  An unknown run, a parent
+        from another case, or a cutoff other than the parent's own is refused
+        here — before ingestion, processing or any report write.
+        """
+        if (
+            not isinstance(parent_debate_run_id, str)
+            or not parent_debate_run_id.strip()
+        ):
+            raise ValueError("parent_debate_run_id must be a non-empty string")
+        if self._debate_ledger is None:
+            raise ValueError(
+                "debate_ledger is required for add_material(parent_debate_run_id=...)"
+            )
+        if self._debate is None:
+            raise ValueError(
+                "debate_service is required for add_material(parent_debate_run_id=...)"
+            )
+        if not callable(getattr(self._debate, "evidence_bundle_hash", None)):
+            raise TypeError(
+                "debate_service must provide evidence_bundle_hash()"
+            )
+        parent = self._debate_ledger.result_by_run_id(parent_debate_run_id)
+        if parent is None:
+            raise LookupError(f"no parent debate run {parent_debate_run_id!r}")
+        if parent.case_id != case_id:
+            raise ValueError(
+                f"parent debate run {parent_debate_run_id!r} debated case "
+                f"{parent.case_id!r}, not {case_id!r}"
+            )
+        if as_of is None:
+            cutoff = parent.as_of
+        elif as_of != parent.as_of:
+            raise ValueError(
+                "as_of must match the parent debate cutoff "
+                f"{parent.as_of.isoformat()}"
+            )
+        else:
+            cutoff = as_of
+        return MaterialDebateLink(
+            parent_run_id=parent_debate_run_id,
+            case_id=case_id,
+            as_of=cutoff,
+            prior_evidence_bundle_hash=parent.evidence_bundle_hash,
+            current_evidence_bundle_hash=parent.evidence_bundle_hash,
+            affected=False,
+            stale=False,
+        )
+
+    async def _refresh_debate_link(
+        self, link: MaterialDebateLink
+    ) -> MaterialDebateLink:
+        """Recompute the bundle hash at the parent cutoff without any LLM."""
+        current = await self._debate.evidence_bundle_hash(link.case_id, link.as_of)
+        changed = current != link.prior_evidence_bundle_hash
+        return replace(
+            link,
+            current_evidence_bundle_hash=current,
+            affected=changed,
+            stale=changed,
+        )
 
     async def bind_material_to_case(
         self, material_id: str, case_id: str

@@ -631,6 +631,7 @@ async def create_runtime(
         case_overview_service=case_overview,
         report_version_service=report_version_ledger,
         material_resolver=resolver,
+        debate_ledger=debate_ledger,
         adjudicator=adjudicator,
     )
     if effective_provider is not None:
