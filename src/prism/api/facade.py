@@ -11,7 +11,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 from uuid import uuid4
 
-from prism.analyzer import EvolutionAnalysis, HistoricalCaseState
+from prism.analyzer import (
+    EvolutionAnalysis,
+    EvolutionComparison,
+    HistoricalCaseState,
+)
 from prism.debate import DebateResult
 from prism.domain import (
     Claim,
@@ -140,6 +144,24 @@ class _AnalyzerService(Protocol):
     async def state(
         self, case_id: str, cutoff_at: datetime
     ) -> HistoricalCaseState: ...
+
+    async def snapshot(
+        self,
+        case_id: str,
+        as_of: datetime,
+        *,
+        stage: str | None = None,
+        kinds: Iterable[str] | None = None,
+    ) -> HistoricalCaseState: ...
+
+    async def compare(
+        self,
+        case_id: str,
+        earlier: datetime,
+        later: datetime,
+        *,
+        kinds: Iterable[str] | None = None,
+    ) -> EvolutionComparison: ...
 
 
 class _DebateService(Protocol):
@@ -1138,6 +1160,59 @@ class PrismAPI:
         if not callable(state):
             raise TypeError("analyzer_service must provide state()")
         return await state(case_id, cutoff_at)
+
+    async def query_historical_snapshot(
+        self,
+        case_id: str,
+        as_of: datetime,
+        *,
+        stage: str | None = None,
+        kinds: Iterable[str] | None = None,
+    ) -> HistoricalCaseState:
+        """Return the formal GTI-backed historical snapshot valid at ``as_of``.
+
+        The formal historical query entry point (FR-3.6/FR-4.2): the graph
+        service's timeline is projected by the analyzer into effective nodes,
+        facts, claims, relations, facts invalidated by the cutoff and the
+        case's evidence gaps, with a fail-closed knowledge boundary so future
+        reference/publication evidence never enters the returned state.
+        ``stage`` restricts the view to one deterministic recorded stage and
+        ``kinds`` to a subset of entry kinds; both are validated by the
+        analyzer before any graph read.
+        """
+        if self._analyzer is None:
+            raise ValueError(
+                "analyzer_service is required for query_historical_snapshot()"
+            )
+        snapshot = getattr(self._analyzer, "snapshot", None)
+        if not callable(snapshot):
+            raise TypeError("analyzer_service must provide snapshot()")
+        return await snapshot(case_id, as_of, stage=stage, kinds=kinds)
+
+    async def compare_case_history(
+        self,
+        case_id: str,
+        earlier: datetime,
+        later: datetime,
+        *,
+        kinds: Iterable[str] | None = None,
+    ) -> EvolutionComparison:
+        """Compare one case's effective entries at two historical instants.
+
+        The formal two-time-point comparison entry point (FR-4.3/FR-4.4):
+        both instants must be timezone-aware with ``earlier <= later``, and
+        every added/removed/unchanged change keeps its fact or interpretation
+        layer.  The comparison reads the graph only through the injected
+        analyzer, never through a parallel ledger.
+        """
+        if self._analyzer is None:
+            raise ValueError(
+                "analyzer_service is required for compare_case_history()"
+            )
+        compare = getattr(self._analyzer, "compare", None)
+        if not callable(compare):
+            raise TypeError("analyzer_service must provide compare()")
+        return await compare(case_id, earlier, later, kinds=kinds)
 
     async def add_case_bundle(
         self,

@@ -15,6 +15,9 @@ Current foundation modules:
 - dependency-optional Graphiti/GTI temporal graph adapter and historical timeline contract;
 - M1 source-backed change relations (`supersedes`, `revises`, `contradicts`,
   `triggered_by`), invalidated-fact audit views and two-cutoff comparison;
+- M3 formal historical snapshots (`snapshot`/`query_historical_snapshot`)
+  with a fail-closed knowledge boundary, deterministic stage filtering
+  (`--stage`) and two-instant comparison (`compare`/`compare_case_history`);
 - opt-in Graphiti/Neo4j spike scaffolding (config, deploy template, live-test gate) that stays fully offline by default;
 - offline tests for every completed module.
 
@@ -45,6 +48,8 @@ python -m prism.cli rebuild-report CASE_ID    # recompute and version the report
 python -m prism.cli discover MATERIAL_ID
 python -m prism.cli state CASE_ID --cutoff-at 2026-09-01T00:00:00+00:00
 python -m prism.cli timeline CASE_ID --as-of 2026-09-01T00:00:00+00:00
+python -m prism.cli snapshot CASE_ID --as-of 2026-02-02T00:00:00+00:00 --stage publication
+python -m prism.cli compare CASE_ID --earlier 2026-02-02T00:00:00+00:00 --later 2026-03-12T00:00:00+00:00
 python -m prism.cli report CASE_ID --as-of 2026-09-01T00:00:00+00:00 --no-llm
 ```
 
@@ -326,6 +331,45 @@ python -m prism.cli research MATERIAL_ID --no-process
 The key itself must not be placed in the JSON file. Firecrawl results are
 only discovery leads; `research` re-fetches each public URL through PRISM's
 whitelist-gated source service before ingestion.
+
+## M3 Historical Snapshot and Comparison
+
+`snapshot` and `compare` formalize historical case queries (FR-3.6/FR-4.2/FR-4.3)
+as additive facade entry points over the existing graph + analyzer stack —
+no parallel fact/snapshot store is involved:
+
+```console
+python -m prism.cli snapshot CASE_ID --as-of 2026-02-02T00:00:00+00:00
+python -m prism.cli snapshot CASE_ID --as-of 2026-02-02T00:00:00+00:00 --stage publication
+python -m prism.cli compare CASE_ID --earlier 2026-02-02T00:00:00+00:00 --later 2026-03-12T00:00:00+00:00
+```
+
+`PrismAPI.query_historical_snapshot` (backed by `AnalyzerService.snapshot`)
+returns the auditable state at one timezone-aware instant: effective nodes,
+facts, claims, relations, the facts invalidated by that instant and the
+case's evidence gaps, reusing `HistoricalCaseState`. The knowledge boundary
+is enforced twice — `GraphService.timeline` only returns entries known by
+the cutoff (`reference_time`, the observation/publication time, never later
+than it), and `snapshot` fail-closes on any reader that returns an entry
+known only after the cutoff, an ineffective entry, or a still-valid entry
+marked invalidated. `PrismAPI.compare_case_history` delegates to the
+existing `AnalyzerService.compare` and returns the existing
+`EvolutionComparison` (added/removed/unchanged with both instants,
+layer-classified), rejecting naive or reversed instants.
+
+`--stage` restricts a snapshot to one deterministic recorded stage: the
+fixed vocabulary (`prism.analyzer.STAGES`) is a pure lookup over markers the
+graph already records — `evolution_node.node_type` stages such as
+`publication`/`revision`/`expiry` (FR-4.5 policy chain and FR-4.6 discourse
+chain positions) and `claim.stance` stages such as `support`/`oppose`.
+Membership is never decided by an LLM, unknown stages are refused before any
+graph read, filtered entries keep the layer their kind implies, and sources
+and portable evidence locators are preserved. `--kind` (repeatable) applies
+the existing entry-kind filter and composes with `--stage`. The older
+`timeline`, `state`, `build_timeline`, `query_history` and `query_case_state`
+entry points are unchanged. See
+[`docs/m3-historical-snapshot.md`](docs/m3-historical-snapshot.md) for the
+offline acceptance boundary.
 
 ## Scholarly evidence levels
 

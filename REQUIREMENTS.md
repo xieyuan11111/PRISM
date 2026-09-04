@@ -515,10 +515,26 @@ subagent 应分别从制度目标、执行成本、产业利益、受影响群�
 ### M3：用户互动与报告
 
 - [ ] 用户可在讨论中追加材料；
-- [ ] 用户可指定历史时间点和阶段；
+- [x] 用户可指定历史时间点和阶段（API/CLI 查询级：`snapshot --as-of/--stage`、`compare --earlier/--later`；辩论进行中重建阶段属后续）；
 - [ ] 用户可点名主体或 subagent 追问；
 - [x] 支持报告版本化与 PDF 导出；
 - [ ] 支持多个并行演变案例。
+
+> **M3 验收记录（历史快照切片）**：GTI-backed 正式历史快照已落地为
+> `AnalyzerService.snapshot`/`PrismAPI.query_historical_snapshot`/CLI
+> `snapshot`（截至 `as_of` 的有效节点、事实、claim、relations、已失效
+> 事实与证据缺口，复用 `HistoricalCaseState`，不另建平行事实库）；快照
+> 双重执行知识边界（`GraphService.timeline` 排除 `reference_time` 晚于
+> 截止点的条目；`snapshot` 对违反契约的读取器 fail-closed），未来
+> reference/publication 证据不会倒灌历史。阶段过滤为确定性词汇
+> `prism.analyzer.STAGES`（仅按已记录 `evolution_node.node_type` 与
+> `claim.stance` 匹配，LLM 不参与、非法 stage 明确报错、层与证据保留）。
+> 两时间点比较为 `PrismAPI.compare_case_history`（委托既有
+> `AnalyzerService.compare`，严格校验 timezone-aware 与 earlier<=later）。
+> 全部行为由 `tests/test_m3_snapshot.py` 离线覆盖（合成 GraphBackend/
+> GraphService、失效事实可追踪、未来材料不泄漏、注册表重启读回、CLI
+> 委托）。本切片不含 NiceGUI/辩论内阶段重建；真实生产级 Graphiti
+> 验收仍以既有 Phase B spike 边界为准。
 
 ---
 
@@ -527,8 +543,8 @@ subagent 应分别从制度目标、执行成本、产业利益、受影响群�
 ### 时序验收
 
 - [ ] 至少一个案例能正确区分“提出、发布、生效、修订、失效”；
-- [ ] 历史时间点查询不使用未来材料覆盖当时状态；
-- [ ] 新事实替代旧事实时，旧事实仍可追踪。
+- [x] 历史时间点查询不使用未来材料覆盖当时状态；
+- [x] 新事实替代旧事实时，旧事实仍可追踪。
 
 ### 证据验收
 

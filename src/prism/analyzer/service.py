@@ -47,7 +47,9 @@ from .models import (
     TurningPoint,
     layer_for_kind,
     require_aware,
+    require_stage,
     require_text,
+    stage_matches,
 )
 
 
@@ -168,6 +170,130 @@ class AnalyzerService:
                 if stage.kind == "temporal_relation"
             ),
         )
+
+    async def snapshot(
+        self,
+        case_id: str,
+        as_of: datetime,
+        *,
+        stage: str | None = None,
+        kinds: Iterable[str] | None = None,
+    ) -> HistoricalCaseState:
+        """Return the formal GTI-backed historical snapshot valid at ``as_of``.
+
+        The snapshot is the auditable, future-free state contract (FR-3.6,
+        FR-4.2): the nodes, facts, claims (interpretation stages), relations
+        and evidence gaps effective at ``as_of``, plus the facts invalidated
+        by that instant — all projected from the graph service's timeline,
+        never stored anywhere else.  It fail-closes on any reader that
+        violates the contract: an entry known only after ``as_of``
+        (reference/publication time later than the cutoff), an entry listed
+        as effective outside its ``[valid_at, invalid_at)`` window, or a
+        still-valid entry listed as invalidated raises ``ValueError`` naming
+        the offending episode.
+
+        ``stage`` restricts the effective buckets to one deterministic,
+        recorded stage (see :data:`prism.analyzer.STAGES`): membership is a
+        pure lookup over ``evolution_node.node_type`` / ``claim.stance``, so
+        the LLM never decides membership, no stage is invented, and entries
+        keep the layer their kind implies.  ``kinds`` is the existing
+        entry-kind filter.  Evidence gaps describe the case at ``as_of``
+        (computed on the unfiltered, kind-filtered projection), so a narrow
+        stage never manufactures an ``empty_timeline`` gap for a case that
+        has evidence outside the stage.
+        """
+        require_text("case_id", case_id)
+        require_aware("as_of", as_of)
+        require_stage(stage)
+        kind_filter = self._kind_filter(kinds)
+
+        timeline = await self._fetch(case_id, as_of)
+        self._assert_snapshot_boundaries(timeline, as_of)
+        case_type, case_status = self._case_metadata(timeline.entries, as_of)
+        visible = self._visible(timeline, kind_filter)
+        invalidated = self._visible_entries(timeline.invalidated_entries, kind_filter)
+        staged = self._staged(visible)
+        invalidated_staged = self._staged(invalidated)
+        evidence_gaps = self._evidence_gaps(case_id, as_of, staged, kind_filter)
+        if stage is not None:
+            staged = tuple(
+                item for item in staged if stage_matches(stage, item.stage)
+            )
+            invalidated_staged = tuple(
+                item
+                for item in invalidated_staged
+                if stage_matches(stage, item.stage)
+            )
+        return HistoricalCaseState(
+            case_id=case_id,
+            cutoff_at=as_of,
+            case_type=case_type,
+            status=case_status,
+            nodes=tuple(
+                item.stage for item in staged if item.stage.kind == "evolution_node"
+            ),
+            facts=tuple(
+                item.stage for item in staged if item.stage.kind == "temporal_fact"
+            ),
+            interpretations=tuple(
+                item.stage for item in staged if item.stage.kind == "claim"
+            ),
+            evidence_gaps=evidence_gaps,
+            invalidated_facts=tuple(
+                item.stage
+                for item in invalidated_staged
+                if item.stage.kind == "temporal_fact"
+            ),
+            relations=tuple(
+                item.stage for item in staged if item.stage.kind == "temporal_relation"
+            ),
+        )
+
+    @staticmethod
+    def _assert_snapshot_boundaries(
+        timeline: GraphTimeline, as_of: datetime
+    ) -> None:
+        """Fail closed when a graph reader violates the snapshot contract.
+
+        ``GraphService.timeline`` already enforces the knowledge boundary
+        (``reference_time <= as_of``) and the half-open effectiveness window;
+        a historical snapshot re-verifies both on every entry so no reader
+        bug can silently leak future reference/publication evidence into a
+        historical state (FR-3.6, FR-4.2, U2).
+        """
+        for entry in timeline.entries:
+            if entry.reference_time > as_of:
+                raise ValueError(
+                    f"timeline entry {entry.episode_key!r} (kind {entry.kind}) "
+                    f"is known only at {entry.reference_time.isoformat()}, "
+                    f"after as_of {as_of.isoformat()}: future "
+                    "reference/publication evidence must never enter a "
+                    "historical snapshot"
+                )
+            if entry.valid_at > as_of or (
+                entry.invalid_at is not None and entry.invalid_at <= as_of
+            ):
+                raise ValueError(
+                    f"timeline entry {entry.episode_key!r} (kind {entry.kind}) "
+                    f"is listed as effective at {as_of.isoformat()} outside "
+                    "its [valid_at, invalid_at) window"
+                )
+        for entry in timeline.invalidated_entries:
+            if entry.reference_time > as_of:
+                raise ValueError(
+                    f"timeline entry {entry.episode_key!r} (kind {entry.kind}) "
+                    f"is known only at {entry.reference_time.isoformat()}, "
+                    f"after as_of {as_of.isoformat()}: future "
+                    "reference/publication evidence must never enter a "
+                    "historical snapshot"
+                )
+            if entry.invalid_at is None or entry.invalid_at > as_of:
+                raise ValueError(
+                    f"timeline entry {entry.episode_key!r} (kind {entry.kind}) "
+                    f"is listed as invalidated although its invalid_at "
+                    f"({entry.invalid_at.isoformat() if entry.invalid_at is not None else 'unset'}) "
+                    f"is not at or before as_of {as_of.isoformat()}"
+                )
 
     async def compare(
         self,

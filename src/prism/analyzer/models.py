@@ -14,12 +14,32 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
-from prism.domain import EVIDENCE_ROLES, EvidenceLocator
+from prism.domain import CLAIM_STANCES, EVIDENCE_ROLES, EvidenceLocator, NODE_TYPES
 
 FACT_LAYER = "fact"
 INTERPRETATION_LAYER = "interpretation"
 PROVENANCE_LAYER = "provenance"
 LAYERS = frozenset({FACT_LAYER, INTERPRETATION_LAYER, PROVENANCE_LAYER})
+
+#: Stages recorded as evolution nodes (each one ``evolution_node.node_type``):
+#: the policy chain (publication, implementation, revision, reversal,
+#: replacement, expiry — FR-4.5) and the academic discourse chain (proposal,
+#: draft, response, debate, consensus, open_question, ... — FR-4.6) are both
+#: expressed through these recorded node types, never invented by a caller or
+#: an LLM.
+NODE_STAGES = frozenset(NODE_TYPES)
+
+#: Stages recorded as claim directions (each one ``claim.stance``): supporting
+#: and opposing discourse positions stay interpretation-layer entries and can
+#: never be presented as facts by a stage filter.
+STANCE_STAGES = frozenset(CLAIM_STANCES)
+
+#: The full deterministic stage vocabulary for historical snapshots.  A stage
+#: selects only entries whose own recorded markers match: ``evolution_node``
+#: entries for node stages, ``claim`` entries for stance stages.  Facts,
+#: relations and provenance entries never carry a stage marker and therefore
+#: never match a stage — they remain visible in unfiltered snapshots.
+STAGES = NODE_STAGES | STANCE_STAGES
 
 ENTRY_KINDS = frozenset(
     {
@@ -129,6 +149,37 @@ def layer_for_kind(kind: str) -> str:
         raise ValueError(
             f"unknown timeline entry kind {kind!r}; must be one of: {allowed}"
         ) from None
+
+
+def require_stage(stage: str | None) -> str | None:
+    """Validate one snapshot stage selector, returning ``None`` for ``None``.
+
+    An unknown stage raises ``ValueError`` naming every legal stage; the
+    vocabulary is fixed (:data:`STAGES`) and never extended by an LLM or by
+    free-form caller strings.
+    """
+    if stage is None:
+        return None
+    require_text("stage", stage)
+    if stage not in STAGES:
+        allowed = ", ".join(sorted(STAGES))
+        raise ValueError(f"unknown stage {stage!r}; must be one of: {allowed}")
+    return stage
+
+
+def stage_matches(stage: str, item: TimelineStage) -> bool:
+    """Whether a projected entry belongs to the recorded stage ``stage``.
+
+    Membership is a pure lookup over markers the graph already records: a
+    node stage matches ``evolution_node`` entries carrying that
+    ``node_type``, a stance stage matches ``claim`` entries carrying that
+    ``stance``.  Entries without the marker never match, so a stage can
+    never move an interpretation into a fact view or invent stage content.
+    """
+    require_stage(stage)
+    if stage in NODE_STAGES:
+        return item.kind == "evolution_node" and item.node_type == stage
+    return item.kind == "claim" and item.stance == stage
 
 
 def _optional_text(name: str, value: str | None) -> None:

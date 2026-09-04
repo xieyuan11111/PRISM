@@ -14,6 +14,7 @@ import re
 import sys
 from typing import Any, Protocol, TextIO
 
+from prism.analyzer import ENTRY_KINDS, STAGES
 from prism.domain import EvolutionCase
 
 
@@ -32,6 +33,24 @@ class PrismAPIProtocol(Protocol):
     async def build_timeline(self, case_id: str, as_of: datetime) -> object: ...
 
     async def query_case_state(self, case_id: str, cutoff_at: datetime) -> object: ...
+
+    async def query_historical_snapshot(
+        self,
+        case_id: str,
+        as_of: datetime,
+        *,
+        stage: str | None = None,
+        kinds: Sequence[str] | None = None,
+    ) -> object: ...
+
+    async def compare_case_history(
+        self,
+        case_id: str,
+        earlier: datetime,
+        later: datetime,
+        *,
+        kinds: Sequence[str] | None = None,
+    ) -> object: ...
 
     async def ingest_material(
         self, path: str | Path, metadata: dict[str, Any] | None = None
@@ -321,6 +340,82 @@ def build_parser() -> argparse.ArgumentParser:
         help="ISO-8601 timestamp with a UTC offset.",
     )
     state.set_defaults(handler=handle_state)
+
+    snapshot = commands.add_parser(
+        "snapshot",
+        help=(
+            "Return the formal GTI-backed historical snapshot at an instant: "
+            "effective nodes, facts, claims, relations, facts invalidated by "
+            "the cutoff and evidence gaps."
+        ),
+    )
+    snapshot.add_argument("case_id", type=_nonempty, metavar="CASE_ID")
+    snapshot.add_argument(
+        "--as-of",
+        required=True,
+        type=_aware_datetime,
+        metavar="TIMESTAMP",
+        help="ISO-8601 timestamp with a UTC offset.",
+    )
+    snapshot.add_argument(
+        "--stage",
+        choices=sorted(STAGES),
+        metavar="STAGE",
+        help=(
+            "Restrict the snapshot to one deterministic recorded stage, e.g. "
+            "publication (policy chain) or support (discourse claim stance). "
+            "Allowed: "
+            + ", ".join(sorted(STAGES))
+            + "."
+        ),
+    )
+    snapshot.add_argument(
+        "--kind",
+        action="append",
+        choices=sorted(ENTRY_KINDS),
+        metavar="KIND",
+        help=(
+            "Restrict the snapshot to one entry kind; repeatable. Allowed: "
+            + ", ".join(sorted(ENTRY_KINDS))
+            + "."
+        ),
+    )
+    snapshot.set_defaults(handler=handle_snapshot)
+
+    compare = commands.add_parser(
+        "compare",
+        help=(
+            "Compare one case's effective state at two historical instants, "
+            "returning added/removed/unchanged entries with their layers."
+        ),
+    )
+    compare.add_argument("case_id", type=_nonempty, metavar="CASE_ID")
+    compare.add_argument(
+        "--earlier",
+        required=True,
+        type=_aware_datetime,
+        metavar="TIMESTAMP",
+        help="Earlier ISO-8601 timestamp with a UTC offset.",
+    )
+    compare.add_argument(
+        "--later",
+        required=True,
+        type=_aware_datetime,
+        metavar="TIMESTAMP",
+        help="Later ISO-8601 timestamp with a UTC offset (must not precede --earlier).",
+    )
+    compare.add_argument(
+        "--kind",
+        action="append",
+        choices=sorted(ENTRY_KINDS),
+        metavar="KIND",
+        help=(
+            "Restrict the comparison to one entry kind; repeatable. Allowed: "
+            + ", ".join(sorted(ENTRY_KINDS))
+            + "."
+        ),
+    )
+    compare.set_defaults(handler=handle_compare)
 
     ingest = commands.add_parser(
         "ingest", help="Ingest a Markdown or PDF file and announce it."
@@ -625,6 +720,28 @@ async def handle_state(args: argparse.Namespace, api: PrismAPIProtocol) -> objec
     """Return status, nodes, facts, interpretations and gaps at a cutoff."""
 
     return await _await_api_call(api.query_case_state(args.case_id, args.cutoff_at))
+
+
+async def handle_snapshot(
+    args: argparse.Namespace, api: PrismAPIProtocol
+) -> object:
+    """Delegate a parsed snapshot command to the injected facade."""
+    kinds = tuple(args.kind) if args.kind else None
+    return await _await_api_call(
+        api.query_historical_snapshot(
+            args.case_id, args.as_of, stage=args.stage, kinds=kinds
+        )
+    )
+
+
+async def handle_compare(args: argparse.Namespace, api: PrismAPIProtocol) -> object:
+    """Delegate a parsed compare command to the injected facade."""
+    kinds = tuple(args.kind) if args.kind else None
+    return await _await_api_call(
+        api.compare_case_history(
+            args.case_id, args.earlier, args.later, kinds=kinds
+        )
+    )
 
 
 async def handle_ingest(args: argparse.Namespace, api: PrismAPIProtocol) -> object:
@@ -1006,6 +1123,8 @@ __all__ = [
     "handle_debate",
     "handle_adjudication_history",
     "handle_search",
+    "handle_snapshot",
+    "handle_compare",
     "handle_state",
     "handle_timeline",
     "main",
