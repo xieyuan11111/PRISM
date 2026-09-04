@@ -71,6 +71,10 @@ class PrismAPIProtocol(Protocol):
 
     async def report_version(self, version_id: str) -> object: ...
 
+    async def export_report_pdf(
+        self, version_id: str, output_path: str | Path
+    ) -> object: ...
+
     async def add_material(
         self,
         source: str,
@@ -451,7 +455,21 @@ def build_parser() -> argparse.ArgumentParser:
         "report-version", help="Read one immutable report version."
     )
     report_version.add_argument("version_id", type=_nonempty, metavar="VERSION_ID")
+    report_version.add_argument(
+        "--pdf",
+        dest="pdf",
+        type=_nonempty,
+        metavar="OUTPUT_PDF",
+        help="Export this version to a PDF path relative to PRISM output.",
+    )
     report_version.set_defaults(handler=handle_report_version)
+
+    report_pdf = commands.add_parser(
+        "report-pdf", help="Export one immutable report version as a PDF."
+    )
+    report_pdf.add_argument("version_id", type=_nonempty, metavar="VERSION_ID")
+    report_pdf.add_argument("output_path", type=_nonempty, metavar="OUTPUT_PATH")
+    report_pdf.set_defaults(handler=handle_report_pdf)
 
     add_material = commands.add_parser(
         "add-material",
@@ -685,7 +703,20 @@ async def handle_report_version(
     args: argparse.Namespace, api: PrismAPIProtocol
 ) -> object:
     """Delegate one report-version read to the injected facade."""
+    if args.pdf is not None:
+        return await _await_api_call(
+            api.export_report_pdf(args.version_id, args.pdf)
+        )
     return await _await_api_call(api.report_version(args.version_id))
+
+
+async def handle_report_pdf(
+    args: argparse.Namespace, api: PrismAPIProtocol
+) -> object:
+    """Delegate one report-version PDF export to the facade."""
+    return await _await_api_call(
+        api.export_report_pdf(args.version_id, args.output_path)
+    )
 
 async def handle_add_material(
     args: argparse.Namespace, api: PrismAPIProtocol
@@ -967,6 +998,7 @@ __all__ = [
     "handle_ingest",
     "handle_report",
     "handle_report_version",
+    "handle_report_pdf",
     "handle_report_versions",
     "handle_add_material",
     "handle_rebuild_report",

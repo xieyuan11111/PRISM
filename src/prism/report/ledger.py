@@ -7,12 +7,14 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import sqlite3
+from pathlib import Path
 from typing import Callable
 
 from prism.analyzer import EvolutionAnalysis
 from prism.config import PathConfig
 from prism.debate import DebateResult
 from prism.report.models import ReportDocument
+from prism.report.pdf import ReportPdfExporter, ReportPdfExportResult
 from prism.store.service import DB_FILENAME
 
 TABLE = "report_versions"
@@ -171,10 +173,17 @@ class ReportVersionLedger:
         paths: PathConfig,
         *,
         clock: Callable[[], datetime] | None = None,
+        pdf_exporter: ReportPdfExporter | None = None,
     ) -> None:
         if not isinstance(paths, PathConfig):
             raise TypeError("paths must be a PathConfig")
         self._clock = clock or (lambda: datetime.now(timezone.utc))
+        self._paths = paths
+        if pdf_exporter is not None and not callable(
+            getattr(pdf_exporter, "export_pdf", None)
+        ):
+            raise TypeError("pdf_exporter must provide export_pdf()")
+        self._pdf_exporter = pdf_exporter or ReportPdfExporter(paths)
         database = paths.data_dir / DB_FILENAME
         database.parent.mkdir(parents=True, exist_ok=True)
         self._connection = sqlite3.connect(str(database))
@@ -300,6 +309,16 @@ class ReportVersionLedger:
             (version_id,),
         ).fetchone()
         return self._decode(row) if row is not None else None
+
+    def export_pdf(
+        self, version_id: str, output_path: str | Path
+    ) -> ReportPdfExportResult:
+        """Export one saved report version as a derived PDF."""
+
+        version = self.get(version_id)
+        if version is None:
+            raise LookupError(f"no report version {version_id!r}")
+        return self._pdf_exporter.export_version(version, output_path)
 
     def versions(
         self,

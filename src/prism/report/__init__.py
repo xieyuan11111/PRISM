@@ -1,6 +1,18 @@
 """Deterministic Markdown evolution reports with traceable summaries (FR-6)."""
 
 from .ledger import ReportVersion, ReportVersionLedger
+from .pdf import (
+    EdgePdfRenderer,
+    PdfRenderer,
+    ReportPdfConflictError,
+    ReportPdfExportResult,
+    ReportPdfExporter,
+    ReportPdfPathError,
+    ReportPdfRendererError,
+    ReportPdfValidationError,
+    find_chromium_executable,
+    render_report_html,
+)
 from .models import (
     SUMMARY_ORIGINS,
     SUMMARY_ORIGIN_FALLBACK,
@@ -22,4 +34,14 @@ __all__ = [
     "ReportSummary",
     "ReportVersion",
     "ReportVersionLedger",
+    "EdgePdfRenderer",
+    "PdfRenderer",
+    "ReportPdfConflictError",
+    "ReportPdfExportResult",
+    "ReportPdfExporter",
+    "ReportPdfPathError",
+    "ReportPdfRendererError",
+    "ReportPdfValidationError",
+    "find_chromium_executable",
+    "render_report_html",
 ]

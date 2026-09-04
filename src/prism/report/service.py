@@ -16,10 +16,12 @@ can never overwrite recorded facts.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 import re
 from typing import Any, Protocol
 
 from prism.analyzer import EvolutionAnalysis
+from prism.config import PathConfig
 from prism.debate import DebateResult
 
 from .models import (
@@ -29,6 +31,7 @@ from .models import (
     ReportDocument,
     ReportSummary,
 )
+from .pdf import ReportPdfExporter, ReportPdfExportResult
 
 SUMMARIZE_REPORT_ROLE = "summarize_report"
 
@@ -65,10 +68,27 @@ class _SummaryInvalid(ValueError):
 class ReportService:
     """Render case evolution reports, optionally distilled by an LLM router."""
 
-    def __init__(self, router: _RouterLike | None = None) -> None:
+    def __init__(
+        self,
+        router: _RouterLike | None = None,
+        *,
+        paths: PathConfig | None = None,
+    ) -> None:
         if router is not None and not callable(getattr(router, "complete", None)):
             raise TypeError("router must provide an async complete method")
+        if paths is not None and not isinstance(paths, PathConfig):
+            raise TypeError("paths must be a PathConfig")
         self._router = router
+        self._pdf_exporter = ReportPdfExporter(paths) if paths is not None else None
+
+    def export_pdf(
+        self, document: ReportDocument, output_path: str | Path
+    ) -> ReportPdfExportResult:
+        """Export one rendered report document as a derived PDF."""
+
+        if self._pdf_exporter is None:
+            raise ValueError("paths is required for ReportService.export_pdf()")
+        return self._pdf_exporter.export_document(document, output_path)
 
     async def report(
         self, analysis: EvolutionAnalysis, *, debate_result: DebateResult | None = None

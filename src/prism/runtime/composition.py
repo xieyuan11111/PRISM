@@ -496,7 +496,7 @@ async def create_runtime(
     events = EventBus()
     graph = GraphService(backend)
     analyzer = AnalyzerService(graph)
-    report = ReportService(llm_router)
+    report = ReportService(llm_router, paths=paths)
     debate_ledger = DebateLedger(paths)
     debate = DebateService(
         analyzer,

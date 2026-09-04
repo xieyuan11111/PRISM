@@ -216,6 +216,9 @@ class _ReportVersionService(Protocol):
     def find_by_input_hash(self, input_hash: str) -> object | None: ...
 
     def get(self, version_id: str) -> object | None: ...
+    def export_pdf(
+        self, version_id: str, output_path: str | Path
+    ) -> object: ...
 
     def save(
         self,
@@ -1258,6 +1261,21 @@ class PrismAPI:
         if version is None:
             raise LookupError(f"no report version {version_id!r}")
         return version
+    async def export_report_pdf(
+        self, version_id: str, output_path: str | Path
+    ) -> object:
+        """Export one saved report version as a derived PDF."""
+
+        if self._report_version_service is None:
+            raise ValueError(
+                "report_version_service is required for export_report_pdf()"
+            )
+        export = getattr(self._report_version_service, "export_pdf", None)
+        if not callable(export):
+            raise TypeError(
+                "report_version_service must provide export_pdf()"
+            )
+        return export(version_id, output_path)
 
     async def debate_case(
         self,

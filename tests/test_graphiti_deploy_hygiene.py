@@ -38,12 +38,13 @@ SECRET_PATTERNS = (
 )
 
 
-def test_pyproject_keeps_default_dependencies_empty_and_graphiti_opt_in():
+def test_pyproject_keeps_default_dependencies_empty_and_pdf_graphiti_opt_in():
     with open(REPO_ROOT / "pyproject.toml", "rb") as handle:
         pyproject = tomllib.load(handle)
 
     assert pyproject["project"]["dependencies"] == []
     extras = pyproject["project"]["optional-dependencies"]
+    assert extras["pdf"] == ["markdown==3.10.2", "pypdf==6.16.1"]
     assert "graphiti" in extras
     assert extras["graphiti"] == [
         "graphiti-core==0.29.3",

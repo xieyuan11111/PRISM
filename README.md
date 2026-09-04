@@ -280,8 +280,24 @@ report LLM call. `add-material` runs the existing automatic pipeline for a known
 target case and, only after extraction/merge/graph success, saves a
 `material_added` report version. Extraction or cross-case binding failures create
 no version. Report Markdown retains debate interpretation in its own section while
-structured facts remain sourced from the analysis. No WebUI or PDF export is
-included in this v0.
+structured facts remain sourced from the analysis.
+
+A report version can be exported to a project-relative PDF path with `report-version --pdf`:
+
+```console
+python -m prism.cli report-version rv_... --pdf reports/case-b.pdf
+```
+
+The PDF is a derived delivery artifact, not the report of record. Exports never
+create or modify report versions; the same version and same bytes are idempotent, and
+a different existing file is refused rather than overwritten.
+
+Install the optional Python dependencies with `pip install -e ".[pdf]"`. PDF export
+then renders Markdown with Python-Markdown, prints it with headless Microsoft Edge or
+a compatible Chromium browser, and validates pages and extracted text with pypdf. Set
+`PRISM_PDF_RENDERER` to an Edge/Chromium executable when autodiscovery is not
+suitable. Without the dependencies or a renderer, export fails explicitly and creates
+no PDF.
 
 `discover` creates a time-bounded research plan from an indexed material. To
 execute a plan, explicitly enable Firecrawl in `PRISM_HOME/config.json` and

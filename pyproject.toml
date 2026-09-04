@@ -17,6 +17,14 @@ dev = [
     "pytest>=8.0",
 ]
 
+# PDF export is optional: Markdown is the source of truth and the adapter
+# renders it through an installed Edge/Chromium executable, then verifies the
+# result with pypdf. The default runtime remains dependency-free and offline.
+pdf = [
+    "markdown==3.10.2",
+    "pypdf==6.16.1",
+]
+
 # Graphiti/Neo4j remains opt-in and is NEVER part of the default install;
 # PRISM's default runtime stays fully offline without it. Pinned to the
 # versions verified in the Phase B live spike (docs/graphiti-spike-plan.md,
