@@ -1159,3 +1159,216 @@ def test_synthesis_invalid_outputs_degrade_without_failing_the_case(tmp_path):
         assert result.errors[-1].phase == "synthesis"
         assert result.errors[-1].error_code == "invalid_output"
         assert all(item.status == "available" for item in result.results)
+
+
+# --- Real-provider output compatibility (M2 fix) ---------------------------
+#
+# A real debate provider wrapped independent output in two confirmed
+# non-critical shapes: an overall top-level "classification" alongside
+# "statements", and a per-statement "reasoning" explanation.  "reasoning" is
+# explanation metadata, never a fact, so it must be ignored (never promoted
+# into DebateStatement, later prompts, the ledger, or the report) and the
+# structural deviation must stay visible in the audit trail.  Everything else
+# stays strict: unknown fields, duplicate keys, NaN, unknown citations and
+# empty non-unresolved statements are still rejected.
+
+REASONING_MARKER = "model-reasoning-that-must-never-become-a-fact"
+
+
+def real_provider_independent(profile: str) -> dict:
+    """Independent output shaped like the confirmed real provider response."""
+    prefix = profile.split("_", 1)[0]
+    return {
+        "classification": "fact",
+        "statements": [
+            {
+                "id": f"{prefix}-fact",
+                "classification": "fact",
+                "text": f"{profile} records the publication.",
+                "evidence_ids": ["node-1"],
+                "reasoning": f"{REASONING_MARKER}: the publication node records the change",
+            },
+            {
+                "id": f"{prefix}-interpretation",
+                "classification": "interpretation",
+                "text": f"{profile} explains the change as scope narrowing.",
+                "evidence_ids": ["node-1"],
+                "reasoning": f"{REASONING_MARKER}: scope narrowing is inferred from the record",
+            },
+            {
+                "id": f"{prefix}-unresolved",
+                "classification": "unresolved",
+                "text": f"{profile} cannot determine enforcement effects.",
+                "evidence_ids": [],
+                "reasoning": f"{REASONING_MARKER}: no enforcement evidence exists",
+            },
+        ],
+    }
+
+
+class RealStyleRouter(PromptCapture):
+    """Return confirmed real-provider-shaped output per profile."""
+
+    async def complete(self, role, prompt):
+        self.prompts.append(prompt)
+        current = perspective(prompt)
+        if phase(prompt) == "independent":
+            payload = real_provider_independent(current)
+        elif phase(prompt) == "cross_examination":
+            payload = cross(current)
+        else:
+            payload = synthesis_payload()
+        return Completion(text=json.dumps(payload), provider="offline", model="test")
+
+
+def test_real_provider_independent_shape_parses_and_reasoning_is_ignored(tmp_path):
+    from dataclasses import asdict as dataclass_asdict
+
+    from prism.debate import DebateLedger, result_to_dict
+
+    router = RealStyleRouter()
+    result = run(service(tmp_path, router).debate(CASE_ID, QUESTION, AS_OF))
+
+    assert result.status == "completed"
+    assert result.fallback_reason is None
+    assert all(item.status == "available" for item in result.results)
+    first = result.results[0]
+    statement = first.interpretation.statements[0]
+    assert statement.text == "institutional_regulatory records the publication."
+    assert statement.evidence_ids == ("node-1",)
+    # The public statement contract never grows a reasoning field.
+    assert set(dataclass_asdict(statement)) == {
+        "id",
+        "classification",
+        "text",
+        "evidence_ids",
+    }
+    assert all(
+        not hasattr(item, "reasoning")
+        for item in first.interpretation.statements
+    )
+
+    # Reasoning content is explanation metadata: it must not survive into any
+    # later prompt, the serialized result, the ledger, or the report.
+    assert all(REASONING_MARKER not in prompt for prompt in router.prompts)
+    assert REASONING_MARKER not in json.dumps(result_to_dict(result))
+    ledger = DebateLedger(tmp_path / "index.db")
+    entry = ledger.entries(CASE_ID)[0]
+    assert REASONING_MARKER not in entry.rounds_json
+    assert REASONING_MARKER not in entry.result_json
+
+    # The structural deviation stays visible in the audit trail without being
+    # treated as a failure: the perspective remains available and the case
+    # remains completed.
+    assert result.errors == ()
+    assert result.warnings
+    joined = "\n".join(result.warnings)
+    assert "reasoning" in joined
+    assert "classification" in joined
+
+    # Ledger replay preserves the audited warnings for the identical input.
+    second = run(
+        service(tmp_path, RealStyleRouter()).debate(CASE_ID, QUESTION, AS_OF)
+    )
+    assert second.replayed is True
+    assert second == replace(result, replayed=True)
+    assert second.warnings == result.warnings
+
+
+
+def test_real_provider_reasoning_never_enters_report_structured_facts(tmp_path):
+    router = RealStyleRouter()
+    result = run(service(tmp_path, router).debate(CASE_ID, QUESTION, AS_OF))
+    assert result.status == "completed"
+
+    doc = run(ReportService().report(analysis(), debate_result=result))
+
+    assert REASONING_MARKER not in doc.markdown
+    assert "## Debate Interpretation" in doc.markdown
+    structured_body = doc.markdown.split("## Timeline Stages", 1)[1]
+    assert REASONING_MARKER not in structured_body
+
+def test_only_confirmed_extra_fields_are_tolerated_in_independent_output(tmp_path):
+    valid = real_provider_independent("institutional_regulatory")
+    invalid_cases = [
+        # Tolerated top-level classification plus one genuinely unknown field.
+        json.dumps({**valid, "bogus_top_level": True}),
+        # Tolerated reasoning plus one genuinely unknown statement field.
+        json.dumps(
+            {
+                **valid,
+                "statements": [dict(valid["statements"][0], bogus_statement_field=1)],
+            }
+        ),
+        # Top-level classification alone cannot replace the statements array.
+        json.dumps({"classification": "fact"}),
+        # Empty statements stay invalid even with a tolerated classification.
+        json.dumps({"classification": "fact", "statements": []}),
+        # Unknown citations stay rejected even when reasoning is present.
+        json.dumps(
+            {
+                **valid,
+                "statements": [
+                    dict(valid["statements"][0], evidence_ids=["ghost"])
+                ],
+            }
+        ),
+    ]
+    for text in invalid_cases:
+        router = ScriptedRouter(independent=text)
+        result = run(service(tmp_path, router).debate(CASE_ID, QUESTION, AS_OF))
+
+        assert result.status in {"degraded", "no_conclusion"}
+        assert all(item.status == "unavailable" for item in result.results)
+        assert all(
+            item.failure.error_code == "invalid_output"
+            for item in result.results
+            if item.failure is not None
+        )
+        assert result.errors
+
+
+def test_academic_discourse_uses_academic_profiles_and_explicit_perspectives_win(tmp_path):
+    from prism.debate import ACADEMIC_PROFILES, DEFAULT_PROFILES, DebateService
+
+    academic_ids = tuple(profile.id for profile in ACADEMIC_PROFILES)
+    default_ids = tuple(profile.id for profile in DEFAULT_PROFILES)
+    for index, (case_type, wanted) in enumerate(
+        (
+            ("academic_discourse", academic_ids),
+            ("academic", academic_ids),
+            ("policy", default_ids),
+            ("public_issue", default_ids),
+            (None, default_ids),
+        )
+    ):
+        fake = (
+            CutoffAnalyzer(case_type)
+            if case_type is not None
+            else FakeAnalyzer(_cutoff_analysis(AS_OF, None))
+        )
+        result = run(
+            DebateService(fake, None, ledger=None).debate(
+                CASE_ID, f"Q-{index}-{case_type}", AS_OF
+            )
+        )
+        assert result.profiles == wanted
+        assert result.status == "no_conclusion"
+
+    # Explicit perspectives override academic defaults and must stay legal.
+    explicit = run(
+        DebateService(CutoffAnalyzer("academic_discourse"), None, ledger=None).debate(
+            CASE_ID,
+            "Q-explicit",
+            AS_OF,
+            perspectives=("academic_observer", "evidence_quality"),
+        )
+    )
+    assert explicit.profiles == ("academic_observer", "evidence_quality")
+
+    with pytest.raises(ValueError):
+        run(
+            DebateService(CutoffAnalyzer("academic_discourse"), None, ledger=None).debate(
+                CASE_ID, "Q-ghost", AS_OF, perspectives=("ghost",)
+            )
+        )

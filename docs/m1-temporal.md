@@ -3,7 +3,7 @@
 This document states what the repository can verify offline and what the
 Phase B live spike (2026-09-03) confirmed with deterministic model clients
 (see the Live Graphiti boundary section). It does not claim that
-real-provider extraction or a real case has passed live acceptance.
+real-provider extraction quality or a complete real-case semantic acceptance.
 
 ## Implemented semantics
 

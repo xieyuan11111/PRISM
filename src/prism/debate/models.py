@@ -52,6 +52,18 @@ def _optional_text(name: str, value: str | None) -> None:
         _text(name, value)
 
 
+def _warnings_tuple(name: str, values: object) -> tuple[str, ...]:
+    if isinstance(values, str):
+        raise TypeError(f"{name} must be an iterable of strings, not a string")
+    try:
+        normalized = tuple(values)  # type: ignore[arg-type]
+    except TypeError as error:
+        raise TypeError(f"{name} must be an iterable of strings") from error
+    for value in normalized:
+        _text(name, value)
+    return normalized
+
+
 def _aware(name: str, value: datetime) -> None:
     if not isinstance(value, datetime):
         raise TypeError(f"{name} must be a datetime")
@@ -262,6 +274,11 @@ class DebateResult:
     completed_at: datetime | None = None
     replayed: bool = False
     automatic_adjudication: bool = True
+    # Audit-only notices for tolerated structural deviations in model output
+    # (e.g. an ignored top-level "classification" or per-statement "reasoning"
+    # explanation field).  Warnings name the deviation and never carry the
+    # ignored content: model reasoning must never be promoted to a fact.
+    warnings: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         _text("case_id", self.case_id)
@@ -297,6 +314,9 @@ class DebateResult:
             self.automatic_adjudication, bool
         ):
             raise TypeError("replayed and automatic_adjudication must be bools")
+        object.__setattr__(
+            self, "warnings", _warnings_tuple("warnings", self.warnings)
+        )
         if self.status == "no_conclusion":
             if self.synthesis is not None or not self.fallback_reason:
                 raise ValueError("no_conclusion requires no synthesis and a reason")
@@ -420,6 +440,7 @@ def result_to_dict(result: DebateResult) -> dict[str, Any]:
         else result.completed_at.isoformat(),
         "replayed": result.replayed,
         "automatic_adjudication": result.automatic_adjudication,
+        "warnings": list(result.warnings),
     }
 
 
@@ -440,6 +461,7 @@ def result_from_dict(data: dict[str, Any]) -> DebateResult:
         "completed_at",
         "replayed",
         "automatic_adjudication",
+        "warnings",
     }
     if set(data) != required:
         missing = sorted(required - set(data))
@@ -525,4 +547,5 @@ def result_from_dict(data: dict[str, Any]) -> DebateResult:
         completed_at=None if data["completed_at"] is None else _datetime(data["completed_at"]),
         replayed=data["replayed"],
         automatic_adjudication=data["automatic_adjudication"],
+        warnings=_warnings_tuple("warnings", data["warnings"]),
     )

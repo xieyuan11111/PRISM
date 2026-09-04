@@ -238,6 +238,29 @@ target case, or request a rebuild; they do not need to review candidates one
 by one. Deterministic validation still rejects unsupported quotes, timestamps,
 cross-material citations, and unsafe model output.
 
+## M2 Automatic Debate
+
+The CLI/API now provide automatic multi-perspective explanation over one
+historical case snapshot. Academic cases use experimental-methods,
+mechanism-explanation, evidence-quality, and research-history profiles;
+policy/public-issue cases use the general observation profiles. Every profile
+reads the same evidence bundle, produces typed and cited statements, performs
+one automatic cross-examination round, and contributes to an evidence-bound
+synthesis of consensus, disagreement, unresolved questions, and falsification
+conditions. Debate interpretation is kept separate from structured timeline
+facts. See [`docs/m2-debate.md`](docs/m2-debate.md) for the acceptance boundary
+and live smoke results.
+
+```console
+python -m prism.cli debate CASE_ID \
+  --question "What changed, and why do the interpretations differ?" \
+  --as-of 2026-09-04T00:00:00+00:00
+```
+
+M2 has passed one real-provider smoke run for both an academic case and a
+policy case. Provider output drift remains isolated or conservatively
+downgraded; the default offline runtime never calls a real provider.
+
 `discover` creates a time-bounded research plan from an indexed material. To
 execute a plan, explicitly enable Firecrawl in `PRISM_HOME/config.json` and
 provide the key through the configured environment variable:

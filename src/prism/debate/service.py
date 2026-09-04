@@ -25,6 +25,7 @@ from .models import (
     PerspectiveProfile,
     PerspectiveResult,
     SynthesisPoint,
+    STATEMENT_CLASSIFICATIONS,
 )
 from .profiles import ACADEMIC_PROFILES, DEFAULT_PROFILES
 
@@ -378,9 +379,24 @@ def _load_payload(text: object) -> dict[str, Any]:
     return payload
 
 
-def _fields(path: str, value: dict[str, Any], required: set[str]) -> None:
+def _fields(
+    path: str,
+    value: dict[str, Any],
+    required: set[str],
+    *,
+    extra_allowed: frozenset[str] = frozenset(),
+) -> tuple[str, ...]:
+    """Validate a strict field set and return the tolerated extras present.
+
+    Every ``required`` field must be present and any field outside
+    ``required | extra_allowed`` is rejected as unknown.  Tolerated extras
+    are the confirmed non-critical provider shapes (an overall top-level
+    ``classification`` and per-statement ``reasoning``); they are returned so
+    the caller can audit the structural deviation without ever promoting the
+    ignored content - model reasoning must not become a fact.
+    """
     missing = sorted(required - value.keys())
-    extra = sorted(value.keys() - required)
+    extra = sorted(value.keys() - required - extra_allowed)
     if missing or extra:
         details = []
         if missing:
@@ -388,6 +404,7 @@ def _fields(path: str, value: dict[str, Any], required: set[str]) -> None:
         if extra:
             details.append("unknown " + ", ".join(extra))
         raise _OutputInvalid(f"{path} has invalid fields ({'; '.join(details)})")
+    return tuple(sorted(value.keys() & extra_allowed))
 
 
 def _text(path: str, value: object) -> str:
@@ -424,13 +441,80 @@ def _citations(path: str, value: object, allowed: frozenset[str]) -> tuple[str, 
         raise _OutputInvalid(
             f"{path} references unknown evidence id(s): " + ", ".join(unknown)
         )
+    seen: set[str] = set()
+    duplicates: set[str] = set()
+    for item in result:
+        if item in seen:
+            duplicates.add(item)
+        else:
+            seen.add(item)
+    duplicates = sorted(duplicates)
+    if duplicates:
+        raise _OutputInvalid(
+            f"{path} contains duplicate evidence id(s): " + ", ".join(duplicates)
+        )
     return result
+
+
+_CLASSIFICATION_TYPE_KEYS = frozenset({"type", "classification", "category"})
+
+
+def _classifications_value(path: str, value: object) -> str:
+    """Map one confirmed ``classifications`` shape to its single class.
+
+    Only unique, explicit shapes map: a bare class string, a list holding
+    exactly one class string, an object whose single type/classification/
+    category key carries a class string, or an object whose only key is one
+    of the five classes.  Ambiguous or unknown shapes are rejected, never
+    guessed; confidence, reason or evidence metadata never selects a class.
+    """
+    if isinstance(value, str):
+        if value in STATEMENT_CLASSIFICATIONS:
+            return value
+        raise _OutputInvalid(f"{path}.classifications is not supported")
+    if isinstance(value, list):
+        if (
+            len(value) == 1
+            and isinstance(value[0], str)
+            and value[0] in STATEMENT_CLASSIFICATIONS
+        ):
+            return value[0]
+        raise _OutputInvalid(f"{path}.classifications is not supported")
+    if isinstance(value, dict):
+        type_keys = [key for key in value if key in _CLASSIFICATION_TYPE_KEYS]
+        class_keys = [key for key in value if key in STATEMENT_CLASSIFICATIONS]
+        if len(type_keys) == 1 and not class_keys:
+            label = value[type_keys[0]]
+            if isinstance(label, str) and label in STATEMENT_CLASSIFICATIONS:
+                return label
+            raise _OutputInvalid(f"{path}.classifications is not supported")
+        if not type_keys and len(class_keys) == 1:
+            detail = value[class_keys[0]]
+            if isinstance(detail, dict):
+                return class_keys[0]
+    raise _OutputInvalid(f"{path}.classifications is not supported")
 
 
 def _parse_independent(
     payload: dict[str, Any], profile_id: str, allowed: frozenset[str]
-) -> IndependentInterpretation:
-    _fields("independent", payload, {"statements"})
+) -> tuple[IndependentInterpretation, tuple[str, ...]]:
+    # A real provider wrapped its independent output with an overall
+    # "classification" beside "statements".  The value is overall metadata,
+    # never a statement, so it is ignored and only audited as a deviation.
+    ignored = _fields(
+        "independent",
+        payload,
+        {"statements"},
+        extra_allowed=frozenset({"classification"}),
+    )
+    warnings: list[str] = []
+    if ignored:
+        warnings.append(
+            f"independent output of profile {profile_id!r} carried ignored "
+            "top-level field(s) "
+            + ", ".join(repr(name) for name in ignored)
+            + "; treated as overall metadata, not as a statement"
+        )
     raw_statements = _array("independent.statements", payload["statements"])
     if not raw_statements:
         raise _OutputInvalid("independent.statements must not be empty")
@@ -440,20 +524,60 @@ def _parse_independent(
         path = f"independent.statements[{index}]"
         if not isinstance(raw, dict):
             raise _OutputInvalid(f"{path} must be a JSON object")
-        _fields(path, raw, {"id", "classification", "text", "evidence_ids"})
-        statement_id = _identifier(f"{path}.id", raw["id"])
+        # A real provider attached a "reasoning" explanation to statements.
+        # Reasoning is explanation metadata, not evidence: it is ignored and
+        # audited, and never enters DebateStatement or the fact timeline.
+        has_text = "text" in raw
+        has_statement = "statement" in raw
+        if has_text == has_statement:
+            raise _OutputInvalid(
+                f"{path} requires exactly one of text or statement"
+            )
+        text_key = "text" if has_text else "statement"
+        # The canonical single-string field stays authoritative; the plural
+        # field is only accepted when it drifted into one confirmed explicit
+        # shape, and both fields together are ambiguous and rejected.
+        has_classification = "classification" in raw
+        has_classifications = "classifications" in raw
+        if has_classification == has_classifications:
+            raise _OutputInvalid(
+                f"{path} requires exactly one of classification or classifications"
+            )
+        classification_key = (
+            "classification" if has_classification else "classifications"
+        )
+        required = {classification_key, text_key, "evidence_ids"}
+        if "id" in raw:
+            required.add("id")
+        ignored_fields = _fields(
+            path,
+            raw,
+            required,
+            extra_allowed=frozenset({"reasoning"}),
+        )
+        if "id" in raw:
+            statement_id = _identifier(f"{path}.id", raw["id"])
+        else:
+            statement_id = f"{profile_id}:independent:{index}"
+        if ignored_fields:
+            warnings.append(
+                f"statement {statement_id!r} of profile {profile_id!r} carried "
+                "ignored explanation field(s) "
+                + ", ".join(repr(name) for name in ignored_fields)
+                + "; model reasoning is not evidence and was not recorded"
+            )
         if statement_id in seen:
             raise _OutputInvalid(f"duplicate statement id {statement_id!r}")
         seen.add(statement_id)
-        classification = raw["classification"]
-        if classification not in {
-            "fact",
-            "interpretation",
-            "value_judgment",
-            "prediction",
-            "unresolved",
-        }:
-            raise _OutputInvalid(f"{path}.classification is not supported")
+        if has_classification:
+            classification = raw["classification"]
+            if (
+                not isinstance(classification, str)
+                or classification not in STATEMENT_CLASSIFICATIONS
+            ):
+                raise _OutputInvalid(f"{path}.classification is not supported")
+        else:
+            classification = _classifications_value(path, raw["classifications"])
         evidence_ids = _citations(f"{path}.evidence_ids", raw["evidence_ids"], allowed)
         if classification != "unresolved" and not evidence_ids:
             raise _OutputInvalid(f"{path} requires evidence ids")
@@ -461,11 +585,47 @@ def _parse_independent(
             DebateStatement(
                 id=statement_id,
                 classification=classification,
-                text=_text(f"{path}.text", raw["text"]),
+                text=_text(f"{path}.{text_key}", raw[text_key]),
                 evidence_ids=evidence_ids,
             )
         )
-    return IndependentInterpretation(profile_id, tuple(statements))
+    return (
+        IndependentInterpretation(profile_id, tuple(statements)),
+        tuple(warnings),
+    )
+
+
+_CROSS_CANONICAL_FIELDS = frozenset(
+    {
+        "challenge_id",
+        "target_profile_id",
+        "target_statement_id",
+        "challenge",
+        "reply",
+        "withdrawn",
+        "evidence_ids",
+    }
+)
+# Only the addressing fields distinguish the canonical schema from the
+# confirmed drifted one; challenge/reply/withdrawn/evidence_ids are shared.
+_CROSS_CANONICAL_ADDRESSING = frozenset(
+    {"challenge_id", "target_profile_id", "target_statement_id"}
+)
+_CROSS_DRIFTED_FIELDS = frozenset(
+    {
+        "challenged_id",
+        "challenged_text",
+        "grounds",
+        "reply",
+        "withdrawn",
+        "evidence_ids",
+    }
+)
+# Confirmed real-provider cross shapes attach an overall reply/answer/response
+# text beside (or instead of) the challenges array.  That text is cross-phase
+# metadata only: it may serve as reply metadata for a drifted challenge that
+# has none, and it must never become a statement fact or an evidence citation.
+_CROSS_META_FIELDS = frozenset({"reply", "answer", "response"})
 
 
 def _parse_cross(
@@ -473,76 +633,405 @@ def _parse_cross(
     profile_id: str,
     allowed: frozenset[str],
     targets: dict[str, set[str]],
-) -> CrossExamination:
-    _fields("cross_examination", payload, {"challenges"})
+) -> tuple[CrossExamination, tuple[str, ...]]:
+    """Parse one perspective's cross_examination output.
+
+    The canonical schema (every challenge carries challenge_id,
+    target_profile_id, target_statement_id, challenge, reply, withdrawn and
+    evidence_ids, and no top-level text field exists) is unchanged and stays
+    strict.  The only tolerated deviations are the confirmed real-provider
+    shapes: a top-level ``reply``/``answer``/``response`` text, and challenge
+    items addressed by ``challenged_id`` (with the challenge text in
+    ``challenged_text`` or ``grounds``).  Drifted items are mapped through
+    known independent statement ids only - the target perspective is the
+    unique owner of the challenged statement id, never guessed - and every
+    item that cannot be mapped without inventing content is dropped and
+    audited.  ``challenges`` may be absent only when one of the tolerated
+    top-level texts is present (an empty no-challenge cross result).
+    """
+    warnings: list[str] = []
+    unknown = sorted(
+        set(payload) - {"challenges"} - _CROSS_META_FIELDS
+    )
+    if unknown:
+        raise _OutputInvalid(
+            "cross_examination has invalid fields (unknown "
+            + ", ".join(unknown)
+            + ")"
+        )
+    meta_present = sorted(set(payload) & _CROSS_META_FIELDS)
+    for name in meta_present:
+        # The tolerated top-level texts are validated like any text field;
+        # their content is only ever reply metadata, never a fact.  An empty
+        # value is an audited no-op, not a reason to fail the whole phase.
+        if not isinstance(payload[name], str):
+            raise _OutputInvalid(
+                f"cross_examination.{name} must be a non-empty string"
+            )
+    if meta_present:
+        warnings.append(
+            f"cross_examination output of profile {profile_id!r} carried "
+            "top-level reply/answer/response field(s) "
+            + ", ".join(repr(name) for name in meta_present)
+            + "; treated as cross-phase reply metadata, never as a statement "
+            "fact or evidence citation"
+        )
+    if "challenges" not in payload:
+        if not meta_present:
+            raise _OutputInvalid("cross_examination requires challenges")
+        raw_challenges: list[Any] = []
+    else:
+        raw_challenges = _array(
+            "cross_examination.challenges", payload["challenges"]
+        )
+    # With exactly one non-empty tolerated top-level text it is unambiguous
+    # enough to serve as reply metadata for drifted items that carry no reply
+    # of their own; several texts would be ambiguous, so none is used.
+    shared_reply: str | None = None
+    if len(meta_present) == 1:
+        text = payload[meta_present[0]]
+        shared_reply = _text(
+            f"cross_examination.{meta_present[0]}", text
+        ) if text.strip() else None
+
+    def drop(index: int, reason: str) -> None:
+        warnings.append(
+            f"cross_examination output of profile {profile_id!r} dropped "
+            f"challenge item {index}: {reason}; the challenge was not recorded"
+        )
+
     challenges: list[CrossChallenge] = []
     seen: set[str] = set()
-    raw_challenges = _array("cross_examination.challenges", payload["challenges"])
+    mapped_drifted = 0
     for index, raw in enumerate(raw_challenges):
         path = f"cross_examination.challenges[{index}]"
         if not isinstance(raw, dict):
             raise _OutputInvalid(f"{path} must be a JSON object")
-        _fields(
-            path,
-            raw,
-            {
-                "challenge_id",
-                "target_profile_id",
-                "target_statement_id",
-                "challenge",
-                "reply",
-                "withdrawn",
-                "evidence_ids",
-            },
-        )
-        challenge_id = _identifier(f"{path}.challenge_id", raw["challenge_id"])
-        if challenge_id in seen:
-            raise _OutputInvalid(f"duplicate challenge id {challenge_id!r}")
-        seen.add(challenge_id)
-        target_profile = _identifier(
-            f"{path}.target_profile_id", raw["target_profile_id"]
-        )
-        target_statement = _identifier(
-            f"{path}.target_statement_id", raw["target_statement_id"]
-        )
-        if (
-            target_profile not in targets
-            or target_statement not in targets[target_profile]
-        ):
-            raise _OutputInvalid(
-                f"{path} targets an unknown perspective/statement pair"
+        keys = set(raw)
+        canonical_keys = keys & _CROSS_CANONICAL_ADDRESSING
+        if "challenged_id" in keys and not canonical_keys:
+            # Drifted item: addressed by challenged_id; the canonical target
+            # pair is reverse-mapped from the known statement id.
+            extra = sorted(keys - _CROSS_DRIFTED_FIELDS)
+            if extra:
+                raise _OutputInvalid(
+                    f"{path} has invalid fields (unknown " + ", ".join(extra) + ")"
+                )
+            challenged_id = _identifier(
+                f"{path}.challenged_id", raw["challenged_id"]
             )
-        challenges.append(
-            CrossChallenge(
-                challenge_id=challenge_id,
-                target_profile_id=target_profile,
-                target_statement_id=target_statement,
-                challenge=_text(f"{path}.challenge", raw["challenge"]),
-                reply=_text(f"{path}.reply", raw["reply"]),
-                withdrawn=_boolean(f"{path}.withdrawn", raw["withdrawn"]),
-                evidence_ids=_citations(
+            matches = [
+                owner
+                for owner, statement_ids in targets.items()
+                if challenged_id in statement_ids
+            ]
+            if not matches:
+                drop(
+                    index,
+                    "challenged_id does not reference any known independent "
+                    "statement id",
+                )
+                continue
+            if len(matches) > 1:
+                drop(
+                    index,
+                    "challenged_id references statements of more than one "
+                    "perspective; the target would have to be guessed",
+                )
+                continue
+            has_challenge_text = "challenged_text" in raw
+            has_grounds = "grounds" in raw
+            if has_challenge_text == has_grounds:
+                drop(
+                    index,
+                    "no unique challenge text: needs exactly one of "
+                    "challenged_text or grounds, without inventing one",
+                )
+                continue
+            text_field = "challenged_text" if has_challenge_text else "grounds"
+            challenge = _text(f"{path}.{text_field}", raw[text_field])
+            if "reply" in raw:
+                reply = _text(f"{path}.reply", raw["reply"])
+            elif shared_reply is not None:
+                reply = shared_reply
+            else:
+                drop(
+                    index,
+                    "no per-challenge reply and no single top-level reply "
+                    "metadata to use",
+                )
+                continue
+            if "withdrawn" in raw:
+                withdrawn = _boolean(f"{path}.withdrawn", raw["withdrawn"])
+            else:
+                withdrawn = False
+            if "evidence_ids" in raw:
+                evidence_ids = _citations(
                     f"{path}.evidence_ids", raw["evidence_ids"], allowed
-                ),
+                )
+            else:
+                # No citation was supplied; the challenge stays unresolved
+                # metadata and is never promoted as if it were evidenced.
+                evidence_ids = ()
+            target_profile = matches[0]
+            challenge_id = f"{profile_id}:cross:{index}"
+            if challenge_id in seen:
+                raise _OutputInvalid(
+                    f"duplicate challenge id {challenge_id!r}"
+                )
+            seen.add(challenge_id)
+            challenges.append(
+                CrossChallenge(
+                    challenge_id=challenge_id,
+                    target_profile_id=target_profile,
+                    target_statement_id=challenged_id,
+                    challenge=challenge,
+                    reply=reply,
+                    withdrawn=withdrawn,
+                    evidence_ids=evidence_ids,
+                )
             )
+            mapped_drifted += 1
+            continue
+        if canonical_keys and "challenged_id" not in keys:
+            # Canonical item: the strict contract is unchanged.  Every field
+            # is required and nothing else is tolerated.
+            _fields(path, raw, _CROSS_CANONICAL_FIELDS)
+            challenge_id = _identifier(f"{path}.challenge_id", raw["challenge_id"])
+            if challenge_id in seen:
+                raise _OutputInvalid(f"duplicate challenge id {challenge_id!r}")
+            seen.add(challenge_id)
+            target_profile = _identifier(
+                f"{path}.target_profile_id", raw["target_profile_id"]
+            )
+            target_statement = _identifier(
+                f"{path}.target_statement_id", raw["target_statement_id"]
+            )
+            if (
+                target_profile not in targets
+                or target_statement not in targets[target_profile]
+            ):
+                raise _OutputInvalid(
+                    f"{path} targets an unknown perspective/statement pair"
+                )
+            challenges.append(
+                CrossChallenge(
+                    challenge_id=challenge_id,
+                    target_profile_id=target_profile,
+                    target_statement_id=target_statement,
+                    challenge=_text(f"{path}.challenge", raw["challenge"]),
+                    reply=_text(f"{path}.reply", raw["reply"]),
+                    withdrawn=_boolean(f"{path}.withdrawn", raw["withdrawn"]),
+                    evidence_ids=_citations(
+                        f"{path}.evidence_ids", raw["evidence_ids"], allowed
+                    ),
+                )
+            )
+            continue
+        # Drifted-style items that name no challenged statement cannot be
+        # attributed to any target: drop and audit them rather than guessing.
+        if keys and keys <= _CROSS_DRIFTED_FIELDS - {"challenged_id"}:
+            drop(
+                index,
+                "no challenged_id referencing a known independent statement id",
+            )
+            continue
+        # Items that mix canonical and drifted addressing, carry only unknown
+        # fields, or are empty cannot be mapped without guessing.
+        raise _OutputInvalid(f"{path} has unsupported challenge fields")
+    if mapped_drifted:
+        warnings.append(
+            f"cross_examination output of profile {profile_id!r} carried "
+            f"{mapped_drifted} challenge(s) addressed by challenged_id; they "
+            "were mapped through known statement ids without inventing "
+            "targets, replies or citations"
         )
-    return CrossExamination(profile_id, tuple(challenges))
+    return CrossExamination(profile_id, tuple(challenges)), tuple(warnings)
+
+
+# A real provider emits the canonical six synthesis sections but drifts the
+# item field names in confirmed, non-critical ways.  The canonical item
+# schema stays authoritative and unchanged; the confirmed aliases below only
+# map onto the same structured fields, and every item must follow exactly one
+# naming scheme (an item mixing canonical and alias names is ambiguous and
+# rejected, never guessed):
+#   * consensus/disagreements/sources_of_disagreement points name the point
+#     "summary", "finding" or the latest confirmed "statement" instead of
+#     "text";
+#   * key_evidence names its rationale "summary", "finding" or the latest
+#     confirmed "text", and may use "evidence_ids" for exactly one citation,
+#     with an optional "implication" explanation field;
+#   * unresolved_questions uses "question" and "relevant_evidence_ids";
+#   * falsification_conditions uses "condition" and "relevant_evidence_ids"
+#     (the canonical "evidence_ids" field is always accepted).
+# "implication" is explanation metadata only, like statement "reasoning": it
+# is ignored with a field-level warning that names the field and index but
+# never carries the model's implication text, and the text never becomes a
+# structured fact.  The same holds for the confirmed per-point "confidence"
+# metadata on the point-family sections: it is audited by item index and
+# field name only, never read into a fact and never a substitute for a
+# citation.  The last confirmed metadata, a per-item "status" on
+# unresolved_questions, is handled the same way with one extra rule: its
+# value must be a non-empty string, or the item is invalid like any other
+# malformed shape.  The string content itself is never read or recorded;
+# status is not tolerated on any other section.
+_SYNTHESIS_TEXT_ALIASES = {
+    "consensus": ("summary", "finding", "statement"),
+    "disagreements": ("summary", "finding", "statement"),
+    "sources_of_disagreement": ("summary", "finding", "statement"),
+    "unresolved_questions": ("question",),
+    "falsification_conditions": ("condition",),
+}
+# Per-section ignored metadata fields (confirmed provider shapes only): the
+# point-family sections may carry an overall "confidence" beside the point
+# text and citations.  The question/condition sections and key_evidence do
+# not, so confidence stays rejected there.
+_SYNTHESIS_IGNORED_FIELDS = {
+    "consensus": frozenset({"confidence"}),
+    "disagreements": frozenset({"confidence"}),
+    "sources_of_disagreement": frozenset({"confidence"}),
+}
+# Confirmed ignored metadata whose value must be a non-empty string, unlike
+# the any-value point-family "confidence": an unresolved_questions item may
+# carry "status" beside its question and citations.  The value is validated
+# like any text field but its content is never read into a fact, and status
+# is confined to this section.
+_SYNTHESIS_IGNORED_TEXT_FIELDS = {
+    "unresolved_questions": frozenset({"status"}),
+}
+_SYNTHESIS_EVIDENCE_ALIASES = {
+    "unresolved_questions": ("relevant_evidence_ids",),
+    "falsification_conditions": ("relevant_evidence_ids",),
+}
+
+
+def _one_named_field(
+    path: str, raw: dict[str, Any], choices: tuple[str, ...]
+) -> str:
+    present = tuple(name for name in choices if name in raw)
+    if len(present) != 1:
+        raise _OutputInvalid(
+            f"{path} requires exactly one of " + " or ".join(choices)
+        )
+    return present[0]
 
 
 def _synthesis_point(
-    path: str, raw: object, allowed: frozenset[str]
-) -> SynthesisPoint:
+    path: str,
+    raw: object,
+    allowed: frozenset[str],
+    *,
+    text_aliases: tuple[str, ...],
+    evidence_aliases: tuple[str, ...] = (),
+    ignored_fields: frozenset[str] = frozenset(),
+    ignored_text_fields: frozenset[str] = frozenset(),
+) -> tuple[SynthesisPoint, tuple[str, ...]]:
+    """Parse one synthesis point in its canonical or confirmed alias shape.
+
+    The canonical item shape (``text`` plus ``evidence_ids``) is unchanged
+    and stays authoritative.  The only tolerated deviations are the confirmed
+    per-section aliases: the text may be named by ``text_aliases`` and, for
+    the sections that drifted, citations may be named by ``evidence_aliases``.
+    An item must follow exactly one naming scheme per field; mixing or
+    omitting schemes is ambiguous and invalid, and any other field is
+    rejected.  Every point still requires at least one allowed evidence id:
+    alias text can never substitute for a citation.  Confirmed metadata
+    (``ignored_fields``, e.g. point-family ``confidence``) is audited by
+    field name and item index only, never read, and can never substitute for
+    a citation.  ``ignored_text_fields`` is ignored metadata whose value is
+    additionally validated as a non-empty string (e.g.
+    unresolved_questions ``status``); the content is still never read.
+    """
     if not isinstance(raw, dict):
         raise _OutputInvalid(f"{path} must be a JSON object")
-    _fields(path, raw, {"text", "evidence_ids"})
-    evidence_ids = _citations(f"{path}.evidence_ids", raw["evidence_ids"], allowed)
+    text_choices = ("text", *text_aliases)
+    evidence_choices = ("evidence_ids", *evidence_aliases)
+    text_key = _one_named_field(path, raw, text_choices)
+    ids_key = _one_named_field(path, raw, evidence_choices)
+    allowed_fields = set(text_choices) | set(evidence_choices)
+    unknown = sorted(set(raw) - allowed_fields - ignored_fields)
+    if unknown:
+        raise _OutputInvalid(
+            f"{path} has invalid fields (unknown " + ", ".join(unknown) + ")"
+        )
+    evidence_ids = _citations(f"{path}.{ids_key}", raw[ids_key], allowed)
     if not evidence_ids:
         raise _OutputInvalid(f"{path} requires evidence ids")
-    return SynthesisPoint(_text(f"{path}.text", raw["text"]), evidence_ids)
+    warnings: list[str] = []
+    ignored_present = sorted(set(raw) & ignored_fields)
+    if ignored_present:
+        for name in ignored_present:
+            if name in ignored_text_fields:
+                # The metadata value must look like a non-empty string; its
+                # content is validated only and never read or recorded.
+                _text(f"{path}.{name}", raw[name])
+        warnings.append(
+            f"{path} carried ignored metadata field(s) "
+            + ", ".join(repr(name) for name in ignored_present)
+            + "; the value is not a fact and was not recorded"
+        )
+    return (
+        SynthesisPoint(_text(f"{path}.{text_key}", raw[text_key]), evidence_ids),
+        tuple(warnings),
+    )
+
+
+def _key_evidence_item(
+    path: str, raw: object, allowed: frozenset[str]
+) -> tuple[KeyEvidence, tuple[str, ...]]:
+    """Parse one key evidence item in its canonical or confirmed alias shape.
+
+    The canonical item shape (``evidence_id`` plus ``rationale``) is
+    unchanged.  Confirmed provider shapes may name the rationale ``summary``,
+    ``finding`` or ``text`` and may name a single-item citation list
+    ``evidence_ids``; the citation is exactly one allowed id and nothing
+    else (no confidence or other metadata) can substitute for it.  An
+    optional ``implication`` explanation field is ignored and audited by
+    field name and index only; it never enters the structured rationale or
+    any other fact.
+    """
+    if not isinstance(raw, dict):
+        raise _OutputInvalid(f"{path} must be a JSON object")
+    rationale_choices = ("rationale", "summary", "finding", "text")
+    evidence_choices = ("evidence_id", "evidence_ids")
+    rationale_key = _one_named_field(path, raw, rationale_choices)
+    evidence_key = _one_named_field(path, raw, evidence_choices)
+    allowed_fields = set(rationale_choices) | set(evidence_choices) | {"implication"}
+    unknown = sorted(set(raw) - allowed_fields)
+    if unknown:
+        raise _OutputInvalid(
+            f"{path} has invalid fields (unknown " + ", ".join(unknown) + ")"
+        )
+    if evidence_key == "evidence_id":
+        evidence_id = _identifier(f"{path}.evidence_id", raw["evidence_id"])
+    else:
+        evidence_ids = _citations(
+            f"{path}.evidence_ids", raw["evidence_ids"], allowed
+        )
+        if len(evidence_ids) != 1:
+            raise _OutputInvalid(
+                f"{path}.evidence_ids must contain exactly one evidence id"
+            )
+        evidence_id = evidence_ids[0]
+    if evidence_id not in allowed:
+        raise _OutputInvalid(f"{path} references unknown evidence id")
+    warnings: list[str] = []
+    if "implication" in raw:
+        warnings.append(
+            f"{path} carried ignored explanation field 'implication'; "
+            "explanation metadata is not evidence and was not recorded"
+        )
+    return (
+        KeyEvidence(
+            evidence_id, _text(f"{path}.{rationale_key}", raw[rationale_key])
+        ),
+        tuple(warnings),
+    )
 
 
 def _parse_synthesis(
     payload: dict[str, Any], allowed: frozenset[str]
-) -> DebateSynthesis:
+) -> tuple[DebateSynthesis, tuple[str, ...]]:
     required = {
         "consensus",
         "disagreements",
@@ -552,33 +1041,51 @@ def _parse_synthesis(
         "falsification_conditions",
     }
     _fields("synthesis", payload, required)
-    key_evidence: list[KeyEvidence] = []
-    raw_key_evidence = _array("synthesis.key_evidence", payload["key_evidence"])
-    for index, raw in enumerate(raw_key_evidence):
-        path = f"synthesis.key_evidence[{index}]"
-        if not isinstance(raw, dict):
-            raise _OutputInvalid(f"{path} must be a JSON object")
-        _fields(path, raw, {"evidence_id", "rationale"})
-        evidence_id = _identifier(f"{path}.evidence_id", raw["evidence_id"])
-        if evidence_id not in allowed:
-            raise _OutputInvalid(f"{path} references unknown evidence id")
-        key_evidence.append(
-            KeyEvidence(evidence_id, _text(f"{path}.rationale", raw["rationale"]))
-        )
+    warnings: list[str] = []
 
     def points(name: str) -> tuple[SynthesisPoint, ...]:
-        return tuple(
-            _synthesis_point(f"synthesis.{name}[{index}]", item, allowed)
-            for index, item in enumerate(_array(f"synthesis.{name}", payload[name]))
+        evidence_aliases = _SYNTHESIS_EVIDENCE_ALIASES.get(name, ())
+        ignored_text_fields = _SYNTHESIS_IGNORED_TEXT_FIELDS.get(
+            name, frozenset()
         )
+        parsed: list[SynthesisPoint] = []
+        for index, item in enumerate(_array(f"synthesis.{name}", payload[name])):
+            point, point_warnings = _synthesis_point(
+                f"synthesis.{name}[{index}]",
+                item,
+                allowed,
+                text_aliases=_SYNTHESIS_TEXT_ALIASES[name],
+                evidence_aliases=evidence_aliases,
+                ignored_fields=(
+                    _SYNTHESIS_IGNORED_FIELDS.get(name, frozenset())
+                    | ignored_text_fields
+                ),
+                ignored_text_fields=ignored_text_fields,
+            )
+            parsed.append(point)
+            warnings.extend(point_warnings)
+        return tuple(parsed)
 
-    return DebateSynthesis(
-        consensus=points("consensus"),
-        disagreements=points("disagreements"),
-        sources_of_disagreement=points("sources_of_disagreement"),
-        key_evidence=tuple(key_evidence),
-        unresolved_questions=points("unresolved_questions"),
-        falsification_conditions=points("falsification_conditions"),
+    key_evidence: list[KeyEvidence] = []
+    for index, raw in enumerate(
+        _array("synthesis.key_evidence", payload["key_evidence"])
+    ):
+        item, item_warnings = _key_evidence_item(
+            f"synthesis.key_evidence[{index}]", raw, allowed
+        )
+        key_evidence.append(item)
+        warnings.extend(item_warnings)
+
+    return (
+        DebateSynthesis(
+            consensus=points("consensus"),
+            disagreements=points("disagreements"),
+            sources_of_disagreement=points("sources_of_disagreement"),
+            key_evidence=tuple(key_evidence),
+            unresolved_questions=points("unresolved_questions"),
+            falsification_conditions=points("falsification_conditions"),
+        ),
+        tuple(warnings),
     )
 
 
@@ -610,12 +1117,17 @@ def _independent_prompt(
     as_of = datetime.fromisoformat(evidence["as_of"])
     return (
         _request("independent", question, as_of, profile.id)
-        + "Interpret this one case from your observation position. Classify every "
-        "statement as fact, interpretation, value_judgment, prediction or "
-        "unresolved. Facts, causal judgments, interpretations, predictions and "
-        "value judgments require evidence_ids. Use unresolved when evidence is "
-        "insufficient. Do not invent citations or balance the debate with "
-        "unsupported opposition.\n\n"
+        + "Interpret this one case from your observation position. Each statement "
+        "object must contain exactly id, classification, text and evidence_ids. "
+        "Classify every statement as fact, interpretation, value_judgment, "
+        "prediction or unresolved: classification must be a single string "
+        "naming one class, never a classifications string or a JSON array "
+        "containing exactly one string. Do not use a classifications object, "
+        "do not use a classifications list, do not attach reasoning, and do "
+        "not output both text and statement. Facts, causal judgments, "
+        "interpretations, predictions and value judgments require "
+        "evidence_ids. Use unresolved when evidence is insufficient. Do not "
+        "invent citations or balance the debate with unsupported opposition.\n\n"
         + "BEGIN EVIDENCE BUNDLE\n"
         + _canonical_json(evidence)
         + "\nEND EVIDENCE BUNDLE"
@@ -634,6 +1146,13 @@ def _cross_prompt(
         + "Challenge the other structured interpretations using only the same "
         "evidence bundle. You may challenge, reply or withdraw, but you must "
         "not invent citations or create opposition merely for balance.\n\n"
+        "Return exactly one JSON object whose only field is challenges, an "
+        "array of challenge objects. Each challenge object must contain "
+        "exactly challenge_id, target_profile_id, target_statement_id, "
+        "challenge, reply, withdrawn and evidence_ids, citing only existing "
+        "statement ids from BEGIN INDEPENDENT OUTPUTS. Do not use a "
+        "challenged_id/challenged_text/grounds shape and do not attach a "
+        "top-level reply, answer or response field.\n\n"
         + "BEGIN EVIDENCE BUNDLE\n"
         + _canonical_json(evidence)
         + "\nEND EVIDENCE BUNDLE\n\n"
@@ -656,6 +1175,13 @@ def _synthesis_prompt(
         "consensus, disagreements, sources of disagreement, key evidence, "
         "unresolved questions and falsification conditions. Every item must "
         "cite existing evidence ids. Do not turn model reasoning into a fact.\n\n"
+        "Return exactly those six top-level fields. consensus, disagreements, "
+        "and sources_of_disagreement items must contain exactly text and "
+        "evidence_ids; key_evidence items must contain exactly evidence_id and "
+        "rationale; unresolved_questions and falsification_conditions items must "
+        "contain exactly text and evidence_ids. Do not use summary, finding, "
+        "statement, question, condition, relevant_evidence_ids, implication, "
+        "confidence, or status fields. Evidence id arrays must not repeat an id.\n\n"
         + "BEGIN EVIDENCE BUNDLE\n"
         + _canonical_json(evidence)
         + "\nEND EVIDENCE BUNDLE\n\n"
@@ -784,6 +1310,7 @@ class DebateService:
         allowed = _evidence_ids(analysis)
         rounds: list[dict[str, Any]] = []
         failures: list[DebateFailure] = []
+        warnings: list[str] = []
         interpretations: dict[str, IndependentInterpretation] = {}
         results: list[PerspectiveResult] = []
 
@@ -806,11 +1333,12 @@ class DebateService:
                     _DEBATE_ROLE,
                     _independent_prompt(profile, question, evidence),
                 )
-                interpretation = _parse_independent(
+                interpretation, deviations = _parse_independent(
                     _load_payload(getattr(completion, "text", None)),
                     profile.id,
                     allowed,
                 )
+                warnings.extend(deviations)
             except Exception as error:
                 invalid = isinstance(error, _OutputInvalid)
                 failure = DebateFailure(
@@ -856,12 +1384,13 @@ class DebateService:
                         independent_payload,
                     ),
                 )
-                cross = _parse_cross(
+                cross, deviations = _parse_cross(
                     _load_payload(getattr(completion, "text", None)),
                     profile.id,
                     allowed,
                     targets,
                 )
+                warnings.extend(deviations)
             except Exception as error:
                 invalid = isinstance(error, _OutputInvalid)
                 failure = DebateFailure(
@@ -911,9 +1440,10 @@ class DebateService:
                         cross_payload,
                     ),
                 )
-                synthesis = _parse_synthesis(
+                synthesis, deviations = _parse_synthesis(
                     _load_payload(getattr(completion, "text", None)), allowed
                 )
+                warnings.extend(deviations)
                 rounds.append(_round("synthesis", None, synthesis))
             except Exception as error:
                 failure = DebateFailure(
@@ -955,6 +1485,7 @@ class DebateService:
             evidence_bundle_hash=evidence_hash,
             errors=tuple(failures),
             completed_at=completed_at,
+            warnings=tuple(warnings),
         )
         if self._ledger is not None:
             result = self._ledger.record(result, rounds, input_hash)
