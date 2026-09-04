@@ -300,6 +300,19 @@ not silently reused and no debate is re-run automatically. A successful
 append creates the usual immutable `material_added` report version at that
 cutoff. See `docs/m3-material-debate-link.md`.
 
+An optional NiceGUI case home is now available for browsing accumulated cases
+and loading the same GTI-backed historical snapshots used by the CLI:
+
+```console
+pip install -e ".[webui]"
+python -m prism.webui
+```
+
+It binds to `127.0.0.1` with browser auto-open disabled, and remains a thin
+facade client. The debate theater, evidence upload/browser, model settings,
+authentication and remote exposure are not included in this slice. See
+`docs/m3-webui-case-home.md`.
+
 ## M3 Report Versioning v0
 
 PRISM now has an API/CLI product base for multi-case operation. `cases` reads only

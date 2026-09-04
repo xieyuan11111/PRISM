@@ -25,6 +25,12 @@ pdf = [
     "pypdf==6.16.1",
 ]
 
+# The operator console is optional; importing PRISM's core must not import a
+# web framework or expose a listening port.
+webui = [
+    "nicegui==2.24.2",
+]
+
 # Graphiti/Neo4j remains opt-in and is NEVER part of the default install;
 # PRISM's default runtime stays fully offline without it. Pinned to the
 # versions verified in the Phase B live spike (docs/graphiti-spike-plan.md,
