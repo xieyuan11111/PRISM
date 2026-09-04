@@ -443,6 +443,13 @@ def create_app(api: PrismFacade, *, title: str = DEFAULT_TITLE) -> Any:
     _plotly_graph_objects()
     controller = CaseHomeController(api)
     build_case_home_page(controller, ui, title=title)
+    from .debate import DebateTheaterController, build_debate_theater_page
+    from .evidence import EvidenceBrowserController, build_evidence_page
+    from .materials import MaterialEntryController, build_material_entry_page
+
+    build_debate_theater_page(DebateTheaterController(api), ui)
+    build_evidence_page(EvidenceBrowserController(api), ui)
+    build_material_entry_page(MaterialEntryController(api), ui)
     from nicegui import app as nicegui_app
 
     return nicegui_app

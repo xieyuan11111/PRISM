@@ -66,6 +66,30 @@ class _LazyAPI:
             case_id, as_of, stage=stage, kinds=kinds
         )
 
+    async def debate_case(
+        self, case_id: str, question: str, as_of: object,
+        perspectives: object = None,
+    ) -> object:
+        return await self._api().debate_case(
+            case_id, question, as_of, perspectives=perspectives
+        )
+
+    async def follow_up_debate(
+        self, parent_run_id: str, question: str, perspective: str
+    ) -> object:
+        return await self._api().follow_up_debate(
+            parent_run_id, question, perspective
+        )
+
+    async def search(self, query: object = None, **filters: object) -> object:
+        return await self._api().search(query, **filters)
+
+    async def add_material(
+        self, source: object, target_case: object,
+        metadata: object = None, **kwargs: object,
+    ) -> object:
+        return await self._api().add_material(source, target_case, metadata, **kwargs)
+
 
 def run(
     start_runtime: Callable[[], Awaitable[Any]] = _start_runtime,

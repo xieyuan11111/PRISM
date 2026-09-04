@@ -19,9 +19,15 @@ from .app import (
 )
 from .controller import parse_as_of, snapshot_view
 from .server import build_arg_parser, run
+from .debate import DebateTheaterController, build_debate_theater_page
+from .evidence import EvidenceBrowserController, build_evidence_page
+from .materials import MaterialEntryController, build_material_entry_page
 
 __all__ = [
     "CaseHomeController",
+    "DebateTheaterController",
+    "EvidenceBrowserController",
+    "MaterialEntryController",
     "DEFAULT_HOST",
     "DEFAULT_PORT",
     "DEFAULT_TITLE",
@@ -31,6 +37,9 @@ __all__ = [
     "build_arg_parser",
     "build_timeline_figure",
     "create_app",
+    "build_debate_theater_page",
+    "build_evidence_page",
+    "build_material_entry_page",
     "parse_as_of",
     "run",
     "snapshot_view",

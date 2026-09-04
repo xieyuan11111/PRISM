@@ -188,7 +188,7 @@ python -m prism.webui
 
 服务绑定 `127.0.0.1`，不自动打开浏览器；当前 runner 拒绝非 loopback host。它是一个薄 facade client：Plotly 时间线绘制 `PrismAPI.query_historical_snapshot` 返回的每个有效或已失效条目，stage/kind/cutoff 都是 facade 输入，而非浏览器端的时序过滤。有效条目与已失效事实采用不同 marker 和 label；点击节点时，用稳定的 `episode_key` 在当前快照中查找同一条目，直接显示 `source_ids`、corpus path、段落/页码和 quote，不发起第二次 API 读取。
 
-NiceGUI 与 Plotly 都是 `webui` extra 中延迟导入的可选依赖；导入 controller 不需要安装两者。当前 WebUI 不含辩论剧场、实时流、暂停/继续、证据上传或 corpus 浏览器、模型设置、多用户认证和远程暴露。完整边界见[《M3 NiceGUI 案例主页与历史时间线》](docs/m3-webui-case-home.md)。
+NiceGUI 与 Plotly 都是 `webui` extra 中延迟导入的可选依赖；导入 controller 不需要安装两者。当前 WebUI 还不含实时流、暂停/继续、模型设置、多用户认证和远程暴露。Debate Theater、证据浏览和材料追加页面分别位于 `/debate`、`/evidence` 和 `/materials`，边界见[《M3 NiceGUI 案例主页与历史时间线》](docs/m3-webui-case-home.md)、[《M3 NiceGUI Debate Theater v0》](docs/m3-webui-debate-theater.md)和[《M3 NiceGUI 证据浏览与材料入口 v0》](docs/m3-webui-evidence-material-entry.md)。
 
 ### 报告版本与 PDF
 
@@ -297,7 +297,7 @@ pip install -e ".[graphiti]"
 }
 ```
 
-此示例连接 PRISM 自有容器中唯一的内置 `neo4j` 数据库。模板使用 Neo4j Community Edition，服务名为 `prism-graphiti-spike`，不设置自定义默认数据库。对 `graphiti-core==0.29.3` 而言，显式 `group_id` 会被当作数据库选择：`add_episode` 会在两者不同时选择 `database=group_id`。因此 `enabled: true` 时 `database` 与 `group_id` 必须相同，此处都为 `neo4j`。PRISM 会在构造客户端前拒绝两者不一致的配置。隔离来自独立的 PRISM 自有容器、Neo4j home、服务和数据卷，不来自 Community 实例中的多个 group；Community Edition 不支持这种多数据库隔离。
+此示例连接 PRISM 自有容器中唯一的内置 `neo4j` 数据库。模板使用 Neo4j Community Edition，服务名为 `prism-graphiti-spike`，不设置自定义默认数据库。对 `graphiti-core==0.29.3` 而言，显式 `group_id` 会被当作数据库选择：`add_episode` 会在两者不同时选择 `database=group_id`。换句话说，realises a Neo4j group as a database；因此 `enabled: true` 时 `database` 与 `group_id` 必须相同，此处都为 `neo4j`。PRISM 会在构造客户端前拒绝两者不一致的配置。隔离来自独立的 PRISM 自有容器、Neo4j home、服务和数据卷，不来自 Community 实例中的多个 group；Community Edition 不支持这种多数据库隔离。
 
 `database` 是 PRISM adapter metadata，`Graphiti(uri, user, password, ...)` 构造函数不会消费它；它必须与 Graphiti 实际选库使用的 `group_id` 相等。`graphiti.uri` 必须显式携带非默认端口，标准 7474/7687 不会被自动套用，从而避免误连默认本地 Neo4j。
 
@@ -316,11 +316,11 @@ docker compose -f deploy/graphiti-spike/compose.yaml up -d
 
 Phase A 已完成代码、配置、部署模板和离线测试。Phase B 于 2026-09-03 在隔离、仅 loopback 可访问的 PRISM 自有 Neo4j Community 5.26 server 上执行并通过 3 个 opt-in integration tests：HTTP `127.0.0.1:7475` / Bolt `127.0.0.1:7688`，环境为 Python 3.12、`graphiti-core==0.29.3`、`neo4j==6.3.0`、`httpx==0.28.1`。
 
-3 个测试覆盖真实 Neo4j/Graphiti 的写入、读取、重启后幂等重写、历史截止点、关系与 registry 行为。测试注入确定性的 Graphiti LLM/embedder/reranker clients，`OPENAI_API_KEY` 不存在，没有调用外部 LLM、embedding 或 rerank provider；使用的是带随机后缀的合成 fixture，不是真实 corpus 案例。
+three live tests 覆盖真实 Neo4j/Graphiti 的写入、读取、重启后幂等重写、历史截止点、关系与 registry 行为。测试注入确定性的 Graphiti LLM/embedder/reranker clients，`OPENAI_API_KEY` 不存在，没有调用外部 LLM、embedding 或 rerank provider（no external LLM, embedding provider is called）；使用的是带随机后缀的合成 fixture，不是真实 corpus 案例。
 
 真实 `graphiti-core==0.29.3` 的 `search` 默认窗口是整个 group 的 10 个结果；当前 adapter 强制使用 100 个结果，作为有界的 spike safeguard，并不是分页。已测试的 3 个案例各自不超过 8 个 episodes，在当时累计图规模下完整返回。超过约 100 个 entity edges 的案例或累计 group 仍需要正式分页设计。
 
-未验收范围包括：真实 provider 的 extraction、真实 entity/edge 图质量、针对真实政策/新闻 corpus 的端到端重跑、生产规模分页，以及 Docker Compose/healthcheck 变体本身（执行环境未安装 Docker，实际使用的是独立的 native Neo4j launcher）。
+未验收范围包括：真实 provider extraction 仍属于尚未验证（not-yet-verified）的范围；真实 entity/edge 图质量、针对真实政策/新闻 corpus 的端到端重跑、生产规模分页，以及 Docker Compose/healthcheck 变体本身（执行环境未安装 Docker，实际使用的是独立的 native Neo4j launcher）。
 
 opt-in live integration tests 只有在环境中同时设置 `PRISM_GRAPHITI_URI` 与 `PRISM_GRAPHITI_PASSWORD` 时才运行，不属于默认 CI：
 
