@@ -1,5 +1,9 @@
-"""Run the optional PRISM NiceGUI case home."""
+"""``python -m prism.webui`` entry point."""
+
+from __future__ import annotations
 
 from .server import main
 
-main()
+
+if __name__ == "__main__":
+    raise SystemExit(main())

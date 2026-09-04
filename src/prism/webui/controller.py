@@ -128,6 +128,34 @@ def snapshot_view(state: HistoricalCaseState) -> dict[str, Any]:
     return _json_safe(state)
 
 
+_TIMELINE_BUCKETS = (
+    ("nodes", False),
+    ("facts", False),
+    ("interpretations", False),
+    ("relations", False),
+    ("invalidated_facts", True),
+)
+
+
+def _timeline_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+    """Flatten a JSON-safe snapshot without changing its temporal meaning."""
+    rows: list[dict[str, Any]] = []
+    for bucket, invalidated in _TIMELINE_BUCKETS:
+        for entry in snapshot.get(bucket) or ():
+            row = dict(entry)
+            row["invalidated"] = invalidated
+            rows.append(row)
+    return sorted(
+        rows,
+        key=lambda row: (
+            str(row.get("valid_at") or ""),
+            str(row.get("episode_key") or ""),
+            str(row.get("kind") or ""),
+            bool(row.get("invalidated")),
+        ),
+    )
+
+
 class CaseHomeController:
     """View-model adapter over the shared PrismAPI facade.
 
@@ -141,50 +169,14 @@ class CaseHomeController:
     def __init__(self, api: PrismFacade) -> None:
         for name in (
             "case_overviews",
+            "case_overview",
             "query_historical_snapshot",
         ):
             if not callable(getattr(api, name, None)):
                 raise TypeError(f"api must provide {name}()")
         self._api = api
         self._selected_case_id: str | None = None
-
-    async def list_cases(
-        self,
-        *,
-        query: str | None = None,
-        case_type: str | None = None,
-        status: str | None = None,
-        unresolved_only: bool = False,
-        order: str = "case_id",
-        reverse: bool = False,
-    ) -> list[dict[str, Any]]:
-        """Compatibility-friendly flat case list for API clients and tests."""
-        if query is not None and (not isinstance(query, str) or not query.strip()):
-            raise ValueError("query must be a non-empty string when supplied")
-        result = await self._api.case_overviews(
-            case_id=query, case_type=case_type, status=status,
-            unresolved_only=unresolved_only, order=order, reverse=reverse,
-        )
-        return [_json_safe(item) for item in tuple(result)]
-
-    async def snapshot(
-        self,
-        case_id: str,
-        as_of: datetime,
-        *,
-        stage: str | None = None,
-        kinds: Iterable[str] | None = None,
-    ) -> dict[str, Any]:
-        """Direct JSON-safe snapshot; temporal semantics stay in the facade."""
-        if not isinstance(case_id, str) or not case_id.strip():
-            raise ValueError("case_id must be a non-empty string")
-        instant = parse_as_of(as_of)
-        selected_stage = require_stage(stage or None)
-        normalized_kinds = self._normalize_kinds(kinds)
-        state = await self._api.query_historical_snapshot(
-            case_id.strip(), instant, stage=selected_stage, kinds=normalized_kinds
-        )
-        return snapshot_view(state)
+        self._loaded_timeline: list[dict[str, Any]] = []
 
     @property
     def selected_case_id(self) -> str | None:
@@ -230,10 +222,7 @@ class CaseHomeController:
         """Validate and remember one case; unknown ids raise ``LookupError``."""
         if not isinstance(case_id, str) or not case_id.strip():
             raise ValueError("case_id must be a non-empty string")
-        lookup = getattr(self._api, "case_overview", None)
-        if not callable(lookup):
-            raise TypeError("api must provide case_overview() for case selection")
-        overview = await lookup(case_id.strip())
+        overview = await self._api.case_overview(case_id.strip())
         self._selected_case_id = case_id.strip()
         return _case_view(overview)
 
@@ -260,14 +249,37 @@ class CaseHomeController:
         instant = parse_as_of(as_of)
         selected_stage = require_stage(stage or None)
         normalized_kinds = self._normalize_kinds(kinds)
-        lookup = getattr(self._api, "case_overview", None)
-        if not callable(lookup):
-            raise TypeError("api must provide case_overview() for snapshot selection")
-        overview = await lookup(case_id)
+        overview = await self._api.case_overview(case_id)
         state = await self._api.query_historical_snapshot(
             case_id, instant, stage=selected_stage, kinds=normalized_kinds
         )
-        return {"case": _case_view(overview), "snapshot": snapshot_view(state)}
+        snapshot = snapshot_view(state)
+        timeline = _timeline_rows(snapshot)
+        self._loaded_timeline = timeline
+        return {
+            "case": _case_view(overview),
+            "snapshot": snapshot,
+            "timeline": _json_safe(timeline),
+        }
+
+    def timeline_rows(self) -> list[dict[str, Any]]:
+        """Return timeline points from the last successful snapshot load.
+
+        This is a presentation projection only: it never calls the facade and
+        performs no temporal filtering. Effective and invalidated entries are
+        distinguished using the analyzer snapshot buckets.
+        """
+        return _json_safe(self._loaded_timeline)
+
+    def select_timeline_point(self, episode_key: str) -> dict[str, Any]:
+        """Select one point from the already-loaded snapshot by stable key."""
+        if not isinstance(episode_key, str) or not episode_key.strip():
+            raise ValueError("episode_key must be a non-empty string")
+        key = episode_key.strip()
+        for row in self._loaded_timeline:
+            if row.get("episode_key") == key:
+                return _json_safe(row)
+        raise LookupError(f"timeline point {key!r} is not in the loaded snapshot")
 
     @staticmethod
     def _normalize_kinds(

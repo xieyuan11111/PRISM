@@ -29,6 +29,7 @@ pdf = [
 # web framework or expose a listening port.
 webui = [
     "nicegui==2.24.2",
+    "plotly>=5.24,<7",
 ]
 
 # Graphiti/Neo4j remains opt-in and is NEVER part of the default install;

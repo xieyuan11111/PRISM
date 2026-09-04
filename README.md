@@ -18,6 +18,8 @@ Current foundation modules:
 - M3 formal historical snapshots (`snapshot`/`query_historical_snapshot`)
   with a fail-closed knowledge boundary, deterministic stage filtering
   (`--stage`) and two-instant comparison (`compare`/`compare_case_history`);
+- optional NiceGUI case home with a Plotly historical timeline and clickable,
+  source-backed evidence-locator detail;
 - opt-in Graphiti/Neo4j spike scaffolding (config, deploy template, live-test gate) that stays fully offline by default;
 - offline tests for every completed module.
 
@@ -309,8 +311,17 @@ python -m prism.webui
 ```
 
 It binds to `127.0.0.1` with browser auto-open disabled, and remains a thin
-facade client. The debate theater, evidence upload/browser, model settings,
-authentication and remote exposure are not included in this slice. See
+facade client. The Plotly timeline renders each effective or invalidated entry
+returned by `PrismAPI.query_historical_snapshot`; stage/kind/cutoff controls
+remain facade inputs, not browser-side temporal filters. Effective entries and
+invalidated facts use distinct markers and labels. Clicking a point uses its
+stable `episode_key` to display the same snapshot entry and its source ids,
+corpus path, paragraph/page and quote without another API read. NiceGUI and
+Plotly are both lazy optional dependencies in the `webui` extra; importing the
+controller does not require either one.
+
+The debate theater, evidence upload/browser, model settings, authentication and
+remote exposure are not included in this slice. See
 `docs/m3-webui-case-home.md`.
 
 ## M3 Report Versioning v0

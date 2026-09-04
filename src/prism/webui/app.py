@@ -13,6 +13,7 @@ same timelines and evidence (FR-8.10).
 
 from __future__ import annotations
 
+from html import escape
 from typing import Any
 
 from prism.analyzer import ENTRY_KINDS, STAGES
@@ -27,10 +28,14 @@ NICEGUI_MISSING_MESSAGE = (
     "the PRISM WebUI requires the optional nicegui dependency; install it "
     'with: pip install ".[webui]"'
 )
+PLOTLY_MISSING_MESSAGE = (
+    "timeline rendering requires the optional plotly dependency; install it "
+    'with: pip install ".[webui]"'
+)
 
 
 class WebUIUnavailableError(RuntimeError):
-    """The optional NiceGUI dependency is not installed."""
+    """A dependency needed by the optional WebUI is not installed."""
 
 
 def _nicegui() -> Any:
@@ -40,6 +45,15 @@ def _nicegui() -> Any:
     except ImportError as error:
         raise WebUIUnavailableError(NICEGUI_MISSING_MESSAGE) from error
     return ui
+
+
+def _plotly_graph_objects() -> Any:
+    """Import Plotly only when a timeline figure is actually requested."""
+    try:
+        from plotly import graph_objects as go
+    except ImportError as error:
+        raise WebUIUnavailableError(PLOTLY_MISSING_MESSAGE) from error
+    return go
 
 
 _CASE_COLUMNS = [
@@ -138,6 +152,130 @@ def _evidence_markdown(snapshot: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+_LAYER_COLORS = {
+    "fact": "#2563eb",
+    "interpretation": "#d97706",
+    "provenance": "#059669",
+}
+
+
+def _timeline_sort_key(row: dict[str, Any]) -> tuple[str, str, str, bool]:
+    return (
+        str(row.get("valid_at") or ""),
+        str(row.get("episode_key") or ""),
+        str(row.get("kind") or ""),
+        bool(row.get("invalidated")),
+    )
+
+
+def build_timeline_figure(timeline_rows: list[dict[str, Any]]) -> Any:
+    """Build a deterministic Plotly timeline from controller-produced rows.
+
+    Each trace contains exactly one snapshot entry and carries its stable
+    ``episode_key`` as click ``customdata``. No filtering or stage inference
+    occurs here; the facade/analyzer has already decided snapshot membership.
+    """
+    go = _plotly_graph_objects()
+    figure = go.Figure()
+    legend_seen: set[str] = set()
+    for row in sorted(timeline_rows, key=_timeline_sort_key):
+        invalidated = bool(row.get("invalidated"))
+        status = "invalidated" if invalidated else "effective"
+        layer = str(row.get("layer") or "unknown")
+        kind = str(row.get("kind") or "unknown")
+        legend_group = f"{layer}:{status}"
+        sources = ", ".join(str(item) for item in row.get("source_ids") or ())
+        hover = "<br>".join((
+            f"Episode: {escape(str(row.get('episode_key') or ''))}",
+            f"Kind/layer: {escape(kind)} / {escape(layer)}",
+            f"Status: {status}",
+            f"Summary: {escape(str(row.get('summary') or ''))}",
+            f"Valid at: {escape(str(row.get('valid_at') or ''))}",
+            f"Invalid at: {escape(str(row.get('invalid_at') or '-'))}",
+            f"Source ids: {escape(sources or '-')}",
+        ))
+        figure.add_trace(go.Scatter(
+            x=[row.get("valid_at")],
+            y=[f"{layer} / {kind}"],
+            mode="markers",
+            name=f"{layer} — {status}",
+            legendgroup=legend_group,
+            showlegend=legend_group not in legend_seen,
+            customdata=[row.get("episode_key")],
+            text=[hover],
+            hovertemplate="%{text}<extra></extra>",
+            marker={
+                "color": _LAYER_COLORS.get(layer, "#64748b"),
+                "symbol": "x" if invalidated else "circle",
+                "size": 13 if invalidated else 11,
+                "line": {"color": "#991b1b" if invalidated else "#ffffff", "width": 2},
+            },
+        ))
+        legend_seen.add(legend_group)
+    figure.update_layout(
+        title="Historical snapshot timeline",
+        xaxis_title="Valid at",
+        yaxis_title="Layer / kind",
+        hovermode="closest",
+        legend_title_text="Layer and status",
+        margin={"l": 80, "r": 30, "t": 60, "b": 60},
+    )
+    return figure
+
+
+def _detail_markdown(entry: dict[str, Any]) -> str:
+    """Render full point metadata and portable evidence locators."""
+    status = "INVALIDATED" if entry.get("invalidated") else "EFFECTIVE"
+    sources = ", ".join(entry.get("source_ids") or ()) or "_none_"
+    lines = [
+        f"### `{entry['episode_key']}` — {status}",
+        f"- Kind/layer: `{entry['kind']}` / `{entry['layer']}`",
+        f"- Summary: {entry['summary']}",
+        f"- Valid at: {entry['valid_at']}",
+        f"- Invalid at: {entry.get('invalid_at') or '_not invalidated_'}",
+        f"- Source ids: {sources}",
+    ]
+    core_fields = {
+        "episode_key", "kind", "layer", "summary", "valid_at", "invalid_at",
+        "source_ids", "evidence", "invalidated",
+    }
+    for name in sorted(set(entry) - core_fields):
+        value = entry[name]
+        if value is not None:
+            lines.append(f"- {name}: {value}")
+    lines.append("#### Evidence locators")
+    evidence = entry.get("evidence") or ()
+    if not evidence:
+        lines.append("_no evidence locators on this entry_")
+    for locator in evidence:
+        where = []
+        if locator.get("paragraph") is not None:
+            where.append(f"paragraph {locator['paragraph']}")
+        if locator.get("page") is not None:
+            where.append(f"page {locator['page']}")
+        location = f" ({'; '.join(where)})" if where else ""
+        lines.append(
+            f"- `{locator['source_id']}` — {locator['corpus_path']}{location}"
+        )
+        lines.append(f"  - Quote: {locator.get('quote') or '_none_'}")
+    return "\n".join(lines)
+
+
+def _clicked_episode_key(event: Any) -> str:
+    args = getattr(event, "args", None)
+    if not isinstance(args, dict):
+        raise ValueError("timeline click did not contain Plotly point data")
+    points = args.get("points")
+    if not isinstance(points, list) or not points or not isinstance(points[0], dict):
+        raise ValueError("timeline click did not contain a Plotly point")
+    customdata = points[0].get("customdata")
+    if isinstance(customdata, (list, tuple)):
+        customdata = customdata[0] if customdata else None
+    if not isinstance(customdata, str) or not customdata.strip():
+        raise ValueError("timeline point has no stable episode_key")
+    return customdata.strip()
+
+
 def _stage_options() -> dict[str, str]:
     return {"": "all stages"} | {stage: stage for stage in sorted(STAGES)}
 
@@ -158,6 +296,7 @@ def build_case_home_page(
     """
     @ui.page("/")
     def case_home() -> None:
+        timeline_plot: Any | None = None
         message = ui.label("Load cases to begin.")
 
         with ui.card().classes("w-full"):
@@ -166,7 +305,7 @@ def build_case_home_page(
                 search = ui.input(label="Search", placeholder="case id or name")
                 type_input = ui.input(label="Type (exact)", placeholder="policy")
                 status_input = ui.input(label="Status (exact)", placeholder="active")
-                unresolved = ui.switch(text="Unresolved only", value=False)
+                unresolved = ui.switch("Unresolved only", value=False)
             with ui.row():
                 as_of_input = ui.input(
                     label="as of (ISO 8601, timezone-aware)",
@@ -217,6 +356,7 @@ def build_case_home_page(
             )
 
         async def _load_snapshot(event: Any = None) -> None:
+            nonlocal timeline_plot
             if controller.selected_case_id is None:
                 _report("select a case in the table first")
                 return
@@ -231,6 +371,17 @@ def build_case_home_page(
                 _report(f"error loading snapshot: {error}")
                 return
             snapshot = view["snapshot"]
+            try:
+                figure = build_timeline_figure(view["timeline"])
+            except Exception as error:
+                _report(f"error rendering timeline: {error}")
+                return
+            if timeline_plot is None:
+                with timeline_plot_container:
+                    timeline_plot = ui.plotly(figure).classes("w-full")
+                    timeline_plot.on("plotly_click", _on_timeline_click)
+            else:
+                timeline_plot.update_figure(figure)
             state_md.content = _state_markdown(snapshot)
             timeline_md.content = _timeline_markdown(snapshot)
             evidence_md.content = _evidence_markdown(snapshot)
@@ -242,6 +393,17 @@ def build_case_home_page(
                 f"{len(snapshot['facts'])} effective fact(s), "
                 f"{len(snapshot['invalidated_facts'])} invalidated fact(s)"
             )
+
+        async def _on_timeline_click(event: Any) -> None:
+            try:
+                episode_key = _clicked_episode_key(event)
+                detail = controller.select_timeline_point(episode_key)
+            except Exception as error:
+                _report(f"error selecting timeline point: {error}")
+                return
+            timeline_detail_md.content = _detail_markdown(detail)
+            timeline_detail_md.update()
+            _report(f"selected timeline point {episode_key}")
 
         with ui.card().classes("w-full"):
             cases_table = ui.table(
@@ -258,7 +420,9 @@ def build_case_home_page(
             with ui.expansion("Case state"):
                 state_md = ui.markdown("_no snapshot loaded_")
             with ui.expansion("Timeline"):
+                timeline_plot_container = ui.column().classes("w-full")
                 timeline_md = ui.markdown("_no snapshot loaded_")
+                timeline_detail_md = ui.markdown("_Select a timeline point for details._")
             with ui.expansion("Evidence"):
                 evidence_md = ui.markdown("_no snapshot loaded_")
 
@@ -268,14 +432,15 @@ def build_case_home_page(
 def create_app(api: PrismFacade, *, title: str = DEFAULT_TITLE) -> Any:
     """Build the case-home NiceGUI pages over ``api`` without serving them.
 
-    Raises :class:`WebUIUnavailableError` with install instructions when the
-    optional NiceGUI dependency is missing; NiceGUI is never imported at
-    module scope.
+    Raises :class:`WebUIUnavailableError` with install instructions when
+    NiceGUI or the timeline's Plotly renderer is missing; neither optional
+    dependency is imported at module scope.
     """
-    try:
-        ui = _nicegui()
-    except ImportError as error:
-        raise WebUIUnavailableError(NICEGUI_MISSING_MESSAGE) from error
+    ui = _nicegui()
+    # This app factory requests the timeline-enabled case home. Keep the
+    # dependency check here (not at import/controller construction time) so a
+    # partial installation fails explicitly before any page is registered.
+    _plotly_graph_objects()
     controller = CaseHomeController(api)
     build_case_home_page(controller, ui, title=title)
     from nicegui import app as nicegui_app
@@ -283,42 +448,15 @@ def create_app(api: PrismFacade, *, title: str = DEFAULT_TITLE) -> Any:
     return nicegui_app
 
 
-def run(
-    api: PrismFacade, *, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT
-) -> None:
-    """Serve the case home on loopback without opening a browser."""
-    if host != DEFAULT_HOST:
-        raise ValueError("PRISM WebUI only binds loopback by default")
-    create_app(api)
-    ui = _nicegui()
-    ui.run(host=host, port=port, show=False, reload=False)
-
-
-def main() -> None:
-    """Start the optional WebUI with the normal PRISM runtime."""
-    import asyncio
-    from prism.runtime import create_runtime
-
-    runtime = asyncio.run(create_runtime())
-    try:
-        run(runtime.api)
-    finally:
-        close = getattr(runtime, "close", None)
-        if callable(close):
-            close_result = close()
-            if hasattr(close_result, "__await__"):
-                asyncio.run(close_result)
-
-
 __all__ = [
     "DEFAULT_HOST",
     "DEFAULT_PORT",
     "DEFAULT_TITLE",
     "NICEGUI_MISSING_MESSAGE",
+    "PLOTLY_MISSING_MESSAGE",
     "CaseHomeController",
     "WebUIUnavailableError",
     "build_case_home_page",
+    "build_timeline_figure",
     "create_app",
-    "main",
-    "run",
 ]

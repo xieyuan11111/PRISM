@@ -11,8 +11,10 @@ from .app import (
     DEFAULT_PORT,
     DEFAULT_TITLE,
     NICEGUI_MISSING_MESSAGE,
+    PLOTLY_MISSING_MESSAGE,
     CaseHomeController,
     WebUIUnavailableError,
+    build_timeline_figure,
     create_app,
 )
 from .controller import parse_as_of, snapshot_view
@@ -24,8 +26,10 @@ __all__ = [
     "DEFAULT_PORT",
     "DEFAULT_TITLE",
     "NICEGUI_MISSING_MESSAGE",
+    "PLOTLY_MISSING_MESSAGE",
     "WebUIUnavailableError",
     "build_arg_parser",
+    "build_timeline_figure",
     "create_app",
     "parse_as_of",
     "run",

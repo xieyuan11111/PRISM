@@ -28,13 +28,26 @@ The case home provides:
 - a timezone-aware historical cutoff input;
 - deterministic recorded-stage filtering;
 - entry-kind filtering;
+- a Plotly historical timeline with deterministic point ordering and distinct
+  layer colors plus effective/invalidated marker symbols and labels;
 - historical state panels for nodes, facts, interpretations, relations,
   invalidated facts and evidence gaps;
-- source and evidence locator data in the JSON-safe view model.
+- point selection by stable `episode_key`, showing the full entry and its
+  source ids and portable evidence locators (`corpus_path`, paragraph/page and
+  quote) from the already-loaded snapshot.
 
 The controller/view-model is dependency-free and is tested with an injected
 facade. This keeps the CLI and WebUI on the same API contract and makes core
-behavior testable without starting NiceGUI or a browser.
+behavior testable without starting NiceGUI or a browser. It flattens the
+effective and invalidated buckets only after the facade returns; it performs
+no UI-side temporal filtering and never invents a stage or fact. Selecting a
+point is an in-memory lookup in that same snapshot and unknown point ids are
+reported explicitly without another API call.
+
+NiceGUI and Plotly are optional and imported lazily. Core/controller imports
+need neither package. If timeline rendering is requested without Plotly, the
+timeline-enabled app factory reports a clear `.[webui]` installation error and
+does not substitute a hand-built or fake figure.
 
 ## Explicit non-goals
 
