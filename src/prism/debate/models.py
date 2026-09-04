@@ -324,6 +324,47 @@ class DebateResult:
             raise ValueError(f"{self.status} requires a synthesis")
 
 
+@dataclass(frozen=True, slots=True)
+class FollowUpResult:
+    """One evidence-bounded answer from a named perspective."""
+
+    follow_up_id: str
+    parent_run_id: str
+    case_id: str
+    question: str
+    as_of: datetime
+    perspective_id: str
+    evidence_bundle_hash: str
+    interpretation: IndependentInterpretation | None
+    status: str
+    errors: tuple[DebateFailure, ...] = ()
+    warnings: tuple[str, ...] = ()
+    completed_at: datetime | None = None
+
+    def __post_init__(self) -> None:
+        for name in (
+            "follow_up_id", "parent_run_id", "case_id", "question",
+            "perspective_id", "evidence_bundle_hash", "status",
+        ):
+            _text(name, getattr(self, name))
+        _aware("as_of", self.as_of)
+        if self.completed_at is not None:
+            _aware("completed_at", self.completed_at)
+        if self.interpretation is not None and not isinstance(
+            self.interpretation, IndependentInterpretation
+        ):
+            raise TypeError("interpretation must be IndependentInterpretation")
+        if self.status not in {"completed", "failed"}:
+            raise ValueError("status must be completed or failed")
+        if self.status == "completed" and self.interpretation is None:
+            raise ValueError("completed follow-up requires an interpretation")
+        object.__setattr__(self, "errors", tuple(
+            item if isinstance(item, DebateFailure) else DebateFailure(**item)
+            for item in self.errors
+        ))
+        object.__setattr__(self, "warnings", _warnings_tuple("warnings", self.warnings))
+
+
 def _datetime(value: datetime | str) -> datetime:
     if isinstance(value, datetime):
         return value

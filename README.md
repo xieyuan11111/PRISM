@@ -271,6 +271,19 @@ M2 has passed one real-provider smoke run for both an academic case and a
 policy case. Provider output drift remains isolated or conservatively
 downgraded; the default offline runtime never calls a real provider.
 
+M3 also supports a named-perspective follow-up over an existing debate run:
+
+```console
+python -m prism.cli follow-up PARENT_RUN_ID \
+  --perspective institutional_regulatory \
+  --question "Why did implementation begin at this point?"
+```
+
+The follow-up reuses the parent case, historical cutoff, and evidence-bundle
+hash. It is persisted separately with a parent link and is idempotent; a
+changed evidence snapshot is rejected rather than silently used. This is an
+API/CLI slice, not yet the NiceGUI debate theater.
+
 ## M3 Report Versioning v0
 
 PRISM now has an API/CLI product base for multi-case operation. `cases` reads only

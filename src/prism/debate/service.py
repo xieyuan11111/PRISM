@@ -20,6 +20,7 @@ from .models import (
     DebateResult,
     DebateStatement,
     DebateSynthesis,
+    FollowUpResult,
     IndependentInterpretation,
     KeyEvidence,
     PerspectiveProfile,
@@ -1266,6 +1267,92 @@ class DebateService:
         self._ledger = ledger
         self._configured = _configured_profiles(profiles)
         self._clock = clock or (lambda: datetime.now(timezone.utc))
+
+    async def follow_up(
+        self,
+        parent_run_id: str,
+        question: str,
+        perspective: str,
+    ) -> FollowUpResult:
+        """Ask one named perspective a follow-up over the parent's snapshot."""
+        _require_text("parent_run_id", parent_run_id)
+        question = _sanitize_question(_require_text("question", question))
+        perspective = _require_text("perspective", perspective)
+        if self._ledger is None or not callable(
+            getattr(self._ledger, "result_by_run_id", None)
+        ):
+            raise ValueError("a debate ledger with result_by_run_id() is required")
+        parent = self._ledger.result_by_run_id(parent_run_id)
+        if parent is None:
+            raise LookupError(f"no parent debate run {parent_run_id!r}")
+        profiles = _selected_profiles(self._configured, None, (perspective,))
+        profile = profiles[0]
+        analysis = await self._analyzer.analyze(parent.case_id, parent.as_of)
+        if not isinstance(analysis, EvolutionAnalysis):
+            raise TypeError("analyzer must return an EvolutionAnalysis")
+        evidence = _analysis_payload(analysis)
+        evidence_hash = _hash(evidence)
+        if evidence_hash != parent.evidence_bundle_hash:
+            raise ValueError(
+                "parent debate evidence bundle is no longer the current historical snapshot"
+            )
+        input_hash = _hash({
+            "parent_run_id": parent_run_id,
+            "question": question,
+            "perspective_id": profile.id,
+            "as_of": parent.as_of.isoformat(),
+            "evidence_bundle_hash": parent.evidence_bundle_hash,
+        })
+        find = getattr(self._ledger, "find_follow_up", None)
+        if callable(find):
+            replayed = find(input_hash)
+            if replayed is not None:
+                return replayed
+        if self._router is None:
+            failure = DebateFailure(
+                profile.id, "follow_up", "llm_unavailable",
+                "debate LLM role is unavailable",
+            )
+            result = FollowUpResult(
+                follow_up_id=input_hash, parent_run_id=parent_run_id,
+                case_id=parent.case_id, question=question, as_of=parent.as_of,
+                perspective_id=profile.id, evidence_bundle_hash=parent.evidence_bundle_hash,
+                interpretation=None, status="failed", errors=(failure,),
+                completed_at=self._clock(),
+            )
+        else:
+            try:
+                completion = await self._router.complete(
+                    _DEBATE_ROLE, _independent_prompt(profile, question, evidence)
+                )
+                interpretation, warnings = _parse_independent(
+                    _load_payload(getattr(completion, "text", None)),
+                    profile.id, _evidence_ids(analysis),
+                )
+                result = FollowUpResult(
+                    follow_up_id=input_hash, parent_run_id=parent_run_id,
+                    case_id=parent.case_id, question=question, as_of=parent.as_of,
+                    perspective_id=profile.id, evidence_bundle_hash=parent.evidence_bundle_hash,
+                    interpretation=interpretation, status="completed",
+                    warnings=tuple(warnings), completed_at=self._clock(),
+                )
+            except Exception as error:
+                failure = DebateFailure(
+                    profile.id, "follow_up",
+                    "invalid_output" if isinstance(error, _OutputInvalid) else _failure_code(error),
+                    "follow-up rejected invalid model output"
+                    if isinstance(error, _OutputInvalid)
+                    else f"follow-up failed: {type(error).__name__}",
+                )
+                result = FollowUpResult(
+                    follow_up_id=input_hash, parent_run_id=parent_run_id,
+                    case_id=parent.case_id, question=question, as_of=parent.as_of,
+                    perspective_id=profile.id, evidence_bundle_hash=parent.evidence_bundle_hash,
+                    interpretation=None, status="failed", errors=(failure,),
+                    completed_at=self._clock(),
+                )
+        record = getattr(self._ledger, "record_follow_up", None)
+        return record(result, input_hash) if callable(record) else result
 
     async def debate(
         self,

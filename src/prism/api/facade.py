@@ -16,7 +16,7 @@ from prism.analyzer import (
     EvolutionComparison,
     HistoricalCaseState,
 )
-from prism.debate import DebateResult
+from prism.debate import DebateResult, FollowUpResult
 from prism.domain import (
     Claim,
     EvolutionCase,
@@ -172,6 +172,10 @@ class _DebateService(Protocol):
         as_of: datetime | None = None,
         perspectives: Iterable[str] | None = None,
     ) -> DebateResult: ...
+
+    async def follow_up(
+        self, parent_run_id: str, question: str, perspective: str
+    ) -> FollowUpResult: ...
 
 
 class _ReportService(Protocol):
@@ -1366,6 +1370,17 @@ class PrismAPI:
         return await self._debate.debate(
             case_id, question, as_of, perspectives=perspectives
         )
+
+    async def follow_up_debate(
+        self, parent_run_id: str, question: str, perspective: str
+    ) -> FollowUpResult:
+        """Ask one named perspective over an immutable parent snapshot."""
+        if self._debate is None:
+            raise ValueError("debate_service is required for follow_up_debate()")
+        follow_up = getattr(self._debate, "follow_up", None)
+        if not callable(follow_up):
+            raise TypeError("debate_service must provide follow_up()")
+        return await follow_up(parent_run_id, question, perspective)
 
     def adjudication_history(self, material_id: str | None = None) -> tuple:
         """Read durable LLM automatic-adjudication audit records."""

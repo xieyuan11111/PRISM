@@ -516,7 +516,7 @@ subagent 应分别从制度目标、执行成本、产业利益、受影响群�
 
 - [ ] 用户可在讨论中追加材料；
 - [x] 用户可指定历史时间点和阶段（API/CLI 查询级：`snapshot --as-of/--stage`、`compare --earlier/--later`；辩论进行中重建阶段属后续）；
-- [ ] 用户可点名主体或 subagent 追问；
+- [x] 用户可点名主体或 subagent 追问（API/CLI 单视角追问）；
 - [x] 支持报告版本化与 PDF 导出；
 - [ ] 支持多个并行演变案例。
 

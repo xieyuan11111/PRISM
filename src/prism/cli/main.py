@@ -117,6 +117,10 @@ class PrismAPIProtocol(Protocol):
         perspectives: Sequence[str] | None = None,
     ) -> object: ...
 
+    async def follow_up_debate(
+        self, parent_run_id: str, question: str, perspective: str
+    ) -> object: ...
+
     async def fetch_source(
         self, url: str, *, kind: str = "auto", process: bool = True
     ) -> object: ...
@@ -614,6 +618,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     debate.set_defaults(handler=handle_debate)
 
+    follow_up = commands.add_parser(
+        "follow-up", help="Ask one named perspective a follow-up question."
+    )
+    follow_up.add_argument("parent_run_id", type=_nonempty, metavar="PARENT_RUN_ID")
+    follow_up.add_argument("--perspective", required=True, type=_nonempty, metavar="ID")
+    follow_up.add_argument("--question", required=True, type=_nonempty, metavar="TEXT")
+    follow_up.set_defaults(handler=handle_follow_up)
+
     adjudication = commands.add_parser(
         "adjudication-history", help="Read LLM automatic-adjudication audit records."
     )
@@ -872,6 +884,13 @@ async def handle_debate(args: argparse.Namespace, api: PrismAPIProtocol) -> obje
     )
 
 
+async def handle_follow_up(args: argparse.Namespace, api: PrismAPIProtocol) -> object:
+    """Delegate one named-perspective follow-up to the facade."""
+    return await _await_api_call(
+        api.follow_up_debate(args.parent_run_id, args.question, args.perspective)
+    )
+
+
 async def handle_adjudication_history(args: argparse.Namespace, api: PrismAPIProtocol) -> object:
     result = api.adjudication_history(args.material_id)
     return await _await_api_call(result) if inspect.isawaitable(result) else result
@@ -1121,6 +1140,7 @@ __all__ = [
     "handle_rebuild_report",
     "handle_cases",
     "handle_debate",
+    "handle_follow_up",
     "handle_adjudication_history",
     "handle_search",
     "handle_snapshot",
