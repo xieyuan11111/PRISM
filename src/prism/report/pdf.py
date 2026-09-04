@@ -8,12 +8,13 @@ it, and pypdf reads the result back before it can become a project artifact.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 import hashlib
 import html
 import io
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import tempfile
@@ -30,6 +31,10 @@ if TYPE_CHECKING:
 _PDF_RENDERER_ENV = "PRISM_PDF_RENDERER"
 _MARKDOWN_EXTENSIONS = ("tables", "fenced_code", "sane_lists")
 _REQUIRED_SECTIONS = ("Executive Summary", "Timeline Stages", "Citations")
+# BMP Han ranges only: enough to prove Chinese report text printed as real
+# glyphs instead of tofu, and cheap to scan over the Markdown source.
+_CJK_RUN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]+")
+_AS_OF_LINE = re.compile(r"^[-*]\s+As of:\s*(\S+)\s*$", re.MULTILINE)
 _PDF_INSTALL_HINT = "install with 'pip install -e \".[pdf]\"'"
 _PDF_CSS = """\
 :root { color-scheme: light; }
@@ -204,6 +209,10 @@ class EdgePdfRenderer:
             command = [
                 str(self.executable),
                 "--headless",
+                # A throwaway profile avoids contending with a running
+                # desktop browser's default-profile lock and never touches
+                # the user's real profile data.
+                f"--user-data-dir={Path(temporary) / 'profile'}",
                 "--disable-gpu",
                 "--disable-extensions",
                 "--disable-background-networking",
@@ -285,6 +294,12 @@ def render_report_html(markdown: str, case_id: str) -> str:
         '<html lang="zh-CN">\n'
         "<head>\n"
         '<meta charset="utf-8">\n'
+        # Report Markdown is untrusted input: forbid every subresource fetch
+        # (remote beacons, local files via ![](file:///...)) so printing stays
+        # offline and cannot embed local file content into the PDF. Inline
+        # styles are the one allowance; scripts stay blocked by default-src.
+        "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src "
+        "'none'; style-src 'unsafe-inline'\">\n"
         f"<title>{title}</title>\n"
         f"<style>{_PDF_CSS}</style>\n"
         "</head>\n"
@@ -325,6 +340,13 @@ def _normalize_pdf_text(value: str) -> str:
     return "".join(value.split())
 
 
+def _cjk_probe(markdown: str) -> str | None:
+    """Longest Han run whose glyphs must survive printing without tofu."""
+
+    runs = _CJK_RUN.findall(markdown)
+    return max(runs, key=len) if runs else None
+
+
 def _inspect_pdf(source: str | os.PathLike[str] | bytes) -> tuple[Any, int, str]:
     reader_class, _ = _pypdf_classes()
     try:
@@ -347,19 +369,56 @@ def _inspect_pdf(source: str | os.PathLike[str] | bytes) -> tuple[Any, int, str]
     return reader, page_count, normalized
 
 
-def _required_pdf_text(
-    markdown: str, case_id: str, as_of: datetime
-) -> tuple[str, ...]:
-    values = [
-        f"Evolution Report: {case_id}",
-        case_id,
-        "As of:",
+def _as_of_alternatives(markdown: str, as_of: datetime) -> tuple[str, ...]:
+    """Every spelling of the cutoff the PDF may legitimately contain.
+
+    The ledger persists as_of UTC-normalized while the report Markdown keeps
+    the writer's original offset, so a reloaded version and its Markdown spell
+    the same instant differently. The Markdown's own ``As of`` value is always
+    accepted; if it parses as a different instant the document itself is
+    inconsistent and must not export.
+    """
+
+    spellings = {
         as_of.isoformat(),
-        *_REQUIRED_SECTIONS,
+        as_of.astimezone(timezone.utc).isoformat(),
+    }
+    rendered = _AS_OF_LINE.search(markdown)
+    if rendered is not None:
+        spellings.add(rendered.group(1))
+        try:
+            parsed = datetime.fromisoformat(rendered.group(1))
+        except ValueError:
+            parsed = None
+        if (
+            parsed is not None
+            and parsed.utcoffset() is not None
+            and parsed.astimezone(timezone.utc) != as_of.astimezone(timezone.utc)
+        ):
+            raise ReportPdfValidationError(
+                "markdown 'As of' does not match the version cutoff"
+            )
+    return tuple(sorted(spellings))
+
+
+def _required_pdf_groups(
+    markdown: str, case_id: str, as_of: datetime
+) -> tuple[tuple[str, ...], ...]:
+    """Required PDF strings, each as a group of acceptable spellings."""
+
+    groups: list[tuple[str, ...]] = [
+        (f"Evolution Report: {case_id}",),
+        (case_id,),
+        ("As of:",),
+        _as_of_alternatives(markdown, as_of),
     ]
+    groups.extend((section,) for section in _REQUIRED_SECTIONS)
     if "## Debate Interpretation" in markdown:
-        values.append("Debate Interpretation")
-    return tuple(values)
+        groups.append(("Debate Interpretation",))
+    cjk = _cjk_probe(markdown)
+    if cjk is not None:
+        groups.append((cjk,))
+    return tuple(groups)
 
 
 def _validate_pdf_text(
@@ -369,9 +428,12 @@ def _validate_pdf_text(
     as_of: datetime,
 ) -> None:
     missing = [
-        value
-        for value in _required_pdf_text(markdown, case_id, as_of)
-        if _normalize_pdf_text(value) not in normalized_text
+        alternatives[0]
+        for alternatives in _required_pdf_groups(markdown, case_id, as_of)
+        if not any(
+            _normalize_pdf_text(spelling) in normalized_text
+            for spelling in alternatives
+        )
     ]
     if missing:
         joined = ", ".join(repr(value) for value in missing)
@@ -386,8 +448,10 @@ def _finalize_pdf(
     case_id: str,
     markdown_hash: str,
     version_id: str | None,
-) -> tuple[bytes, int]:
+) -> tuple[bytes, int, str]:
     _, writer_class = _pypdf_classes()
+    _, _, normalized_text = _inspect_pdf(payload)
+    text_hash = hashlib.sha256(normalized_text.encode("utf-8")).hexdigest()
     try:
         writer = writer_class(clone_from=io.BytesIO(payload))
         writer.add_metadata(
@@ -398,6 +462,7 @@ def _finalize_pdf(
                 "/PRISMCaseID": case_id,
                 "/PRISMVersionID": version_id or "",
                 "/PRISMMarkdownHash": markdown_hash,
+                "/PRISMTextHash": text_hash,
             }
         )
         output = io.BytesIO()
@@ -407,8 +472,10 @@ def _finalize_pdf(
         raise ReportPdfValidationError(
             "could not finalize the rendered PDF with pypdf"
         ) from error
-    _, page_count, _ = _inspect_pdf(final_payload)
-    return final_payload, page_count
+    _, page_count, final_text = _inspect_pdf(final_payload)
+    if final_text != normalized_text:
+        raise ReportPdfValidationError("PDF text changed while adding metadata")
+    return final_payload, page_count, text_hash
 
 
 def _source_details(source: object) -> _SourceDetails:
@@ -452,13 +519,17 @@ def _atomic_create(target: Path, payload: bytes) -> None:
             stream.flush()
             os.fsync(stream.fileno())
         try:
-            os.link(temporary_name, target)
+            if os.name == "nt":
+                # On Windows this is atomic and fails when target exists.
+                os.rename(temporary_name, target)
+            else:
+                os.link(temporary_name, target)
+                os.unlink(temporary_name)
         except FileExistsError as error:
             raise ReportPdfConflictError(
                 "output path already contains different content; refusing to "
                 "overwrite"
             ) from error
-        os.unlink(temporary_name)
     finally:
         try:
             os.unlink(temporary_name)
@@ -501,7 +572,7 @@ class ReportPdfExporter:
                 )
             return self._existing_result(target, details)
 
-        payload, page_count = self._render(details)
+        payload, page_count, _ = self._render(details)
         _atomic_create(target, payload)
         return ReportPdfExportResult(
             path=target,
@@ -526,7 +597,7 @@ class ReportPdfExporter:
     def _renderer_for_export(self) -> PdfRenderer:
         return self._renderer or EdgePdfRenderer()
 
-    def _render(self, details: _SourceDetails) -> tuple[bytes, int]:
+    def _render(self, details: _SourceDetails) -> tuple[bytes, int, str]:
         html_document = render_report_html(details.markdown, details.case_id)
         with tempfile.TemporaryDirectory(prefix="prism-report-pdf-") as temporary:
             rendered_path = Path(temporary) / "report.pdf"
@@ -558,7 +629,11 @@ class ReportPdfExporter:
             ) from error
         metadata = reader.metadata or {}
         existing_hash = metadata.get("/PRISMMarkdownHash")
-        if existing_hash != details.markdown_hash:
+        text_hash = hashlib.sha256(normalized_text.encode("utf-8")).hexdigest()
+        if (
+            existing_hash != details.markdown_hash
+            or metadata.get("/PRISMTextHash") != text_hash
+        ):
             raise ReportPdfConflictError(
                 "output path already contains different content; refusing to "
                 "overwrite"

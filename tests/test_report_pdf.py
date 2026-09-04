@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import hashlib
 from io import StringIO
 from pathlib import Path
+import subprocess
 import tempfile
 
 import pytest
@@ -24,6 +25,8 @@ from prism.report.pdf import (
     ReportPdfExporter,
     ReportPdfPathError,
     ReportPdfRendererError,
+    ReportPdfValidationError,
+    render_report_html,
 )
 
 
@@ -355,3 +358,140 @@ def test_cli_report_version_pdf_option_delegates_to_api() -> None:
     assert stderr.getvalue() == ""
     assert api.calls == [("export_report_pdf", ("rv_cli", "reports/cli.pdf"), {})]
     assert '"version_id":"rv_cli"' in stdout.getvalue()
+
+
+def test_rendered_html_forbids_external_resource_loading() -> None:
+    rendered = render_report_html(
+        "# 标题\n\n"
+        "![probe](file:///C:/Users/secret/shot.png)\n"
+        "![beacon](http://127.0.0.1:9/px.png)\n",
+        "case-csp",
+    )
+
+    assert 'http-equiv="Content-Security-Policy"' in rendered
+    assert "default-src 'none'" in rendered
+    assert "style-src 'unsafe-inline'" in rendered
+    # Markdown image syntax still parses into an <img> tag; the policy is
+    # what forbids headless Chromium from fetching the referenced resource.
+    assert "<img" in rendered
+
+
+def test_edge_renderer_prints_with_an_isolated_ephemeral_profile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from prism.report import pdf as pdf_module
+
+    fake_browser = tmp_path / "fake-chromium.exe"
+    fake_browser.write_bytes(b"")
+    commands: list[list[str]] = []
+
+    def fake_run(command, **kwargs):
+        commands.append(list(command))
+        for flag in command:
+            if flag.startswith("--print-to-pdf="):
+                Path(flag.split("=", 1)[1]).write_bytes(b"%PDF-fake")
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(pdf_module.subprocess, "run", fake_run)
+    output = tmp_path / "out" / "report.pdf"
+    EdgePdfRenderer(fake_browser).render("<p>x</p>", output)
+
+    assert output.read_bytes() == b"%PDF-fake"
+    command = commands[0]
+    assert "--no-pdf-header-footer" in command
+    user_data_dirs = [
+        flag.split("=", 1)[1]
+        for flag in command
+        if flag.startswith("--user-data-dir=")
+    ]
+    assert len(user_data_dirs) == 1
+    assert "prism-report-pdf-" in str(Path(user_data_dirs[0]))
+
+
+def test_validate_pdf_text_accepts_a_non_utc_cutoff_after_ledger_reload() -> None:
+    from prism.report.pdf import _validate_pdf_text
+
+    markdown = (
+        "# Evolution Report: case-tz\n\n"
+        "- As of: 2026-09-01T00:00:00+08:00\n\n"
+        "## Executive Summary\n\n政策已发布。\n"
+    )
+    # ReportVersionLedger persists as_of UTC-normalized, so a reopened
+    # ledger hands the exporter the UTC instant while the stored Markdown
+    # keeps the writer's original +08:00 spelling of the same instant.
+    reloaded_as_of = datetime(2026, 8, 31, 16, 0, tzinfo=UTC)
+    pdf_text = (
+        "Evolution Report: case-tz\n"
+        "As of: 2026-09-01T00:00:00+08:00\n"
+        "Executive Summary Timeline Stages Citations 政策已发布"
+    )
+
+    _validate_pdf_text(
+        "".join(pdf_text.split()), markdown, "case-tz", reloaded_as_of
+    )
+
+
+def test_validate_pdf_text_rejects_a_markdown_as_of_from_a_different_instant() -> None:
+    from prism.report.pdf import _validate_pdf_text
+
+    markdown = (
+        "# Evolution Report: case-tz\n\n"
+        "- As of: 2020-01-01T00:00:00+00:00\n\n"
+        "## Executive Summary\n\n摘要\n"
+    )
+    as_of = datetime(2026, 9, 1, tzinfo=UTC)
+    pdf_text = (
+        "Evolution Report: case-tz\n"
+        "As of: 2020-01-01T00:00:00+00:00\n"
+        "Executive Summary Timeline Stages Citations 摘要"
+    )
+
+    with pytest.raises(ReportPdfValidationError):
+        _validate_pdf_text("".join(pdf_text.split()), markdown, "case-tz", as_of)
+
+
+def test_validate_pdf_text_requires_cjk_text_when_markdown_has_cjk() -> None:
+    from prism.report.pdf import _validate_pdf_text
+
+    markdown = (
+        "# Evolution Report: case-cjk\n\n"
+        f"- As of: {AS_OF.isoformat()}\n\n"
+        "## Executive Summary\n\n政策已发布，时间线包含中文文本。\n"
+    )
+    latin_only = (
+        f"Evolution Report: case-cjk\nAs of: {AS_OF.isoformat()}\n"
+        "Executive Summary Timeline Stages Citations"
+    )
+    complete = latin_only + "\n政策已发布，时间线包含中文文本。"
+
+    with pytest.raises(
+        ReportPdfValidationError, match="failed text validation"
+    ):
+        _validate_pdf_text(
+            "".join(latin_only.split()), markdown, "case-cjk", AS_OF
+        )
+
+    _validate_pdf_text("".join(complete.split()), markdown, "case-cjk", AS_OF)
+
+
+def test_reopened_ledger_exports_the_saved_version_association(
+    tmp_path: Path,
+) -> None:
+    executable = edge_executable()
+    paths = make_paths(tmp_path)
+    ledger = ReportVersionLedger(paths)
+    try:
+        version = ledger.save(make_document(), make_analysis(), trigger="initial")
+    finally:
+        ledger.close()
+
+    reopened = ReportVersionLedger(paths)
+    try:
+        result = reopened.export_pdf(version.version_id, OUTPUT_RELATIVE)
+    finally:
+        reopened.close()
+
+    assert result.version_id == version.version_id
+    assert result.markdown_hash == version.markdown_hash
+    assert result.path == paths.output_dir / OUTPUT_RELATIVE
+    assert result.path.is_file()
