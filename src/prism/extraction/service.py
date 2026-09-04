@@ -1426,6 +1426,8 @@ class ExtractionService:
                     "the material was not accumulated under the case"
                 )
         warnings = tuple(dict.fromkeys((*model_warnings, *notices, *audit.notices)))
+        if strict:
+            nodes = self._prune_dangling_claim_references(nodes, claims, gaps)
         nodes = self._prune_gapped_claim_references(nodes, claims, gaps)
         node_tuple = tuple(nodes)
         fact_tuple = tuple(facts)
@@ -2208,6 +2210,61 @@ class ExtractionService:
             raise ExtractionError(
                 f"nodes[{index}].happened_at must not be earlier than case.start_at"
             )
+
+    @staticmethod
+    def _prune_dangling_claim_references(
+        nodes: list[EvolutionNode],
+        claims: list[Claim],
+        gaps: list[ExtractionEvidenceGap],
+    ) -> list[EvolutionNode]:
+        """Degrade independently evidenced nodes with unknown claims.
+
+        A provider may attach a claim id that was never emitted in the
+        material's claim candidates.  Such a reference is never accepted as
+        a claim, but an otherwise source-backed node remains useful after the
+        dangling ids are removed.  Nodes without their own evidence are left
+        untouched so the strict reference validator still rejects a pure
+        claim-dependent candidate.
+        """
+        proposed_ids = {claim.claim_id for claim in claims}
+        already_gapped_ids = {
+            gap.item_id
+            for gap in gaps
+            if gap.item_kind == "claim" and gap.item_id is not None
+        }
+        pruned: list[EvolutionNode] = []
+        for node in nodes:
+            missing = tuple(
+                claim_id
+                for claim_id in node.claim_ids
+                if claim_id not in proposed_ids and claim_id not in already_gapped_ids
+            )
+            if not missing:
+                pruned.append(node)
+                continue
+            if not (node.evidence and node.source_ids and node.summary.strip()):
+                pruned.append(node)
+                continue
+            retained_ids = tuple(
+                claim_id for claim_id in node.claim_ids if claim_id in proposed_ids
+            )
+            gaps.append(
+                ExtractionEvidenceGap(
+                    "candidate_validation_failed",
+                    f"node candidate {node.id} references claim(s) that were not "
+                    "proposed in this material: " + ", ".join(missing)
+                    + "; dangling claim_ids were removed while the independently "
+                    "evidenced node was retained",
+                    "node",
+                    node.id,
+                    node.source_ids,
+                    _candidate_payload_snapshot(
+                        "node", node.id, replace(node, claim_ids=retained_ids)
+                    ),
+                )
+            )
+            pruned.append(replace(node, claim_ids=retained_ids))
+        return pruned
 
     @staticmethod
     def _prune_gapped_claim_references(

@@ -1549,17 +1549,21 @@ def test_node_survives_when_one_of_its_claim_quotes_is_unverifiable():
     assert "quote" in gap.detail
 
 
-def test_node_reference_to_never_proposed_claim_is_still_rejected():
+def test_node_reference_to_never_proposed_claim_is_degraded_when_node_has_evidence():
     dangling = payload()
     dangling["nodes"][0]["claim_ids"] = ["claim-nowhere"]
 
-    with pytest.raises(ExtractionError, match="claim_ids"):
-        run(
-            service(dangling)[0].extract_material(
-                material(), corpus_path="corpus/2026-03/disclosure.md"
-            )
+    result = run(
+        service(dangling)[0].extract_material(
+            material(), corpus_path="corpus/2026-03/disclosure.md"
         )
+    )
 
+    assert [node.id for node in result.nodes] == ["proposal", "implementation"]
+    assert result.nodes[0].claim_ids == ()
+    assert result.case.node_ids == ("proposal", "implementation")
+    gap = next(gap for gap in result.evidence_gaps if gap.item_kind == "node")
+    assert gap.gap_type == "candidate_validation_failed"
 
 # Migration note (2026-09-03): a claimed paragraph that does not contain the
 # quote used to drop the candidate outright.  The paragraph contract stays

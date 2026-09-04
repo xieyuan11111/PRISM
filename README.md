@@ -130,6 +130,12 @@ PRISM 将变化表示为带证据的时序数据，而不是“后写覆盖先�
 
 `ExtractionService.extract_material(material, corpus_path=...)` 是管线使用的公开、证据约束抽取入口。它把规范化 Markdown 正文交给 LLM Router 的 `extract` 角色，严格校验 JSON，再逐条确认候选引文确实存在于语料文本中，之后才生成可写图的领域对象。定位失败会保留为显式 extraction evidence gap，绝不会伪造或静默写入图。配置了 extraction service 时，`PrismAPI.extract_material(...)` 暴露同一操作。
 
+provider 偶尔会返回用于自检的 `node_ids_verified` 等 audit-only 字段；这类
+已明确识别的元数据会被剥离并记录 warning，不会进入领域模型。未知字段、
+悬空引用、跨材料引用、坏引文或非法时间仍按候选级 fail-closed 规则处理：
+可独立成立且有自身证据的节点可以保留并移除悬空引用，否则候选进入显式
+evidence gap，绝不凭空补造缺失的 claim。
+
 预测始终是带不确定性的 claim，不会提升为已经确认的 `TemporalFact`；相互矛盾的候选保留为可报告的 conflict audit item 与图关系。确定性报告将“文档发布”与实质演变分开计数，没有受支持变化的材料不会生成填充用 publication node。
 
 ## M2：自动多视角辩论
@@ -330,14 +336,33 @@ python -m pytest tests/test_graphiti_integration.py -v
 
 完整计划、side effects、rollback 与验收 API surface 见[《Graphiti/Neo4j Spike 阶段计划》](docs/graphiti-spike-plan.md)。
 
+## 真实案例质量 Gate
+
+真实案例验收不以 pipeline 返回 `completed` 作为语义通过条件。仓库提供
+`tools/prism_quality_gate.py`，只读分析项目外的 RC `run-summary.json` 和
+`index.db`，输出脱敏的材料、实质候选、引用定位、缺口、失效/修订/冲突和
+保守 verdict。它不调用 LLM、不联网、不复制材料正文或绝对路径：
+
+```console
+python tools/prism_quality_gate.py \
+  --run-dir /path/to/prism-run \
+  --case-id CASE_ID \
+  --output /path/to/quality.json \
+  --indent
+```
+
+`mechanism_status` 与 `semantic_status` 分开判定；存在失败材料、证据缺口、
+不完整引用或没有实质候选时，结果不会被包装成 `pass`。详见
+[`docs/real-case-quality-gate.md`](docs/real-case-quality-gate.md)。
+
 ## 里程碑状态与诚实边界
 
 | 里程碑 | 已完成 | 尚未完成或未验收 |
 |---|---|---|
-| M0 基础能力 | 领域模型、可移植配置、Markdown/PDF/OCR 摄入、raw 留存、SQLite/FTS5、自动管线、持久案例账本与离线测试 | 需求基线中的真实单案例闭环尚无完整验收记录；仓库测试使用合成 fixture，README 不据此宣称已经完成真实政策/新闻案例的完整语义验收 |
+| M0 基础能力 | 领域模型、可移植配置、Markdown/PDF/OCR 摄入、raw 留存、SQLite/FTS5、自动管线、持久案例账本与离线测试；真实 UBS RC 已在项目外跑通机制链 | 真实案例的语义质量仍可能为 `partial`，不能以 pipeline 成功代替完整事件链验收 |
 | M1 时序核心 | 时序事实/关系、事实失效与修订、冲突并存、历史截止点、双截止点比较、证据定位；合成数据的 Graphiti live round-trip 已通过 | 真实 LLM extraction、真实 entity/edge 质量、真实案例端到端重跑仍未验收 |
-| M2 自动辩论 | 3–4 个视角、同一 EvidenceBundle、陈述分类、单轮交叉质询、证据约束综合、SQLite 审计与两类真实 provider smoke | 多轮辩论、运行中用户中断、NiceGUI 辩论剧场仍未完成 |
-| M3 产品切片 | `snapshot`/`compare`、`--stage`/`--kind`、报告版本与 PDF、指定视角追问、材料/父辩论关联、NiceGUI 案例主页与 Plotly 时间线 | 辩论中的阶段重建、证据上传/浏览、模型设置、认证、远程暴露和完整多并行案例交互仍未完成 |
+| M2 自动辩论 | 3–4 个视角、同一 EvidenceBundle、陈述分类、单轮交叉质询、证据约束综合、SQLite 审计与两类真实 provider smoke | 多轮辩论、运行中用户中断、实时流式控制仍未完成 |
+| M3 产品切片 | `snapshot`/`compare`、`--stage`/`--kind`、报告版本与 PDF、指定视角追问、材料/父辩论关联、NiceGUI 案例主页、Plotly 时间线、Debate Theater v0、证据浏览与材料入口 | 实时流式辩论、拖拽上传、模型设置、认证、远程暴露和完整多并行案例交互仍未完成 |
 
 ## 环境变量
 
