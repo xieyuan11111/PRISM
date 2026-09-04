@@ -1,40 +1,73 @@
-# PRISM
+# PRISM（棱镜）
 
-PRISM is an open-source system for tracing how policies, academic arguments, and public issues evolve over time.
+> 一个面向政策、学术论争与公共议题的开源演变追踪系统。
+>
+> PRISM 不是“新闻摘要器”。新闻、论文和政策文件只是观测材料；系统真正追踪的是一个对象如何被提出、解释、争论、修订、替代或判定失效，以及每一步判断依赖什么证据。
 
-Current foundation modules:
+PRISM 以可审计的 Markdown 语料为事实材料正本，以 SQLite/FTS5 建立可重建的文本索引，并通过 Graphiti/GTI 的可选时序图后端表达事实的有效期、观察时间、修订与冲突。分析与辩论始终建立在同一份历史快照和证据集合之上，不把最新材料无标记地倒灌到过去，也不把时间上的先后自动解释为因果。
 
-- immutable, validated domain models;
-- portable configuration with `PRISM_HOME` support;
-- Markdown/PDF/OCR ingestion with raw-file retention;
-- SQLite/FTS5 evidence indexing and filtered search;
-- an automatic event-driven pipeline: every ingestion runs index → extract →
-  accumulated-case merge → graph write, with no manual pipeline call;
-- a durable per-case extraction ledger that rebuilds accumulated cases from
-  local PRISM data after a restart;
-- dependency-optional Graphiti/GTI temporal graph adapter and historical timeline contract;
-- M1 source-backed change relations (`supersedes`, `revises`, `contradicts`,
-  `triggered_by`), invalidated-fact audit views and two-cutoff comparison;
-- M3 formal historical snapshots (`snapshot`/`query_historical_snapshot`)
-  with a fail-closed knowledge boundary, deterministic stage filtering
-  (`--stage`) and two-instant comparison (`compare`/`compare_case_history`);
-- optional NiceGUI case home with a Plotly historical timeline and clickable,
-  source-backed evidence-locator detail;
-- opt-in Graphiti/Neo4j spike scaffolding (config, deploy template, live-test gate) that stays fully offline by default;
-- offline tests for every completed module.
+## 当前能力
 
-Run the offline test suite with:
+- 不可变、经过验证的领域模型，以及支持 `PRISM_HOME` 的可移植配置；
+- Markdown/PDF/OCR 摄入、原始文件留存、SQLite/FTS5 索引与条件检索；
+- 自动事件驱动管线：每次摄入都会执行 index → extract → accumulated-case merge → graph write，无需再手工串联管线；
+- 持久化的案例抽取账本，可在重启后仅依靠本地 PRISM 数据重建累计案例；
+- 默认不依赖 Graphiti/GTI、需要时才启用的时序图适配器与历史时间线契约；
+- M1 的带来源变化关系（`supersedes`、`revises`、`contradicts`、`triggered_by`）、失效事实审计和双截止点比较；
+- M2 的自动多视角解释、单轮交叉质询、证据约束综合与持久化审计；
+- M3 的正式历史快照（`snapshot`/`query_historical_snapshot`）、fail-closed 知识边界、确定性阶段过滤（`--stage`）和双时点比较（`compare`/`compare_case_history`）；
+- 不可变报告版本、可选 PDF 导出、指定视角追问，以及追加材料与既有辩论上下文的确定性关联；
+- 可选 NiceGUI 案例主页：用 Plotly 展示历史时间线，并通过可点击节点查看带来源的证据定位信息；
+- 默认完全离线、显式选择后才启用的 Graphiti/Neo4j spike 配置、部署模板和 live-test gate；
+- 所有已完成模块均有离线测试覆盖。
+
+语料目录中的 Markdown 文件是可读的材料正本。SQLite 是可重建的文本索引，同时承载项目自有的持久化账本；Graphiti/GTI 是可选的时序图后端。默认测试不需要真实 provider 凭据或外部服务。
+
+## 核心数据流
+
+```text
+Markdown / PDF / OCR / 来源抓取
+        │
+        ├── 原始输入留存到 raw/
+        ▼
+标准化 Markdown + frontmatter → corpus/
+        │
+        └── material.ingested
+                ▼
+        SQLite/FTS5 索引
+                ▼
+        LLM extract + 确定性证据校验
+                ▼
+        case_extraction_ledger 累计案例合并
+                ▼
+        graph write（默认离线后端；Graphiti/GTI 可选）
+                ▼
+        时间线 / 历史快照 / 比较 / 辩论 / 版本化报告
+```
+
+时间在模型中分为三个维度：事件发生时间 `happened_at`、事实有效时间 `valid_at`/`invalid_at`，以及观察或发布时间 `observed_at`。历史查询同时应用有效时间和观察/发布时间边界，因此后来的回顾性材料不会泄漏到更早的截止点。
+
+## 安装
+
+PRISM 要求 Python `>=3.11`。核心安装的默认 `dependencies` 为空：基础运行时不因安装而引入 Web 框架、PDF 工具或 Graphiti/Neo4j 客户端，也不会默认打开网络连接。
+
+| 用途 | 安装命令 | 边界 |
+|---|---|---|
+| 核心 | `pip install -e .` | 默认依赖为空，保持离线 |
+| 开发与离线测试 | `pip install -e ".[dev]"` | 仅加入 pytest |
+| PDF 导出 | `pip install -e ".[pdf]"` | 可选的 Python-Markdown 与 pypdf |
+| WebUI | `pip install -e ".[webui]"` | 可选的 NiceGUI 与 Plotly |
+| Graphiti/Neo4j | `pip install -e ".[graphiti]"` | 可选且固定为 live spike 已验证的版本 |
+
+运行离线测试套件：
 
 ```console
 python -m pytest -q
 ```
 
-The corpus Markdown files are the readable source of truth. SQLite is a rebuildable text index, while Graphiti/GTI is an optional temporal graph backend. Real provider credentials and external services are not required for the test suite.
+## 离线 CLI
 
-## Offline CLI
-
-Set `PRISM_HOME` to choose the local data directory. The default runtime never
-opens a network client:
+通过 `PRISM_HOME` 选择本地数据目录。默认运行时不会创建网络客户端：
 
 ```console
 python -m prism.cli ingest input.md            # ingest + index; automatic processing is queued and finishes before exit
@@ -55,213 +88,53 @@ python -m prism.cli compare CASE_ID --earlier 2026-02-02T00:00:00+00:00 --later 
 python -m prism.cli report CASE_ID --as-of 2026-09-01T00:00:00+00:00 --no-llm
 ```
 
-Every `ingest` run announces the material on the event bus, so the automatic
-pipeline (index → extract → accumulated-case merge → graph write) processes
-it in the same runtime — there is no "index only" ingestion once the
-automatic pipeline is wired. `ingest` without `--process` prints the
-ingestion result while processing runs to completion before the command
-exits; if that processing fails, the command exits non-zero with the
-auditable failure instead of reporting success. `ingest --process` and
-`process` are the synchronous entry points: they return only after the
-material's pipeline run and its accumulated-case outcome exist, and a
-repeated `process` on an already processed material is an explicit idempotent
-replay (`"replayed": true`) that merges nothing twice.
+每次 `ingest` 都会在事件总线上发布材料，因此在自动管线接好后不存在“只索引、不处理”的摄入。未带 `--process` 时，命令先打印摄入结果，但仍会等待排队的处理完成后才退出；如果处理失败，命令会以非零状态退出并保留可审计的失败记录。`ingest --process` 和 `process` 是同步入口，只有在材料管线及累计案例结果产生后才返回；对本进程中已处理材料再次执行 `process` 是显式幂等重放，并返回 `"replayed": true`，不会重复合并。
 
-Historical state queries apply both validity time and observation/publication
-time, so later retrospective material does not leak into an earlier cutoff.
-Nodes, facts and claims may carry portable evidence locators containing a
-corpus-relative path, paragraph/page and source excerpt; reports render those
-locations alongside `source_ids` and preserve fact/interpretation/provenance
-labels.
+### 自动管线的状态与故障语义
 
-## M1 Temporal Evolution Core
+`PrismAPI.ingest_material` 或来源抓取发布 `material.ingested` 后，运行时订阅者会把材料交给 `PipelineService.handle_event`，并依次执行 index → extract → case merge → graph write。订阅在事件总线启动前注册，在运行时关闭时等待正在执行的事件排空后再移除。
 
-PRISM now represents a change as evidence-bearing temporal data rather than
-as last-write-wins state. `TemporalFact.fact_id` is an optional stable logical
-reference; a later observation with the same id can close its validity
-interval without deleting the earlier graph episode. `TemporalRelation`
-records `supersedes`, `revises`, `contradicts`, or `triggered_by` with separate
-validity and observation time, sources, confidence, provenance and portable
-evidence locators. All new fields are appended defaults or new frozen/slotted
-contracts, so legacy positional construction remains valid.
+- `ingest_material` 是异步、事件驱动入口：材料完成摄入和索引、自动处理进入队列后即可返回，不宣称管线已经完成。
+- `pipeline.outcome_for(MATERIAL_ID)` 返回生命周期状态：执行中为 `pending`，失败后为 `failed`，全部阶段成功后才是 `committed`。
+- `pipeline.run_for` 返回已完成运行；`pipeline.failure_for(material_id)` 返回最近一次失败的阶段、错误类型和时间。
+- `process_material(MATERIAL_ID)` 等待正在执行或已经完成的运行。失败材料可安全重试；持续失败会抛出结构化 `PipelineError`，包含 stage、material id 和 completed stages。
+- `process_material(PATH)` 自行同步执行管线，再发布材料事件；其 `case_outcome` 直接来自管线中的案例记录器，不会追加一次无意义的二次合并。
 
-`GraphService.timeline(case_id, as_of)` returns the effective state in
-`entries` and known-but-no-longer-valid history in `invalidated_entries`.
-Therefore an old fact is absent from the effective state after `invalid_at`
-but remains traceable; its replacement is visible from its own `valid_at` and
-observation boundary. Different fact ids and different source observations
-are never collapsed merely because they share subject and predicate, so
-contradictory facts can coexist with their individual source, evidence,
-confidence and provenance records. The analyzer's `compare`, `state` and
-`analyze` views expose cutoff differences, turning points, invalidated facts,
-relations and unresolved questions.
+`pipeline.run_for` 与 `pipeline.failure_for` 分别提供完成运行和最近失败审计；同步结果用 `ProcessMaterialResult.replayed` 明确区分进程内幂等重放。
 
-Causality is intentionally narrower than chronology. A revision,
-supersession or invalidation proves that a change was recorded; it does not
-prove why it occurred. `AnalyzerService` emits a change reason only for an
-explicit `triggered_by` relation carrying verified evidence (or for the
-legacy compatibility projection of older payloads). Otherwise the M1 view
-adds an `unconfirmed_change_cause` open question. Reports render revision and
-conflict relations, invalidated facts and their citation locations. The
-optional LLM summary is accepted only when all cited episode/source bindings
-exist in the analysis; malformed or unverifiable output falls back to the
-deterministic, non-causal summary.
+已完成运行的注册表只在当前进程内有效。新 CLI 进程面对已持久化为 `committed` 的材料仍会真实重跑，所以该次结果是 `replayed: false`。写入本身保持幂等：图 episode 按 `episode_key` 去重，账本行在同一案例内 upsert；但抽取会重新执行。若新抽取试图把已经绑定的材料改绑到另一案例，`MaterialCaseConflict` 会在任何行或图写入之前拒绝操作，并把失败记为 `error_type: MaterialCaseConflict`。
 
-Extraction and accumulation preserve `invalid_at`, claim `revised_by`,
-explicit relations and unresolved conflicts through the pipeline and durable
-case ledger into graph writes. `abstract_only`, `metadata_only`, and `blocked`
-materials remain index-only and are not extracted or written. See
-[`docs/m1-temporal.md`](docs/m1-temporal.md) for the offline acceptance scope
-and the live-service boundary.
+订阅者失败不会伪装成成功。失败会同时记录为 `PrismRuntime.dispatch_errors` 中带时间戳的 `DispatchError`、`pipeline.failure_for(material_id)` 可查的 `PipelineFailure`，以及材料的 `failed` 生命周期结果。只有 graph/ledger write 在内的全部阶段成功后，运行才会记为完成；成功重试会清除过期失败审计。
 
-## Evolution Extraction v0
+终态 `failed`/`committed` 持久化在同一 `index.db` 的 `pipeline_outcomes` 表中，每份材料保留一条当前记录并在下次启动时恢复。`pending` 只存在于运行中的进程，因此崩溃后不会留下陈旧的 `pending` 行。这是本地、单进程文件账本，不是跨进程 outbox；可跨重启审计结果，但不会跨进程派发工作。
 
-`ExtractionService.extract_material(material, corpus_path=...)` is the public,
-evidence-bound extraction entry point used by the pipeline. It sends the
-normalized Markdown body through the configured LLM Router's `extract` role,
-strictly validates the JSON response, and then verifies every candidate quote
-against the corpus text before producing graph-ready domain objects. A failed
-locator is retained as an explicit extraction evidence gap; it is never
-fabricated or silently written to the graph. `PrismAPI.extract_material(...)`
-exposes the same operation when an extraction service is configured.
+每份材料只能绑定一个案例。自动累计器把成功抽取保存在 `case_extraction_ledger`，每次向图写入的是整个累计案例的合并结果，而不是用单份材料覆盖完整案例。`CaseBundleMerger` 对未知来源、标识符冲突和外部案例 id 保持保守拒绝；冲突候选不会自动消失。合并或图写入失败时，新账本项回滚。重启后可仅依靠本地账本重建相同累计案例，无需 LLM、网络或重新抽取。旧账本若已经存在一份材料对应多个案例，仍可通过 `case_ids_for_material` 读取和报告；`case_for_material` 会抛出相同的类型化冲突，而不是意外的 `ValueError`。
 
-The schema keeps event occurrence (`happened_at`), effective validity
-(`valid_at`), and observation/publication (`observed_at`) separate. Forecasts
-remain uncertain claims rather than confirmed temporal facts, and contradictory
-alternatives remain reportable conflict audit items and graph relations. A document publication is
-counted separately from substantive evolution in deterministic reports; a
-material with no supported change produces no padding publication node.
+`abstract_only`、`metadata_only` 和 `blocked` 材料只进入索引，不参与抽取和图写入；阶段跳过记录会写明访问级别。抽取警告、证据缺口和未解决冲突会原样进入账本，并出现在 `ProcessMaterialResult.warnings` 与 `CaseWriteOutcome.warnings` 中。
 
-## Automatic Evolution Pipeline v0
+统一入口 `PrismAPI.process_material(MATERIAL_ID_OR_PATH)` 返回管线运行、该运行产生的累计案例合并/写入结果及审计警告。`PrismAPI.merge_case(CASE_ID, materials=[...])` 是显式对账入口，可从持久账本或指定材料子集重建完整累计案例，并按 episode key 幂等去重。CLI 的 `ingest --process`、`process`、`merge-case` 使用同一 API。
 
-One ingestion automatically runs the whole post-ingestion chain. When
-`PrismAPI.ingest_material` (or a source fetch) publishes `material.ingested`,
-the runtime's event subscriber feeds it to `PipelineService.handle_event`,
-which resolves the material from the evidence store and runs index → extract
-→ case merge → graph write. The subscription is registered before the event
-bus starts and removed (after draining in-flight events) when the runtime
-closes, so a shutdown never silently drops processing.
+PRISM 在候选层面是 **LLM-automatic**：系统自动比较证据、处理或保留冲突、在提供目标案例时完成绑定，并记录推理与不确定性。用户负责添加材料、提出问题、选择目标案例或请求重建，无需逐项审批候选。确定性校验仍会拒绝不受支持的引文、时间戳、跨材料引用和不安全模型输出。
 
-**Synchronous vs asynchronous semantics are explicit.** `ingest_material` is
-the asynchronous, event-driven path: it returns once the material is ingested
-and indexed, with automatic processing *queued* — it never claims pipeline
-completion. The outcome is queryable at any moment:
-`pipeline.outcome_for(MATERIAL_ID)` reports the lifecycle state
-(`pending` while an attempt is in flight, `failed` after a failed attempt,
-`committed` only after a successful run), `pipeline.run_for` the completed
-run and `pipeline.failure_for` the last failed attempt (stage, error type,
-time). `process_material(MATERIAL_ID)` waits for the in-flight or completed
-run and reports the authoritative pipeline and case result: a repeated call
-for an already processed material is an explicit idempotent replay
-(`ProcessMaterialResult.replayed`), and a material whose last attempt failed
-is retried safely — a persistent failure raises the structured
-`PipelineError` (stage, material id, completed stages), never a fake success.
-`process_material(PATH)` is the synchronous path: it executes the pipeline
-itself, announces the material afterwards, and returns only when the
-pipeline run and — when a case was produced — the accumulated-case
-merge/write outcome exist. It never runs a second no-op merge after the
-pipeline: the reported `case_outcome` is the outcome the pipeline's case
-recorder produced, not a fresh merge.
+## M1：时序演变核心
 
-Cross-process behavior is honest and explicit: the completed-run registry is
-per-process, so a fresh process (a new CLI invocation over the same PRISM
-home) re-executes the pipeline for an id whose durable state is already
-committed — `replayed: false` for that genuine run. The writes stay
-idempotent (graph episodes are deduplicated by episode key and the durable
-ledger row is upserted under the same case), but extraction is re-run, so a
-changed extraction replaces the recorded evidence; if the re-extraction now
-declares a different case than the durable binding, the typed
-`MaterialCaseConflict` refuses the re-binding before any write (see below).
+PRISM 将变化表示为带证据的时序数据，而不是“后写覆盖先写”的最终状态。`TemporalFact.fact_id` 是可选的稳定逻辑引用；后续对同一 id 的观察可以关闭原有效期，但不会删除早先的图 episode。`TemporalRelation` 分别记录自身的有效时间、观察时间、来源、置信度、provenance 和可移植证据定位，并支持 `supersedes`、`revises`、`contradicts`、`triggered_by`。
 
-**Subscriber failures are auditable, never fake successes.** A failure inside
-the event-driven pipeline is isolated from the publisher and recorded three
-ways: as a `DispatchError` on the bus (`PrismRuntime.dispatch_errors`), now
-stamped with the failure time; as a per-material `PipelineFailure` via
-`pipeline.failure_for(material_id)` carrying at least the material id, the
-failed stage, the error type and the failure time; and as the material's
-`failed` lifecycle outcome. A material whose processing failed has no
-completed run and no committed outcome — retrying it is safe and a later
-success clears the stale audit. A run is only recorded as completed after
-every stage (including the graph/ledger write) succeeded, and the CLI exits
-non-zero when automatic processing of a command's ingestion failed, so a
-background failure never exits 0 as if it had succeeded.
+`GraphService.timeline(case_id, as_of)` 把当前有效状态放在 `entries`，把已知但不再有效的历史放在 `invalidated_entries`。事实超过 `invalid_at` 后不再出现在有效状态中，但仍可追踪；替代事实从自己的 `valid_at` 与观察边界开始可见。不同 `fact_id` 或不同来源的观察不会仅因 subject 与 predicate 相同而被合并，因此相互矛盾的事实可以并存，并各自保留来源、证据、置信度和 provenance。analyzer 的 `compare`、`state`、`analyze` 视图会呈现截止点差异、转折点、失效事实、关系和未决问题。
 
-Terminal outcomes (`failed`/`committed`) are persisted in a local
-`pipeline_outcomes` table of the same SQLite file (`index.db`) — one current
-row per material, hydrated into the pipeline on the next start, so a failure
-from an earlier process stays queryable (there is no stale `pending` row
-after a crash: `pending` is transient and lives only in the running
-process). This is deliberately a local, single-process-file ledger, not a
-cross-process outbox: it makes failure audits durable across restarts, but
-it does not ship work between processes, and a fresh process still re-runs a
-material whose durable state is committed. Durable evidence truth remains
-the corpus files, `case_extraction_ledger` rows and graph episodes.
+因果判断刻意比时间顺序更严格。修订、替代或失效只能证明“记录到变化”，不能证明变化原因。`AnalyzerService` 只有在存在带已验证证据的显式 `triggered_by` 关系时，才输出变化原因；旧 payload 的兼容投影除外。否则 M1 视图会加入 `unconfirmed_change_cause` 未决问题。可选 LLM 摘要仅在所有 episode/source 引用都存在于分析结果时才被接受；格式错误或不可验证的输出会回退到确定性、非因果摘要。
 
-**One material binds one case.** The automatic accumulator records each
-material under the single case its extraction declares; an attempt to record
-an already-bound material under a different case is refused with the typed
-`MaterialCaseConflict` (material id, bound cases, attempted case) before any
-row or graph write, so the automatic path can never add ambiguous bindings —
-within one process or across processes (a fresh process whose re-extraction
-now declares another case gets the same typed refusal, with the durable
-binding unchanged and the refusal auditable as a failed outcome of
-`error_type: MaterialCaseConflict`).
-Legacy ledgers that already contain several rows for one material stay fully
-readable and reportable through `case_ids_for_material` (and
-`case_for_material` raises the same typed conflict instead of an unexpected
-`ValueError`).
+抽取和累计过程会把 `invalid_at`、claim 的 `revised_by`、显式关系与未解决冲突一路保留到图写入。完整离线验收范围和 live-service 边界见[《M1 时序核心验收边界》](docs/m1-temporal.md)。
 
-Case writing is cumulative, never per-material: every extraction that
-succeeds with a case is recorded in the durable `case_extraction_ledger`
-(an additive SQLite table in the existing `index.db`), and the merged bundle
-of the **whole accumulated case** is written to the graph each time — one
-material never overwrites or duplicates the complete case with its own
-single-material extraction. Node and claim ids are scoped per material, the
-conservative `CaseBundleMerger` rules apply unchanged (unknown sources,
-identifier collisions and foreign case ids raise; conflicting alternatives
-are never auto-resolved), and a failed merge or graph write rolls the new
-ledger entry back, so the accumulated state only ever contains materials
-whose merged write succeeded. After a restart the identical accumulated
-bundle is rebuilt from the local ledger alone — no LLM, no network, no
-re-extraction — and rewriting the same state is fully deduplicated by
-episode keys.
+### Evolution Extraction v0
 
-Evidence levels stay binding in the automatic flow: `abstract_only`,
-`metadata_only` and `blocked` materials are indexed but never extracted or
-written to the graph, with per-stage skip records stating the access level.
-Extraction warnings, evidence gaps and unresolved conflicts never silently
-disappear — they persist in the ledger verbatim and surface in every
-`ProcessMaterialResult.warnings` and `CaseWriteOutcome.warnings`.
+`ExtractionService.extract_material(material, corpus_path=...)` 是管线使用的公开、证据约束抽取入口。它把规范化 Markdown 正文交给 LLM Router 的 `extract` 角色，严格校验 JSON，再逐条确认候选引文确实存在于语料文本中，之后才生成可写图的领域对象。定位失败会保留为显式 extraction evidence gap，绝不会伪造或静默写入图。配置了 extraction service 时，`PrismAPI.extract_material(...)` 暴露同一操作。
 
-Unified entry points: `PrismAPI.process_material(MATERIAL_ID_OR_PATH)` returns
-the pipeline run, the accumulated case merge/write outcome the run produced,
-and the audit warnings; `PrismAPI.merge_case(CASE_ID, materials=[...])` is
-the explicit reconciliation entry point, rebuilding the full accumulated
-case from the durable ledger or an explicitly selected subset (idempotent,
-episode-key deduplicated) — for example to repair a case whose graph state
-diverged before a ledger write completed. The CLI exposes the same
-operations (`ingest --process`, `process`, `merge-case`) over the identical
-API surface.
+预测始终是带不确定性的 claim，不会提升为已经确认的 `TemporalFact`；相互矛盾的候选保留为可报告的 conflict audit item 与图关系。确定性报告将“文档发布”与实质演变分开计数，没有受支持变化的材料不会生成填充用 publication node。
 
-PRISM is deliberately **LLM-automatic** at the candidate level: the pipeline
-automatically compares evidence, resolves or preserves conflicts, binds
-materials to an explicitly supplied target case when available, and records
-its reasoning and uncertainty. Users add materials, ask questions, choose a
-target case, or request a rebuild; they do not need to review candidates one
-by one. Deterministic validation still rejects unsupported quotes, timestamps,
-cross-material citations, and unsafe model output.
+## M2：自动多视角辩论
 
-## M2 Automatic Debate
-The CLI/API now provide automatic multi-perspective explanation over one
-historical case snapshot. Academic cases use experimental-methods,
-mechanism-explanation, evidence-quality, and research-history profiles;
-policy/public-issue cases use the general observation profiles. Every profile
-reads the same evidence bundle, produces typed and cited statements, performs
-one automatic cross-examination round, and contributes to an evidence-bound
-synthesis of consensus, disagreement, unresolved questions, and falsification
-conditions. Debate interpretation is kept separate from structured timeline
-facts. See [`docs/m2-debate.md`](docs/m2-debate.md) for the acceptance boundary
-and live smoke results.
+CLI/API 可以对同一历史案例快照进行自动多视角解释。学术案例使用 `experimental_methods`、`mechanism_explanation`、`evidence_quality`、`research_history`；政策和公共议题使用通用观察视角。所有视角读取同一 EvidenceBundle，输出带类型与引文的陈述，完成一轮自动交叉质询，再综合为共识、分歧、分歧来源、关键证据、未决问题和证伪条件。辩论解释与结构化时间线事实始终分层保存。
 
 ```console
 python -m prism.cli debate CASE_ID \
@@ -269,11 +142,22 @@ python -m prism.cli debate CASE_ID \
   --as-of 2026-09-04T00:00:00+00:00
 ```
 
-M2 has passed one real-provider smoke run for both an academic case and a
-policy case. Provider output drift remains isolated or conservatively
-downgraded; the default offline runtime never calls a real provider.
+M2 已在 2026-09-04 使用真实配置的 debate provider 完成两次 smoke：
 
-M3 also supports a named-perspective follow-up over an existing debate run:
+| 案例 | 真实验收结果 |
+|---|---|
+| `academic-hnad-evolution` | 4 个学术视角均可用，4 次交叉质询全部完成；综合产生 1 项共识、1 项分歧、1 项分歧来源、1 项关键证据、1 个未决问题、1 个证伪条件 |
+| `china-housing-provident-fund` | 4 个通用视角均可用，4 次交叉质询全部完成；综合产生 2 项共识、2 项分歧、2 项分歧来源、3 项关键证据、2 个未决问题、3 个证伪条件 |
+
+这些结果使用已有 PRISM corpus/ledger 数据和真实 Graphiti-backed 案例时间线；它们是 smoke 结果，不保证未来每次 provider 输出都符合相同 JSON 形状。输出漂移会被隔离或保守降级，默认离线运行时不会调用真实 provider。详细契约见[《M2 自动辩论验收》](docs/m2-debate.md)。
+
+尚未完成的 M2 范围包括多轮辩论、运行中由用户定向中断，以及 NiceGUI 辩论剧场。
+
+## M3：历史查询、报告与交互切片
+
+### 指定视角追问
+
+M3 支持在已有辩论运行上进行指定视角追问：
 
 ```console
 python -m prism.cli follow-up PARENT_RUN_ID \
@@ -281,12 +165,9 @@ python -m prism.cli follow-up PARENT_RUN_ID \
   --question "Why did implementation begin at this point?"
 ```
 
-The follow-up reuses the parent case, historical cutoff, and evidence-bundle
-hash. It is persisted separately with a parent link and is idempotent; a
-changed evidence snapshot is rejected rather than silently used. This is an
-API/CLI slice, not yet the NiceGUI debate theater.
+追问复用父运行的案例、历史截止点和 evidence-bundle hash，并以父链接单独持久化。操作是幂等的；证据快照发生变化时会拒绝静默复用。这是 API/CLI 切片，尚不是 NiceGUI 辩论剧场。
 
-Appending evidence to an active discussion can also preserve its context:
+### 追加材料并关联辩论上下文
 
 ```console
 python -m prism.cli add-material INPUT.md \
@@ -294,72 +175,64 @@ python -m prism.cli add-material INPUT.md \
   --parent-debate-run PARENT_RUN_ID
 ```
 
-PRISM validates the durable parent first, processes the material through the
-existing pipeline, then recomputes the GTI/analyzer evidence-bundle hash at
-the parent's cutoff without calling the debate LLM. The result exposes the
-prior/current hashes and whether the parent is stale; a changed snapshot is
-not silently reused and no debate is re-run automatically. A successful
-append creates the usual immutable `material_added` report version at that
-cutoff. See `docs/m3-material-debate-link.md`.
+PRISM 会先验证持久化的父运行，再通过现有管线处理材料，然后在父运行截止点重新计算 GTI/analyzer evidence-bundle hash；此过程不会调用 debate LLM。结果会给出先前/当前 hash 和父运行是否 `stale`。快照改变时不会静默复用旧辩论，也不会自动重新辩论。成功追加会在同一截止点创建通常的不可变 `material_added` 报告版本。详见[《M3 材料追加与辩论上下文关联》](docs/m3-material-debate-link.md)。
 
-An optional NiceGUI case home is now available for browsing accumulated cases
-and loading the same GTI-backed historical snapshots used by the CLI:
+### NiceGUI 案例主页
+
+可选的 NiceGUI 案例主页用于浏览累计案例，并加载与 CLI 相同的 GTI-backed 历史快照：
 
 ```console
 pip install -e ".[webui]"
 python -m prism.webui
 ```
 
-It binds to `127.0.0.1` with browser auto-open disabled, and remains a thin
-facade client. The Plotly timeline renders each effective or invalidated entry
-returned by `PrismAPI.query_historical_snapshot`; stage/kind/cutoff controls
-remain facade inputs, not browser-side temporal filters. Effective entries and
-invalidated facts use distinct markers and labels. Clicking a point uses its
-stable `episode_key` to display the same snapshot entry and its source ids,
-corpus path, paragraph/page and quote without another API read. NiceGUI and
-Plotly are both lazy optional dependencies in the `webui` extra; importing the
-controller does not require either one.
+服务绑定 `127.0.0.1`，不自动打开浏览器；当前 runner 拒绝非 loopback host。它是一个薄 facade client：Plotly 时间线绘制 `PrismAPI.query_historical_snapshot` 返回的每个有效或已失效条目，stage/kind/cutoff 都是 facade 输入，而非浏览器端的时序过滤。有效条目与已失效事实采用不同 marker 和 label；点击节点时，用稳定的 `episode_key` 在当前快照中查找同一条目，直接显示 `source_ids`、corpus path、段落/页码和 quote，不发起第二次 API 读取。
 
-The debate theater, evidence upload/browser, model settings, authentication and
-remote exposure are not included in this slice. See
-`docs/m3-webui-case-home.md`.
+NiceGUI 与 Plotly 都是 `webui` extra 中延迟导入的可选依赖；导入 controller 不需要安装两者。当前 WebUI 不含辩论剧场、实时流、暂停/继续、证据上传或 corpus 浏览器、模型设置、多用户认证和远程暴露。完整边界见[《M3 NiceGUI 案例主页与历史时间线》](docs/m3-webui-case-home.md)。
 
-## M3 Report Versioning v0
+### 报告版本与 PDF
 
-PRISM now has an API/CLI product base for multi-case operation. `cases` reads only
-the project-owned durable case ledger (never Graphiti), returning case identity,
-material count, evidence observation range, latest node time, update time, and
-whether gaps or conflicts remain. Report versions live in the additive
-`report_versions` table of the same local `index.db`: each row stores a stable
-version id, `as_of`, input and Markdown hashes, summary origin, optional debate
-input hash, parent version, trigger, and rendered Markdown. Rows are immutable;
-an identical analysis/debate input returns the existing version without another
-report LLM call. `add-material` runs the existing automatic pipeline for a known
-target case and, only after extraction/merge/graph success, saves a
-`material_added` report version. Extraction or cross-case binding failures create
-no version. Report Markdown retains debate interpretation in its own section while
-structured facts remain sourced from the analysis.
+`cases` 只读取项目自有的持久化案例账本，不读取 Graphiti，返回案例标识、材料数量、证据观察时间范围、最新节点时间、更新时间，以及是否仍有证据缺口或冲突。
 
-A report version can be exported to a project-relative PDF path with `report-version --pdf`:
+报告版本存放在同一 `index.db` 的增量表 `report_versions` 中。每行包含稳定 version id、`as_of`、输入和 Markdown hash、摘要来源、可选 debate input hash、父版本、trigger 和渲染后的 Markdown。记录不可变；相同的分析/辩论输入会复用已有版本，不会再次调用 report LLM。`add-material` 只有在 extraction/merge/graph 全部成功后才写入 `material_added` 版本；抽取或跨案例绑定失败不会产生版本。报告把 debate interpretation 放在独立章节，结构化事实仍以分析结果为准。
+
+已有报告版本可通过 `report-version --pdf` 导出到项目相对 PDF 路径：
 
 ```console
 python -m prism.cli report-version rv_... --pdf reports/case-b.pdf
 ```
 
-The PDF is a derived delivery artifact, not the report of record. Exports never
-create or modify report versions; the same version and same bytes are idempotent, and
-a different existing file is refused rather than overwritten.
+PDF 是派生的交付物，不是报告正本。导出不会创建或修改报告版本；相同版本和相同 bytes 的导出是幂等的，若目标已有不同文件则拒绝覆盖。
 
-Install the optional Python dependencies with `pip install -e ".[pdf]"`. PDF export
-then renders Markdown with Python-Markdown, prints it with headless Microsoft Edge or
-a compatible Chromium browser, and validates pages and extracted text with pypdf. Set
-`PRISM_PDF_RENDERER` to an Edge/Chromium executable when autodiscovery is not
-suitable. Without the dependencies or a renderer, export fails explicitly and creates
-no PDF.
+安装可选依赖：
 
-`discover` creates a time-bounded research plan from an indexed material. To
-execute a plan, explicitly enable Firecrawl in `PRISM_HOME/config.json` and
-provide the key through the configured environment variable:
+```console
+pip install -e ".[pdf]"
+```
+
+导出流程使用 Python-Markdown 渲染 Markdown，再交给 headless Microsoft Edge 或兼容 Chromium 浏览器打印，最后用 pypdf 验证页数和提取文本。自动发现不适用时，可把 `PRISM_PDF_RENDERER` 指向 Edge/Chromium 可执行文件。缺少 Python 依赖或 renderer 时，导出会明确失败且不创建 PDF。
+
+### 正式历史快照与比较
+
+`snapshot` 与 `compare` 把 FR-3.6/FR-4.2/FR-4.3 的历史查询正式化为现有 graph + analyzer 栈上的增量 facade 入口，不另建平行的事实或快照存储：
+
+```console
+python -m prism.cli snapshot CASE_ID --as-of 2026-02-02T00:00:00+00:00
+python -m prism.cli snapshot CASE_ID --as-of 2026-02-02T00:00:00+00:00 --stage publication
+python -m prism.cli compare CASE_ID --earlier 2026-02-02T00:00:00+00:00 --later 2026-03-12T00:00:00+00:00
+```
+
+`PrismAPI.query_historical_snapshot` 由 `AnalyzerService.snapshot` 支撑，在一个 timezone-aware 时点返回可审计的 `HistoricalCaseState`：有效节点、事实、claim、关系、截至该时点已失效的事实，以及案例证据缺口。
+
+知识边界执行两次：`GraphService.timeline` 只返回 `reference_time`（观察/发布时间）不晚于截止点的条目；`snapshot` 对仅在截止点之后才被知道、有效窗口不匹配，或仍有效却被错误标成失效的条目 fail-closed。`PrismAPI.compare_case_history` 委托现有 `AnalyzerService.compare`，返回 `EvolutionComparison` 的 added/removed/unchanged，并拒绝 naive 或先后颠倒的时点。
+
+`--stage` 只按图中已经记录的 marker 做确定性查询。固定词汇表为 `prism.analyzer.STAGES`：例如 `evolution_node.node_type` 的 `publication`/`revision`/`expiry`（FR-4.5 政策链与 FR-4.6 论争链位置），以及 `claim.stance` 的 `support`/`oppose`。LLM 不参与归类；未知 stage 会在读图前被拒绝。过滤结果保留其 kind 对应的 layer、来源和可移植证据定位。可重复的 `--kind` 与 `--stage` 组合使用。旧入口 `timeline`、`state`、`build_timeline`、`query_history`、`query_case_state` 保持不变。详见[《M3 历史快照、阶段过滤与比较验收》](docs/m3-historical-snapshot.md)。
+
+## 研究发现与学术证据等级
+
+### 受控研究发现
+
+`discover` 从已索引材料生成有时间边界的研究计划。执行计划前，必须在 `PRISM_HOME/config.json` 中显式启用 Firecrawl，并通过配置指定的环境变量提供密钥：
 
 ```json
 {
@@ -381,118 +254,30 @@ python -m prism.cli research MATERIAL_ID
 python -m prism.cli research MATERIAL_ID --no-process
 ```
 
-The key itself must not be placed in the JSON file. Firecrawl results are
-only discovery leads; `research` re-fetches each public URL through PRISM's
-whitelist-gated source service before ingestion.
+密钥本身不得写入 JSON。Firecrawl 返回的只是发现线索；`research` 会先通过 PRISM 的白名单来源服务重新抓取每个公开 URL，再摄入结果。
 
-## M3 Historical Snapshot and Comparison
+长报告的研究规划器可以抽取政策动作、指标、机制、主体、预测等可检索概念。每个概念形成独立、可审计的查询，目标结果数为 10–20，默认 10、最高可配置到 20。查询携带 `concept_id`，按该上限执行 Firecrawl Search，并在权威重抓前对 URL 做全局去重。来源不足、URL 重复、超时或正文抽取失败时，结果可以少于目标数；系统记录真实结果，不用重复项补足数量。
 
-`snapshot` and `compare` formalize historical case queries (FR-3.6/FR-4.2/FR-4.3)
-as additive facade entry points over the existing graph + analyzer stack —
-no parallel fact/snapshot store is involved:
+### 学术证据等级
 
-```console
-python -m prism.cli snapshot CASE_ID --as-of 2026-02-02T00:00:00+00:00
-python -m prism.cli snapshot CASE_ID --as-of 2026-02-02T00:00:00+00:00 --stage publication
-python -m prism.cli compare CASE_ID --earlier 2026-02-02T00:00:00+00:00 --later 2026-03-12T00:00:00+00:00
-```
+PRISM 不限定学科。学术候选可以通过 Crossref、OpenAlex 等公开 DOI 元数据服务解析，并以可选适配器扩展领域索引。证据等级明确标注：
 
-`PrismAPI.query_historical_snapshot` (backed by `AnalyzerService.snapshot`)
-returns the auditable state at one timezone-aware instant: effective nodes,
-facts, claims, relations, the facts invalidated by that instant and the
-case's evidence gaps, reusing `HistoricalCaseState`. The knowledge boundary
-is enforced twice — `GraphService.timeline` only returns entries known by
-the cutoff (`reference_time`, the observation/publication time, never later
-than it), and `snapshot` fail-closes on any reader that returns an entry
-known only after the cutoff, an ineffective entry, or a still-valid entry
-marked invalidated. `PrismAPI.compare_case_history` delegates to the
-existing `AnalyzerService.compare` and returns the existing
-`EvolutionComparison` (added/removed/unchanged with both instants,
-layer-classified), rejecting naive or reversed instants.
+| 等级 | 含义 |
+|---|---|
+| `fulltext` | 已采集公开文章正文 |
+| `abstract_only` | 取得公开摘要，但没有文章正文 |
+| `metadata_only` | 仅取得 title/author/venue/DOI 元数据；corpus 记录只是书目占位，不是全文 |
+| `blocked` | 访问被拒绝，遇到 paywall/login/captcha，或公开响应无法验证 |
 
-`--stage` restricts a snapshot to one deterministic recorded stage: the
-fixed vocabulary (`prism.analyzer.STAGES`) is a pure lookup over markers the
-graph already records — `evolution_node.node_type` stages such as
-`publication`/`revision`/`expiry` (FR-4.5 policy chain and FR-4.6 discourse
-chain positions) and `claim.stance` stages such as `support`/`oppose`.
-Membership is never decided by an LLM, unknown stages are refused before any
-graph read, filtered entries keep the layer their kind implies, and sources
-and portable evidence locators are preserved. `--kind` (repeatable) applies
-the existing entry-kind filter and composes with `--stage`. The older
-`timeline`, `state`, `build_timeline`, `query_history` and `query_case_state`
-entry points are unchanged. See
-[`docs/m3-historical-snapshot.md`](docs/m3-historical-snapshot.md) for the
-offline acceptance boundary.
+摘要保存在 `summary`，绝不会冒充正文写入 `content`。`authors`、`container_title` 与 `doi` 会从来源项传到 corpus frontmatter、索引记录和搜索结果。带 DOI 的文章页面受阻时，API 可在无需凭据的情况下回退到 Crossref/OpenAlex 元数据；OpenAlex 每次 DOI 解析最多查询一次，结果仍保留明确等级与追踪信息。
 
-## Scholarly evidence levels
+当 Crossref 只返回元数据而无摘要时，resolver 会请求一次 OpenAlex enrichment。该过程只合并、不替换：Crossref 对 `title`、`doi`、`authors`、`container_title`、`link`、`published_at` 保持权威，OpenAlex 只补充摘要和 Crossref 缺失的字段，例如在 Crossref 缺少 `container_title` 时采用 `primary_location.source.display_name`。OpenAlex 没有摘要或 enrichment 失败时，原有 Crossref `metadata_only` 记录保持不变。
 
-PRISM does not restrict research to one discipline. Academic candidates can be
-resolved through public DOI metadata services such as Crossref and OpenAlex,
-with domain-specific indexes added as optional adapters. Evidence is labeled
-explicitly:
+`blocked` 的识别刻意保守：只有 wall 提示出现在可见文本前 400 个字符内，且全部可见文本少于 2000 个字符时，响应才被视为 CAPTCHA、“checking your browser”等访问验证墙。长页面只是讨论或引用这些字样时不会被错误标记。
 
-- `fulltext`: the public article body was collected;
-- `abstract_only`: a public abstract was recovered, but not the article body;
-- `metadata_only`: title/author/venue/DOI metadata was recovered without an
-  abstract; the corpus record is a bibliographic placeholder, not full text;
-- `blocked`: access was refused, a paywall/login/captcha was encountered, or
-  the public response could not be validated.
+## Graphiti/GTI 可选后端
 
-An abstract is stored as `summary` and never promoted to `content` as if it
-were full text. The bibliographic identity of a resolved work — `authors`,
-`container_title` (venue), and `doi` — is preserved end to end: it travels on
-the source item, lands in the corpus frontmatter, and is indexed so indexed
-records and search hits keep the same labels and DOI. When a DOI is present
-and the article page is blocked, the API can fall back to Crossref/OpenAlex
-metadata without credentials (bare public GETs only; OpenAlex is consulted at
-most once per DOI resolution). The result remains clearly labeled and
-traceable.
-
-When Crossref answers with metadata but no abstract, the resolver makes one
-OpenAlex enrichment request. Enrichment merges, it never replaces: Crossref
-stays authoritative for `title`, `doi`, `authors`, `container_title`, `link`
-and `published_at`, and OpenAlex contributes only the abstract plus whatever
-fields Crossref lacks — for example authors, a publication date, or a venue
-taken from OpenAlex's `primary_location.source.display_name` when Crossref has
-no `container_title`. An OpenAlex record without an abstract adds nothing, so
-the Crossref metadata-only record is kept exactly as it was; a failed
-enrichment does the same. In every path OpenAlex is requested at most once per
-DOI resolution.
-
-`blocked` page responses are detected conservatively and the boundary is part
-of the safety design: a response is treated as an access-verification wall
-(CAPTCHA, "checking your browser", ...) only when wall phrasing appears
-within the first 400 characters of visible text **and** the whole visible text
-is under 2000 characters. Long pages that merely discuss or quote such
-phrasing — a CAPTCHA usability survey, an outage report mentioning "Access
-denied" — are never blocked; only short, top-heavy interstitials are.
-
-## Concept-level research
-
-For a long report, PRISM's research planner can extract searchable concepts
-such as policy actions, indicators, mechanisms, actors, and predictions. Each
-concept becomes an independently auditable query with a target of 10–20
-results (10 by default, configurable up to 20). Queries carry `concept_id`, use
-that result limit for Firecrawl Search, and are globally URL-deduplicated
-before authoritative re-fetching. A concept may return fewer results because
-of source availability, duplicate URLs, timeouts, or failed body extraction;
-PRISM records those outcomes rather than padding the count with duplicates.
-
-## Graphiti/GTI spike (live Phase B verified)
-
-PRISM's graph layer is a PRISM-owned Graphiti/Neo4j instance (FR-3). Phase A
-implemented the code, configuration and offline tests; the Phase B live spike
-passed its three opt-in integration tests on 2026-09-03 against the isolated,
-loopback-only PRISM-owned Neo4j Community 5.26 server (HTTP 7475 / Bolt 7688)
-with `graphiti-core==0.29.3`, the `neo4j` Python driver 6.3.0 and
-`httpx==0.28.1` — the exact versions pinned in the `[graphiti]` extra below.
-The live tests inject deterministic Graphiti model clients, so real
-Neo4j/Graphiti persistence, search, cutoff, relation and registry behavior
-were exercised WITHOUT any external LLM/embedding/rerank call (no provider
-key is needed or read); real-provider extraction and reruns over real case
-material remain unverified. Nothing in the default runtime imports
-`graphiti-core`/`neo4j`, builds a client, probes for the optional packages or
-reads Graphiti credentials. To opt in, enable the extra and the config:
+PRISM 的图层面向项目自有的 Graphiti/Neo4j 实例（FR-3）。默认运行时不会导入 `graphiti-core`/`neo4j`、构造客户端、探测可选包或读取 Graphiti 凭据。只有同时安装 `[graphiti]` extra 并启用配置后，才进入真实后端路径：
 
 ```console
 pip install -e ".[graphiti]"
@@ -512,61 +297,79 @@ pip install -e ".[graphiti]"
 }
 ```
 
-The example connects to the PRISM-owned container's single built-in `neo4j`
-database: the template runs Neo4j Community Edition (a single-database
-edition) and sets no custom default database name. `group_id` is not a second
-tenant inside the instance: graphiti-core 0.29.3 realises a Neo4j group as a
-database — `add_episode` treats an explicit `group_id` as the target database
-and clones the driver to `database=group_id` whenever they differ — so an
-enabled config must set `database` and `group_id` to the same value (`neo4j`
-here), and PRISM's config validation rejects any enabled config where they
-differ. Isolation comes from the separate PRISM-owned container (its own
-Neo4j home, service and data volume): two groups on one Community instance
-are not supported, and the adapter's group filtering remains a defensive
-contract for future multi-database/Enterprise servers. The `database` value
-is adapter metadata that graphiti-core 0.29.3's
-`Graphiti(uri, user, password, ...)` constructor does not consume; it must
-equal `group_id` because that is the name graphiti selects as the database.
-`graphiti.uri` must also carry an explicit non-default port (the standard
-7474/7687 are never applied), so an enabled config cannot silently reach a
-default local Neo4j.
+此示例连接 PRISM 自有容器中唯一的内置 `neo4j` 数据库。模板使用 Neo4j Community Edition，服务名为 `prism-graphiti-spike`，不设置自定义默认数据库。对 `graphiti-core==0.29.3` 而言，显式 `group_id` 会被当作数据库选择：`add_episode` 会在两者不同时选择 `database=group_id`。因此 `enabled: true` 时 `database` 与 `group_id` 必须相同，此处都为 `neo4j`。PRISM 会在构造客户端前拒绝两者不一致的配置。隔离来自独立的 PRISM 自有容器、Neo4j home、服务和数据卷，不来自 Community 实例中的多个 group；Community Edition 不支持这种多数据库隔离。
 
-`graphiti.uri` must not embed credentials; the config stores environment
-variable *names* (`PRISM_GRAPHITI_PASSWORD`, optional `PRISM_GRAPHITI_USERNAME`),
-never values. With `enabled: true` the runtime attempts the real client only
-when the optional dependencies are installed; missing credentials or packages
-fail with explicit errors before any service is touched. The enabled path
-also creates PRISM's own SQLite-backed episode registry
-(`src/prism/graph/registry.py`) and injects it into the backend: it records
-each PRISM `episode_key`, the real Graphiti-assigned uuid captured from the
-write, the group/database and the canonical episode body in an additive
-`graphiti_episode_registry` table of the existing SQLite file (`index.db`
-under the data dir — old databases migrate in place, and nothing with
-credentials or absolute paths is ever stored). Duplicate writes therefore
-stay no-ops across process restarts, and body-less `search` results (real
-0.29.3 `EntityEdge` uuid references) are attributed through the persisted
-mapping instead of in-process state alone. `PrismRuntime.close()` closes the
-backend and the registry the runtime created. A caller can instead
-inject `graph_backend`/`graphiti_client_factory` into `create_runtime` for
-controlled integrations; a caller-injected `graph_backend` is a full
-override that creates no registry.
+`database` 是 PRISM adapter metadata，`Graphiti(uri, user, password, ...)` 构造函数不会消费它；它必须与 Graphiti 实际选库使用的 `group_id` 相等。`graphiti.uri` 必须显式携带非默认端口，标准 7474/7687 不会被自动套用，从而避免误连默认本地 Neo4j。
 
-A PRISM-owned deployment template (service `prism-graphiti-spike`, host
-ports 7475/7688) and the full spike plan — side effects, acceptance
-criteria, rollback, and the list of API surfaces verified by the live spike —
-live in `deploy/graphiti-spike/` and `docs/graphiti-spike-plan.md`.
+`graphiti.uri` 不得内嵌凭据。配置只保存环境变量名称（`PRISM_GRAPHITI_PASSWORD`，以及可选的 `PRISM_GRAPHITI_USERNAME`），不保存值。启用后，缺失凭据或可选包会在接触服务前明确失败。
 
-Live integration tests are opt-in and never part of a default CI run: they
-skip unless `PRISM_GRAPHITI_URI` and `PRISM_GRAPHITI_PASSWORD` are both set in
-the environment:
+真实路径会通过 `src/prism/graph/registry.py` 在现有 `index.db` 中增量创建 `graphiti_episode_registry`，记录 PRISM `episode_key`、Graphiti 分配的真实 uuid、group/database 和 canonical episode body，不存凭据、host 或绝对路径。该持久映射使跨进程重启的重复写入保持 no-op，并让不带 body 的 `EntityEdge` 搜索结果仍能正确归属。`PrismRuntime.close()` 会关闭它创建的 backend 与 registry；调用方也可向 `create_runtime` 注入 `graph_backend`/`graphiti_client_factory`，其中调用方注入的 `graph_backend` 是完全覆盖，不会另建 registry。
+
+项目提供 `deploy/graphiti-spike/` 部署模板。运行前可执行端口预检，但预检不构成端口保留：
+
+```console
+python deploy/graphiti-spike/check_ports.py
+docker compose -f deploy/graphiti-spike/compose.yaml up -d
+```
+
+### Phase B 真实验收记录
+
+Phase A 已完成代码、配置、部署模板和离线测试。Phase B 于 2026-09-03 在隔离、仅 loopback 可访问的 PRISM 自有 Neo4j Community 5.26 server 上执行并通过 3 个 opt-in integration tests：HTTP `127.0.0.1:7475` / Bolt `127.0.0.1:7688`，环境为 Python 3.12、`graphiti-core==0.29.3`、`neo4j==6.3.0`、`httpx==0.28.1`。
+
+3 个测试覆盖真实 Neo4j/Graphiti 的写入、读取、重启后幂等重写、历史截止点、关系与 registry 行为。测试注入确定性的 Graphiti LLM/embedder/reranker clients，`OPENAI_API_KEY` 不存在，没有调用外部 LLM、embedding 或 rerank provider；使用的是带随机后缀的合成 fixture，不是真实 corpus 案例。
+
+真实 `graphiti-core==0.29.3` 的 `search` 默认窗口是整个 group 的 10 个结果；当前 adapter 强制使用 100 个结果，作为有界的 spike safeguard，并不是分页。已测试的 3 个案例各自不超过 8 个 episodes，在当时累计图规模下完整返回。超过约 100 个 entity edges 的案例或累计 group 仍需要正式分页设计。
+
+未验收范围包括：真实 provider 的 extraction、真实 entity/edge 图质量、针对真实政策/新闻 corpus 的端到端重跑、生产规模分页，以及 Docker Compose/healthcheck 变体本身（执行环境未安装 Docker，实际使用的是独立的 native Neo4j launcher）。
+
+opt-in live integration tests 只有在环境中同时设置 `PRISM_GRAPHITI_URI` 与 `PRISM_GRAPHITI_PASSWORD` 时才运行，不属于默认 CI：
 
 ```console
 python -m pytest tests/test_graphiti_integration.py -v
 ```
 
-The Phase B spike and its full scope are recorded in
-`docs/graphiti-spike-plan.md`. The three live tests verify real
-Neo4j/Graphiti persistence, search, cutoff, relation and registry behavior
-using deterministic injected Graphiti model clients — no external LLM or
-embedding provider is called. Real-provider extraction and rerunning real
-case corpus material remain separate, not-yet-verified acceptance items.
+完整计划、side effects、rollback 与验收 API surface 见[《Graphiti/Neo4j Spike 阶段计划》](docs/graphiti-spike-plan.md)。
+
+## 里程碑状态与诚实边界
+
+| 里程碑 | 已完成 | 尚未完成或未验收 |
+|---|---|---|
+| M0 基础闭环 | 领域模型、可移植配置、Markdown/PDF/OCR 摄入、raw 留存、SQLite/FTS5、自动管线、持久案例账本与离线测试 | 仓库测试使用合成 fixture；README 不据此宣称已经完成一套真实政策/新闻案例的完整语义验收 |
+| M1 时序核心 | 时序事实/关系、事实失效与修订、冲突并存、历史截止点、双截止点比较、证据定位；合成数据的 Graphiti live round-trip 已通过 | 真实 LLM extraction、真实 entity/edge 质量、真实案例端到端重跑仍未验收 |
+| M2 自动辩论 | 3–4 个视角、同一 EvidenceBundle、陈述分类、单轮交叉质询、证据约束综合、SQLite 审计与两类真实 provider smoke | 多轮辩论、运行中用户中断、NiceGUI 辩论剧场仍未完成 |
+| M3 产品切片 | `snapshot`/`compare`、`--stage`/`--kind`、报告版本与 PDF、指定视角追问、材料/父辩论关联、NiceGUI 案例主页与 Plotly 时间线 | 辩论中的阶段重建、证据上传/浏览、模型设置、认证、远程暴露和完整多并行案例交互仍未完成 |
+
+## 环境变量
+
+| 名称 | 用途 |
+|---|---|
+| `PRISM_HOME` | 本地数据与配置目录 |
+| `FIRECRAWL_API_KEY` | 显式启用 Firecrawl research 时使用 |
+| `PRISM_PDF_RENDERER` | 指定 Edge/Chromium PDF renderer |
+| `PRISM_GRAPHITI_URI` | opt-in Graphiti integration tests 的 `bolt://host:port` |
+| `PRISM_GRAPHITI_PASSWORD` | Graphiti runtime、tests 与 compose 使用的密码 |
+| `PRISM_GRAPHITI_USERNAME` | 仅在 `graphiti.username_env` 被设置时使用；否则采用 `neo4j` |
+| `PRISM_GRAPHITI_DATABASE` | 可选数据库名；Community 模板默认为 `neo4j` |
+| `PRISM_GRAPHITI_GROUP` | 可选 group；默认跟随 `PRISM_GRAPHITI_DATABASE` 且必须与其相同 |
+| `PRISM_GRAPHITI_HTTP_PORT` / `PRISM_GRAPHITI_BOLT_PORT` | compose 发布的 host ports，默认 7475/7688 |
+| `GRAPHITI_TELEMETRY_ENABLED` | Graphiti 0.29.3 telemetry 开关；PRISM builder 默认设为 `false`，除非 operator 已显式导出 `true` |
+
+真实 API key、Cookie 或密码不得写入配置、corpus、图谱、日志、报告或仓库。
+
+## 许可证与依赖边界
+
+PRISM 的目标许可证为 **MIT**；`LICENSE`、`CONTRIBUTING.md`、`CHANGELOG.md` 与 `CODE_OF_CONDUCT.md` 属于正式发布前仍待补齐的治理文件。核心包的默认依赖列表为空；`pdf`、`webui`、`graphiti` 都是显式选择的 optional extra：
+
+- `pdf` 固定使用 `markdown==3.10.2`、`pypdf==6.16.1`，并依赖系统中已安装的 Microsoft Edge 或兼容 Chromium；
+- `webui` 使用 `nicegui==2.24.2`、`plotly>=5.24,<7`，不会因导入核心模块而启动 Web 框架或监听端口；
+- `graphiti` 固定使用 `graphiti-core==0.29.3`、`neo4j==6.3.0`、`httpx==0.28.1`，默认安装与默认运行路径不会接触它们；
+- PDF 摄入/OCR 的选型边界要求使用与 MIT 兼容的许可；当前设计采用 pdfplumber 与 RapidOCR，避免 AGPL 依赖边界。
+
+## 进一步阅读
+
+- [M1 时序核心验收边界](docs/m1-temporal.md)
+- [M2 自动辩论验收](docs/m2-debate.md)
+- [M3 材料追加与辩论上下文关联](docs/m3-material-debate-link.md)
+- [M3 NiceGUI 案例主页与历史时间线](docs/m3-webui-case-home.md)
+- [M3 历史快照、阶段过滤与比较验收](docs/m3-historical-snapshot.md)
+- [Graphiti/Neo4j Spike 阶段计划](docs/graphiti-spike-plan.md)
