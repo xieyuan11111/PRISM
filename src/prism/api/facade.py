@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 import inspect
 from pathlib import Path
@@ -78,6 +78,7 @@ class ProcessMaterialResult:
     case_outcome: object | None
     warnings: tuple[str, ...] = ()
     replayed: bool = False
+    report_version: object | None = None
 
 
 def _is_pathlike_input(source: object) -> bool:
@@ -201,6 +202,37 @@ class _CaseService(Protocol):
     def load_case(self, case_id: str) -> EvolutionCase: ...
 
 
+class _CaseOverviewService(Protocol):
+    def list(self, **filters: object) -> object: ...
+
+    def get(self, case_id: str) -> object: ...
+
+
+class _ReportVersionService(Protocol):
+    def input_hash(
+        self, analysis: EvolutionAnalysis, debate_result: DebateResult | None = None
+    ) -> str: ...
+
+    def find_by_input_hash(self, input_hash: str) -> object | None: ...
+
+    def get(self, version_id: str) -> object | None: ...
+
+    def save(
+        self,
+        document: ReportDocument,
+        analysis: EvolutionAnalysis,
+        *,
+        trigger: str = ...,
+        debate_result: DebateResult | None = ...,
+    ) -> object: ...
+
+    def versions(
+        self, case_id: str | None = None, *, as_of: datetime | None = ...
+    ) -> tuple: ...
+
+    def latest(self, case_id: str) -> object | None: ...
+
+
 class _MaterialResolver(Protocol):
     def resolve(self, material_id: str) -> IngestionResult: ...
 
@@ -289,6 +321,8 @@ class PrismAPI:
         scholarly_metadata_client: _ScholarlyMetadataClient | None = None,
         extraction_service: _ExtractionService | None = None,
         case_service: _CaseService | None = None,
+        case_overview_service: _CaseOverviewService | None = None,
+        report_version_service: _ReportVersionService | None = None,
         material_resolver: _MaterialResolver | None = None,
         adjudicator: object | None = None,
     ) -> None:
@@ -350,6 +384,24 @@ class PrismAPI:
             "case_service", case_service, "merge_case"
         )
         _optional_dependency("case_service", case_service, "record_extraction")
+        self._case_overview = _optional_dependency(
+            "case_overview_service", case_overview_service, "list"
+        )
+        self._report_version_service = _optional_dependency(
+            "report_version_service", report_version_service, "save"
+        )
+        _optional_dependency(
+            "report_version_service", report_version_service, "input_hash"
+        )
+        _optional_dependency(
+            "report_version_service", report_version_service, "find_by_input_hash"
+        )
+        _optional_dependency(
+            "report_version_service", report_version_service, "versions"
+        )
+        _optional_dependency(
+            "report_version_service", report_version_service, "get"
+        )
         self._material_resolver = _optional_dependency(
             "material_resolver", material_resolver, "resolve"
         )
@@ -377,6 +429,39 @@ class PrismAPI:
             published_before=published_before,
         )
         return self._store.search(criteria, limit=limit, offset=offset)
+
+    async def case_overviews(
+        self,
+        *,
+        case_id: str | None = None,
+        case_type: str | None = None,
+        status: str | None = None,
+        unresolved_only: bool = False,
+        order: str = "case_id",
+        reverse: bool = False,
+    ) -> object:
+        """List accumulated cases from the durable ledger, without the graph."""
+
+        if self._case_overview is None:
+            raise ValueError("case_overview_service is required for case_overviews()")
+        return self._case_overview.list(
+            case_id=case_id,
+            case_type=case_type,
+            status=status,
+            unresolved_only=unresolved_only,
+            order=order,
+            reverse=reverse,
+        )
+
+    async def case_overview(self, case_id: str) -> object:
+        """Return one accumulated case overview."""
+
+        if self._case_overview is None:
+            raise ValueError("case_overview_service is required for case_overview()")
+        get = getattr(self._case_overview, "get", None)
+        if not callable(get):
+            raise TypeError("case_overview_service must provide get()")
+        return get(case_id)
 
     async def ingest_material(
         self,
@@ -648,6 +733,41 @@ class PrismAPI:
                 )
             return outcome
         return await self._case_service.merge_explicit(case_id, tuple(materials))
+
+    async def add_material(
+        self,
+        source: str | os.PathLike[str],
+        target_case: EvolutionCase | str,
+        metadata: dict[str, Any] | None = None,
+        *,
+        as_of: datetime | None = None,
+        use_llm: bool = True,
+    ) -> ProcessMaterialResult:
+        """Append one material to a known case, then save a report version.
+
+        The existing automatic pipeline is the only write path.  A pipeline,
+        extraction, merge or graph failure propagates before any report version
+        is created; a cross-case binding refusal surfaces as the typed
+        :class:`~prism.cases.MaterialCaseConflict`.
+        """
+
+        resolved = self._resolve_target_case(target_case)
+        if resolved is None:
+            raise ValueError("target_case is required for add_material()")
+        result = await self.process_material(
+            source, metadata, target_case=resolved
+        )
+        if result.case_id != resolved.case_id:
+            raise ValueError(
+                f"material was not accumulated under target case {resolved.case_id!r}"
+            )
+        version = await self.save_report_version(
+            resolved.case_id,
+            as_of,
+            use_llm=use_llm,
+            trigger="material_added",
+        )
+        return replace(result, report_version=version)
 
     async def bind_material_to_case(
         self, material_id: str, case_id: str
@@ -1065,6 +1185,79 @@ class PrismAPI:
             raise ValueError("analyzer_service is required for report_case()")
         analysis = await self._analyzer.analyze(case_id, as_of)
         return await self._report_service_for(use_llm).report(analysis)
+
+    async def save_report_version(
+        self,
+        case_id: str,
+        as_of: datetime | None = None,
+        *,
+        use_llm: bool = True,
+        debate_result: DebateResult | None = None,
+        trigger: str = "initial",
+    ) -> object:
+        """Render once and persist an immutable, idempotent report version."""
+
+        if self._analyzer is None:
+            raise ValueError("analyzer_service is required for save_report_version()")
+        if self._report_version_service is None:
+            raise ValueError(
+                "report_version_service is required for save_report_version()"
+            )
+        analysis = await self._analyzer.analyze(case_id, as_of)
+        digest = self._report_version_service.input_hash(analysis, debate_result)
+        existing = self._report_version_service.find_by_input_hash(digest)
+        if existing is not None:
+            return existing
+
+        service = self._report_service_for(use_llm)
+        if debate_result is None:
+            document = await service.report(analysis)
+        else:
+            if not self._accepts_kwarg(service.report, "debate_result"):
+                raise TypeError(
+                    "report_service.report must accept debate_result"
+                )
+            document = await service.report(analysis, debate_result=debate_result)
+        return self._report_version_service.save(
+            document, analysis, trigger=trigger, debate_result=debate_result
+        )
+
+    async def rebuild_report(
+        self,
+        case_id: str,
+        as_of: datetime | None = None,
+        *, use_llm: bool = True,
+    ) -> object:
+        """Explicitly recompute and version a report from current evidence."""
+
+        return await self.save_report_version(
+            case_id, as_of, use_llm=use_llm, trigger="rebuild"
+        )
+
+    async def report_versions(
+        self, case_id: str | None = None, *, as_of: datetime | None = None
+    ) -> tuple:
+        """List immutable report versions in creation order."""
+
+        if self._report_version_service is None:
+            raise ValueError(
+                "report_version_service is required for report_versions()"
+            )
+        return tuple(
+            self._report_version_service.versions(case_id, as_of=as_of)
+        )
+
+    async def report_version(self, version_id: str) -> object:
+        """Return one immutable report version."""
+
+        if self._report_version_service is None:
+            raise ValueError(
+                "report_version_service is required for report_version()"
+            )
+        version = self._report_version_service.get(version_id)
+        if version is None:
+            raise LookupError(f"no report version {version_id!r}")
+        return version
 
     async def debate_case(
         self,

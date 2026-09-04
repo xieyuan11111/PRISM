@@ -14,6 +14,7 @@ from prism.api import PrismAPI
 from prism.analyzer import AnalyzerService
 from prism.adjudication import AdjudicationLedger, AdjudicationService
 from prism.cases import CaseBundleMerger, CaseService
+from prism.cases.overview import CaseOverviewService
 from prism.cases.ledger import CaseExtractionLedger
 from prism.config import GraphitiConfig, PathConfig, PrismConfig
 from prism.debate import DebateLedger, DebateService
@@ -43,6 +44,7 @@ from prism.pipeline import (
     StoreMaterialResolver,
 )
 from prism.report import ReportService
+from prism.report.ledger import ReportVersionLedger
 from prism.research import (
     FirecrawlJsonHttpClient,
     FirecrawlSearchProvider,
@@ -306,6 +308,8 @@ class PrismRuntime:
     case_service: CaseService | None = None
     case_ledger: CaseExtractionLedger | None = None
     pipeline_subscription_id: str | None = None
+    case_overview_service: CaseOverviewService | None = None
+    report_version_ledger: ReportVersionLedger | None = None
     # Durable pipeline-outcome ledger (per-material failed/committed states in
     # the shared local SQLite file, hydrated into the pipeline at startup);
     # closed by :meth:`close`.  None on runtimes that injected no pipeline.
@@ -399,6 +403,8 @@ class PrismRuntime:
                                     ledger.close()
                             if self.debate_ledger is not None:
                                 self.debate_ledger.close()
+                            if self.report_version_ledger is not None:
+                                self.report_version_ledger.close()
 
     async def __aenter__(self) -> PrismRuntime:
         return self
@@ -521,6 +527,8 @@ async def create_runtime(
     case_service = CaseService(
         ledger=case_ledger, merger=CaseBundleMerger(), graph_service=graph
     )
+    case_overview = CaseOverviewService(case_ledger)
+    report_version_ledger = ReportVersionLedger(paths)
     pipeline_outcome_ledger = PipelineOutcomeLedger(paths)
     adjudicator = None
     if llm_router is not None and "adjudicate" in config.llm.task_roles:
@@ -597,6 +605,7 @@ async def create_runtime(
         if owned_registry is not None:
             owned_registry.close()
         case_ledger.close()
+        report_version_ledger.close()
         pipeline_outcome_ledger.close()
         debate_ledger.close()
         await events.stop()
@@ -619,6 +628,8 @@ async def create_runtime(
         scholarly_metadata_client=scholarly_metadata_client,
         extraction_service=extraction,
         case_service=case_service,
+        case_overview_service=case_overview,
+        report_version_service=report_version_ledger,
         material_resolver=resolver,
         adjudicator=adjudicator,
     )
@@ -652,6 +663,8 @@ async def create_runtime(
         graph_episode_registry=owned_registry,
         case_service=case_service,
         case_ledger=case_ledger,
+        case_overview_service=case_overview,
+        report_version_ledger=report_version_ledger,
         pipeline_subscription_id=pipeline_subscription_id,
         pipeline_outcome_ledger=pipeline_outcome_ledger,
         adjudicator=adjudicator,

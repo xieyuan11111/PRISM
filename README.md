@@ -36,6 +36,12 @@ python -m prism.cli ingest input.md            # ingest + index; automatic proce
 python -m prism.cli ingest input.md --process  # ingest + full automatic pipeline, printing its real outcome
 python -m prism.cli process MATERIAL_ID        # synchronous pipeline run (or explicit idempotent replay)
 python -m prism.cli merge-case CASE_ID         # rebuild and write the accumulated case from the durable ledger
+python -m prism.cli cases                     # list all accumulated cases from the local ledger
+python -m prism.cli add-material INPUT --case-id CASE_ID
+python -m prism.cli report CASE_ID --save     # render and persist an immutable report version
+python -m prism.cli report-versions CASE_ID --as-of TIMESTAMP # list/filter versions
+python -m prism.cli report-version VERSION_ID # read one saved report version
+python -m prism.cli rebuild-report CASE_ID    # recompute and version the report
 python -m prism.cli discover MATERIAL_ID
 python -m prism.cli state CASE_ID --cutoff-at 2026-09-01T00:00:00+00:00
 python -m prism.cli timeline CASE_ID --as-of 2026-09-01T00:00:00+00:00
@@ -239,7 +245,6 @@ by one. Deterministic validation still rejects unsupported quotes, timestamps,
 cross-material citations, and unsafe model output.
 
 ## M2 Automatic Debate
-
 The CLI/API now provide automatic multi-perspective explanation over one
 historical case snapshot. Academic cases use experimental-methods,
 mechanism-explanation, evidence-quality, and research-history profiles;
@@ -260,6 +265,23 @@ python -m prism.cli debate CASE_ID \
 M2 has passed one real-provider smoke run for both an academic case and a
 policy case. Provider output drift remains isolated or conservatively
 downgraded; the default offline runtime never calls a real provider.
+
+## M3 Report Versioning v0
+
+PRISM now has an API/CLI product base for multi-case operation. `cases` reads only
+the project-owned durable case ledger (never Graphiti), returning case identity,
+material count, evidence observation range, latest node time, update time, and
+whether gaps or conflicts remain. Report versions live in the additive
+`report_versions` table of the same local `index.db`: each row stores a stable
+version id, `as_of`, input and Markdown hashes, summary origin, optional debate
+input hash, parent version, trigger, and rendered Markdown. Rows are immutable;
+an identical analysis/debate input returns the existing version without another
+report LLM call. `add-material` runs the existing automatic pipeline for a known
+target case and, only after extraction/merge/graph success, saves a
+`material_added` report version. Extraction or cross-case binding failures create
+no version. Report Markdown retains debate interpretation in its own section while
+structured facts remain sourced from the analysis. No WebUI or PDF export is
+included in this v0.
 
 `discover` creates a time-bounded research plan from an indexed material. To
 execute a plan, explicitly enable Firecrawl in `PRISM_HOME/config.json` and

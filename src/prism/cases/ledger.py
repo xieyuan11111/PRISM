@@ -601,6 +601,25 @@ class CaseExtractionLedger:
             )
         return tuple(entries)
 
+    def case_ids(self) -> tuple[str, ...]:
+        """Every accumulated case id in stable case-id order."""
+        rows = self._connection.execute(
+            f"SELECT DISTINCT case_id FROM {TABLE} ORDER BY case_id"
+        ).fetchall()
+        return tuple(str(row[0]) for row in rows)
+
+    def case_updated_at(self, case_id: str) -> datetime | None:
+        """The latest durable row update for one case, or ``None`` when unknown."""
+
+        _require_text("case_id", case_id)
+        row = self._connection.execute(
+            f"SELECT MAX(updated_at) FROM {TABLE} WHERE case_id = ?",
+            (case_id,),
+        ).fetchone()
+        if row is None or row[0] is None:
+            return None
+        return _parse_timestamp("updated_at", row[0])
+
     def case_ids_for_material(self, material_id: str) -> tuple[str, ...]:
         """Every case a material is bound to, in case-id order.
 

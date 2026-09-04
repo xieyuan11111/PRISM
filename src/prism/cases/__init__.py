@@ -401,9 +401,12 @@ from .ledger import (  # noqa: E402  (durable accumulation contract)
     MaterialEvidenceEntry,
     MaterialCaseConflict,
 )
+from .overview import CaseOverview, CaseOverviewService
 
 __all__ += [
     "CaseExtractionLedger",
+    "CaseOverview",
+    "CaseOverviewService",
     "CaseLedgerEntry",
     "MaterialEvidenceEntry",
     "CaseService",

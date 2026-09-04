@@ -1,5 +1,6 @@
 """Deterministic Markdown evolution reports with traceable summaries (FR-6)."""
 
+from .ledger import ReportVersion, ReportVersionLedger
 from .models import (
     SUMMARY_ORIGINS,
     SUMMARY_ORIGIN_FALLBACK,
@@ -19,4 +20,6 @@ __all__ = [
     "ReportDocument",
     "ReportService",
     "ReportSummary",
+    "ReportVersion",
+    "ReportVersionLedger",
 ]

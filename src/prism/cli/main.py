@@ -56,6 +56,36 @@ class PrismAPIProtocol(Protocol):
         self, case_id: str, as_of: datetime | None = None, use_llm: bool = True
     ) -> object: ...
 
+    async def save_report_version(
+        self,
+        case_id: str,
+        as_of: datetime | None = None,
+        use_llm: bool = True,
+        debate_result: object | None = None,
+        trigger: str = "initial",
+    ) -> object: ...
+
+    async def report_versions(
+        self, case_id: str | None = None, *, as_of: datetime | None = None
+    ) -> object: ...
+
+    async def report_version(self, version_id: str) -> object: ...
+
+    async def add_material(
+        self,
+        source: str,
+        target_case: object,
+        metadata: dict[str, Any] | None = None,
+        as_of: datetime | None = None,
+        use_llm: bool = True,
+    ) -> object: ...
+
+    async def rebuild_report(
+        self, case_id: str, as_of: datetime | None = None, use_llm: bool = True
+    ) -> object: ...
+
+    async def case_overviews(self, **filters: object) -> object: ...
+
     async def debate_case(
         self,
         case_id: str,
@@ -249,6 +279,21 @@ def build_parser() -> argparse.ArgumentParser:
     search.add_argument("--offset", type=_nonnegative_integer, default=0)
     search.set_defaults(handler=handle_search)
 
+    cases = commands.add_parser(
+        "cases", help="List accumulated evolution cases from the local ledger."
+    )
+    cases.add_argument("case_id", nargs="?", type=_nonempty, metavar="CASE_ID")
+    cases.add_argument("--type", type=_nonempty, metavar="TYPE")
+    cases.add_argument("--status", type=_nonempty, metavar="STATUS")
+    cases.add_argument("--unresolved-only", action="store_true")
+    cases.add_argument(
+        "--order",
+        choices=("case_id", "last_updated", "latest_observed"),
+        default="case_id",
+    )
+    cases.add_argument("--reverse", action="store_true")
+    cases.set_defaults(handler=handle_cases)
+
     timeline = commands.add_parser("timeline", help="Query a case timeline.")
     timeline.add_argument("case_id", type=_nonempty, metavar="CASE_ID")
     timeline.add_argument(
@@ -380,7 +425,54 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Disable the LLM summary and render deterministically.",
     )
+    report.add_argument(
+        "--save",
+        dest="save",
+        action="store_true",
+        help="Persist the rendered report as an immutable version.",
+    )
     report.set_defaults(handler=handle_report)
+
+    report_versions = commands.add_parser(
+        "report-versions", help="List immutable report versions."
+    )
+    report_versions.add_argument(
+        "case_id", nargs="?", type=_nonempty, metavar="CASE_ID"
+    )
+    report_versions.add_argument(
+        "--as-of",
+        type=_aware_datetime,
+        metavar="TIMESTAMP",
+        help="List only versions rendered for this historical cutoff.",
+    )
+    report_versions.set_defaults(handler=handle_report_versions)
+
+    report_version = commands.add_parser(
+        "report-version", help="Read one immutable report version."
+    )
+    report_version.add_argument("version_id", type=_nonempty, metavar="VERSION_ID")
+    report_version.set_defaults(handler=handle_report_version)
+
+    add_material = commands.add_parser(
+        "add-material",
+        help="Append a material to a known case and recompute its report.",
+    )
+    add_material.add_argument("source", type=_nonempty, metavar="MATERIAL_OR_INPUT")
+    add_material.add_argument("--metadata", type=_json_object, metavar="JSON")
+    add_material.add_argument(
+        "--case-id", required=True, type=_nonempty, metavar="CASE_ID"
+    )
+    add_material.add_argument("--as-of", type=_aware_datetime, metavar="TIMESTAMP")
+    add_material.add_argument("--no-llm", action="store_true")
+    add_material.set_defaults(handler=handle_add_material)
+
+    rebuild_report = commands.add_parser(
+        "rebuild-report", help="Recompute and version a case report."
+    )
+    rebuild_report.add_argument("case_id", type=_nonempty, metavar="CASE_ID")
+    rebuild_report.add_argument("--as-of", type=_aware_datetime, metavar="TIMESTAMP")
+    rebuild_report.add_argument("--no-llm", action="store_true")
+    rebuild_report.set_defaults(handler=handle_rebuild_report)
 
     debate = commands.add_parser(
         "debate", help="Run automatic multi-perspective debate for a case."
@@ -558,8 +650,65 @@ async def handle_bind_material(
 
 async def handle_report(args: argparse.Namespace, api: PrismAPIProtocol) -> object:
     """Delegate a parsed report command to the injected facade."""
+    if args.save:
+        return await _await_api_call(
+            api.save_report_version(
+                args.case_id, args.as_of, use_llm=not args.no_llm, trigger="initial"
+            )
+        )
     return await _await_api_call(
         api.report_case(args.case_id, args.as_of, use_llm=not args.no_llm)
+    )
+
+async def handle_cases(args: argparse.Namespace, api: PrismAPIProtocol) -> object:
+    """Delegate a parsed case-overview command to the injected facade."""
+    return await _await_api_call(
+        api.case_overviews(
+            case_id=args.case_id,
+            case_type=args.type,
+            status=args.status,
+            unresolved_only=args.unresolved_only,
+            order=args.order,
+            reverse=args.reverse,
+        )
+    )
+
+async def handle_report_versions(
+    args: argparse.Namespace, api: PrismAPIProtocol
+) -> object:
+    """Delegate report-version listing to the injected facade."""
+    return await _await_api_call(
+        api.report_versions(args.case_id, as_of=args.as_of)
+    )
+
+async def handle_report_version(
+    args: argparse.Namespace, api: PrismAPIProtocol
+) -> object:
+    """Delegate one report-version read to the injected facade."""
+    return await _await_api_call(api.report_version(args.version_id))
+
+async def handle_add_material(
+    args: argparse.Namespace, api: PrismAPIProtocol
+) -> object:
+    """Append one material and recompute the target case report."""
+    return await _await_api_call(
+        api.add_material(
+            args.source,
+            args.case_id,
+            args.metadata,
+            as_of=args.as_of,
+            use_llm=not args.no_llm,
+        )
+    )
+
+async def handle_rebuild_report(
+    args: argparse.Namespace, api: PrismAPIProtocol
+) -> object:
+    """Delegate an explicit report rebuild to the injected facade."""
+    return await _await_api_call(
+        api.rebuild_report(
+            args.case_id, args.as_of, use_llm=not args.no_llm
+        )
     )
 
 
@@ -817,6 +966,11 @@ __all__ = [
     "handle_research",
     "handle_ingest",
     "handle_report",
+    "handle_report_version",
+    "handle_report_versions",
+    "handle_add_material",
+    "handle_rebuild_report",
+    "handle_cases",
     "handle_debate",
     "handle_adjudication_history",
     "handle_search",
