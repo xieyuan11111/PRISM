@@ -19,12 +19,20 @@ Usage (paths are intentionally explicit; no private path is embedded here):
 
     python tools/run_live_case_acceptance.py \
         --source-root <PRISM material workspace> \
-        --output-dir <acceptance output directory>
+        --output-dir <acceptance output directory> \
+        [--prompt-profile baseline|protocol-v1] [--run-id <safe-label>]
 
 Required environment variable names (not values) are configured by the
 runner: DEEPSEEK_API_KEY and PRISM_GRAPHITI_PASSWORD.  The Graphiti Bolt URI
 defaults to PRISM_GRAPHITI_URI and must be loopback port 7688; the HTTP
 precheck defaults to http://127.0.0.1:7475.
+
+``--prompt-profile`` selects the extraction prompt profile for the runtime
+the runner itself composes (default ``baseline``; unknown values fail
+closed).  On a pass/partial run the runner also writes a strictly
+sanitized ``prompt-run-summary.json`` bridge next to the acceptance
+summary, projected from THIS run's own SQLite ``case_extraction_ledger``
+and quality results, directly consumable by ``prism_prompt_benchmark.py``.
 """
 
 from __future__ import annotations
@@ -42,11 +50,13 @@ import json
 import os
 from pathlib import Path
 import re
+import secrets
 import socket
+import sqlite3
 import sys
 from types import TracebackType
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 from prism.config import (
     GraphitiConfig,
@@ -56,12 +66,18 @@ from prism.config import (
     PrismConfig,
 )
 from prism.domain import EvolutionCase
+from prism.extraction import KNOWN_PROMPT_PROFILES
 from prism.graph import GraphitiBackend
 from prism.graph.graphiti_client import build_graphiti_client
 from prism.runtime import create_runtime
 
 SCHEMA_VERSION = 1
 TOOL_NAME = "prism-live-case-acceptance"
+
+PROMPT_PROFILE_BASELINE = "baseline"
+BRIDGE_FILENAME = "prompt-run-summary.json"
+BRIDGE_SCHEMA_VERSION = 1
+_BRIDGE_VERDICT_STATUSES = ("pass", "partial", "fail")
 
 CASE_ID = "beijing-housing-policy-evolution"
 CASE_TYPE = "policy"
@@ -176,6 +192,8 @@ class RunOptions:
     graphiti_model_max_tokens: int = 4096
     report_llm: bool = False
     strict: bool = False
+    prompt_profile: str = PROMPT_PROFILE_BASELINE
+    run_id: str | None = None
 
 
 def sha256_file(path: Path) -> str:
@@ -190,6 +208,38 @@ def _require_label(name: str, value: object) -> str:
     if not isinstance(value, str) or not _SAFE_LABEL.fullmatch(value):
         raise AcceptanceInputError(f"{name} must be a safe opaque label")
     return value
+
+
+def resolve_prompt_profile(value: object) -> str:
+    """Map a profile selection to its safe label, or fail closed.
+
+    ``None`` and ``"baseline"`` denote the untouched baseline prompt; any
+    other value must be a known profile name — a typo can never silently
+    run the baseline.
+    """
+
+    if value is None:
+        return PROMPT_PROFILE_BASELINE
+    if isinstance(value, str) and value in KNOWN_PROMPT_PROFILES:
+        return value
+    allowed = ", ".join(sorted(KNOWN_PROMPT_PROFILES))
+    raise AcceptanceInputError(
+        f"unknown prompt profile {value!r}; known profiles: {allowed}"
+    )
+
+
+def resolve_run_id(explicit: str | None) -> str:
+    """Return a stable, readable, safe-label run id.
+
+    An explicit id must already be a safe label.  The automatic id is a UTC
+    timestamp plus a random token — deliberately NOT derived from any
+    private path, material content or environment value.
+    """
+
+    if explicit is not None:
+        return _require_label("run id", explicit)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return f"run-{stamp}-{secrets.token_hex(3)}"
 
 
 def collect_material_files(
@@ -582,6 +632,187 @@ def _ensure_graphiti_runtime(runtime: Any) -> None:
         )
 
 
+# ------------------------------------------------------- prompt-run bridge
+
+#: How each candidate kind is projected from a ledger extraction payload:
+#: (kind, collection, id field, type field).  Ids are model-provided free
+#: text, so only safe-label values are ever emitted; type fields are closed
+#: domain vocabularies counted with an "other"/"unset" fallback.
+_CANDIDATE_PROJECTIONS = (
+    ("node", "nodes", "id", "node_type"),
+    ("temporal_fact", "temporal_facts", "fact_id", "provenance_type"),
+    ("claim", "claims", "claim_id", "claim_type"),
+    ("conflict", "conflicts", "conflict_id", "provenance_type"),
+    ("relation", "relations", "relation_id", "relation_type"),
+)
+
+
+def _safe_id(value: object) -> str | None:
+    """The value itself when it is a safe opaque label, else ``None``."""
+
+    if isinstance(value, str) and _SAFE_LABEL.fullmatch(value):
+        return value
+    return None
+
+
+def _dist_label(dist: dict[str, int], value: object) -> None:
+    if value is None:
+        key = "unset"
+    elif isinstance(value, str) and _SAFE_LABEL.fullmatch(value):
+        key = value
+    else:
+        key = "other"
+    dist[key] = dist.get(key, 0) + 1
+
+
+def read_case_extractions(home: Path, case_id: str) -> tuple[dict[str, Any], ...]:
+    """Read THIS run's own home ledger rows for one case, read-only.
+
+    The bridge never scans other directories, other databases or old runs:
+    it opens exactly ``<home>/data/index.db`` in read-only mode and selects
+    this run's target case rows in first-recorded order.
+    """
+
+    _require_label("case id", case_id)
+    database = home / "data" / "index.db"
+    if not database.is_file():
+        raise AcceptanceRuntimeError(
+            "run home has no index.db case ledger to project"
+        )
+    uri = "file:" + quote(database.resolve().as_posix()) + "?mode=ro"
+    try:
+        connection = sqlite3.connect(uri, uri=True)
+    except sqlite3.Error as error:
+        raise AcceptanceRuntimeError(
+            "case ledger database is unreadable"
+        ) from error
+    try:
+        rows = connection.execute(
+            "SELECT extraction_json FROM case_extraction_ledger "
+            "WHERE case_id = ? ORDER BY recorded_at, rowid",
+            (case_id,),
+        ).fetchall()
+    except sqlite3.Error as error:
+        raise AcceptanceRuntimeError(
+            "case_extraction_ledger is unreadable"
+        ) from error
+    finally:
+        connection.close()
+    extractions: list[dict[str, Any]] = []
+    for (extraction_json,) in rows:
+        try:
+            payload = json.loads(extraction_json)
+        except (TypeError, ValueError) as error:
+            raise AcceptanceRuntimeError(
+                "case ledger extraction row is not valid JSON"
+            ) from error
+        if not isinstance(payload, dict):
+            raise AcceptanceRuntimeError(
+                "case ledger extraction row is not a JSON object"
+            )
+        extractions.append(payload)
+    return tuple(extractions)
+
+
+def _bridge_coverage(quality: Mapping[str, Any]) -> dict[str, float]:
+    raw = quality.get("coverage")
+    coverage: dict[str, float] = {}
+    if not isinstance(raw, Mapping):
+        return coverage
+    for metric, entry in raw.items():
+        if not isinstance(metric, str) or not _SAFE_LABEL.fullmatch(metric):
+            continue
+        if not isinstance(entry, Mapping):
+            continue
+        rate = entry.get("rate")
+        if (
+            isinstance(rate, (int, float))
+            and not isinstance(rate, bool)
+            and 0.0 <= float(rate) <= 1.0
+        ):
+            coverage[metric] = round(float(rate), 4)
+    return dict(sorted(coverage.items()))
+
+
+def _bridge_verdict(quality: Mapping[str, Any]) -> dict[str, str]:
+    raw = quality.get("verdict")
+    source = raw if isinstance(raw, Mapping) else {}
+    verdict: dict[str, str] = {}
+    for name in ("mechanism_status", "semantic_status"):
+        status = source.get(name)
+        verdict[name] = (
+            status if status in _BRIDGE_VERDICT_STATUSES else "fail"
+        )
+    return verdict
+
+
+def build_prompt_run_summary(
+    *,
+    profile: str,
+    run_id: str,
+    case_id: str,
+    extractions: Sequence[Mapping[str, Any]],
+    quality: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Project ledger extractions plus quality results into a sanitized
+    per-run summary that ``prism_prompt_benchmark.py`` reads directly.
+
+    Only ids, closed-vocabulary type labels, gap-type counts, coverage
+    rates and verdict statuses are emitted — never material content,
+    quotes, candidate payloads, corpus or absolute paths, secrets or any
+    prompt text.  Candidate ids that are not safe opaque labels (prose,
+    paths, over-long strings) are dropped rather than sanitized in place.
+    """
+
+    profile = _require_label("profile", profile)
+    run_id = _require_label("run id", run_id)
+    case_id = _require_label("case id", case_id)
+    ids: dict[str, set[str]] = {}
+    types: dict[str, dict[str, int]] = {}
+    gap_types: dict[str, int] = {}
+    for kind, _, _, _ in _CANDIDATE_PROJECTIONS:
+        ids[kind] = set()
+        types[kind] = {}
+    for extraction in extractions:
+        if not isinstance(extraction, Mapping):
+            raise AcceptanceRuntimeError(
+                "ledger extraction row must be a JSON object"
+            )
+        for kind, collection, id_field, type_field in _CANDIDATE_PROJECTIONS:
+            items = extraction.get(collection)
+            if not isinstance(items, list):
+                continue
+            for item in items:
+                if not isinstance(item, Mapping):
+                    continue
+                label = _safe_id(item.get(id_field))
+                if label is not None:
+                    ids[kind].add(label)
+                _dist_label(types[kind], item.get(type_field))
+        gaps = extraction.get("evidence_gaps")
+        if isinstance(gaps, list):
+            for gap in gaps:
+                if isinstance(gap, Mapping):
+                    _dist_label(gap_types, gap.get("gap_type"))
+    return {
+        "schema_version": BRIDGE_SCHEMA_VERSION,
+        "tool": TOOL_NAME,
+        "profile": profile,
+        "run_id": run_id,
+        "case_id": case_id,
+        "candidates": {
+            kind: {
+                "ids": sorted(ids[kind]),
+                "types": dict(sorted(types[kind].items())),
+            }
+            for kind, _, _, _ in _CANDIDATE_PROJECTIONS
+        },
+        "gap_types": dict(sorted(gap_types.items())),
+        "coverage": _bridge_coverage(quality),
+        "verdict": _bridge_verdict(quality),
+    }
+
+
 def _payload(entry: Any) -> dict[str, Any]:
     raw = getattr(entry, "payload", None)
     if not isinstance(raw, str):
@@ -732,6 +963,7 @@ def render_markdown_summary(summary: Mapping[str, Any]) -> str:
         f"- Mechanism: **{verdict['mechanism_status']}**",
         f"- Semantic: **{verdict['semantic_status']}**",
         f"- Case: `{summary['case_id']}`",
+        f"- Prompt profile: `{summary.get('prompt_profile', PROMPT_PROFILE_BASELINE)}`",
         f"- Materials: {materials['processed']}/{materials['total']} processed, {materials['failed']} failed",
         f"- Graph backend: {summary['graph_backend']}",
         f"- Fresh restart readback: {'yes' if summary['restart']['registry_readback'] else 'no'}",
@@ -875,6 +1107,8 @@ async def run_acceptance(
     if len(options.material_files) != MATERIAL_COUNT:
         raise AcceptanceInputError("exactly four materials are required")
     _require_label("case id", CASE_ID)
+    profile_label = resolve_prompt_profile(options.prompt_profile)
+    run_id = resolve_run_id(options.run_id)
 
     preflight_result = (
         preflight()
@@ -906,7 +1140,9 @@ async def run_acceptance(
 
         async def factory(config_path: Path) -> Any:
             return await create_runtime(
-                config_path, graphiti_client_factory=graphiti_factory
+                config_path,
+                graphiti_client_factory=graphiti_factory,
+                prompt_profile=options.prompt_profile,
             )
 
     failures: list[dict[str, Any]] = []
@@ -1052,6 +1288,7 @@ async def run_acceptance(
             "reasons": list(verdict.get("reasons") or ()),
         },
         "case_id": CASE_ID,
+        "prompt_profile": profile_label,
         "graph_backend": "GraphitiBackend",
         "graphiti": {
             "database": options.graphiti_database,
@@ -1121,6 +1358,20 @@ async def run_acceptance(
     }
     forbidden.update(str(item.path) for item in options.material_files)
     forbidden.update(item.path.resolve().as_posix() for item in options.material_files)
+    if overall_status in {"pass", "partial"}:
+        # Prompt-profile experiment bridge: a strictly sanitized projection
+        # of THIS run's own ledger and quality results, written before the
+        # public summary so a sanitization failure can never publish a
+        # summary of a "passing" run.
+        bridge = build_prompt_run_summary(
+            profile=profile_label,
+            run_id=run_id,
+            case_id=CASE_ID,
+            extractions=read_case_extractions(home, CASE_ID),
+            quality=quality,
+        )
+        guard_public_summary(bridge, forbidden_fragments=forbidden)
+        _write_json(options.output_dir / BRIDGE_FILENAME, bridge)
     write_public_artifacts(summary, options.output_dir, forbidden_fragments=forbidden)
     return summary
 
@@ -1157,13 +1408,18 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument("--http-uri", default=DEFAULT_HTTP_URI)
     parser.add_argument("--graphiti-password-env", default=DEFAULT_PASSWORD_ENV)
     parser.add_argument("--graphiti-model-max-tokens", type=int, default=4096)
+    parser.add_argument("--prompt-profile", default=PROMPT_PROFILE_BASELINE)
+    parser.add_argument("--run-id", default=None)
     parser.add_argument("--report-llm", action="store_true")
     parser.add_argument("--strict", action="store_true")
     return parser.parse_args(argv)
 
 
 def _blocked_summary(
-    reasons: Sequence[str], checks: Mapping[str, bool] | None = None
+    reasons: Sequence[str],
+    checks: Mapping[str, bool] | None = None,
+    *,
+    prompt_profile: str = PROMPT_PROFILE_BASELINE,
 ) -> dict[str, Any]:
     return {
         "schema_version": SCHEMA_VERSION,
@@ -1176,6 +1432,7 @@ def _blocked_summary(
             "reasons": list(reasons),
         },
         "case_id": CASE_ID,
+        "prompt_profile": prompt_profile,
         "graph_backend": "not_connected",
         "preflight": {"status": "blocked", "checks": dict(checks or {})},
         "materials": {
@@ -1216,6 +1473,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _parse_args(argv)
     output_dir = Path(args.output_dir)
     try:
+        # Fail closed on profile/run-id selections before any filesystem or
+        # network work: a typo can never silently run the baseline.
+        profile_label = resolve_prompt_profile(args.prompt_profile)
+        if args.run_id is not None:
+            _require_label("run id", args.run_id)
         if args.llm_config:
             api_key_env, base_url, model = _provider_from_config(
                 Path(args.llm_config), args.llm_provider
@@ -1239,13 +1501,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             graphiti_password_env=args.graphiti_password_env,
             provider=args.llm_provider,
             graphiti_model_max_tokens=args.graphiti_model_max_tokens,
+            prompt_profile=profile_label,
+            run_id=args.run_id,
             report_llm=args.report_llm,
             strict=args.strict,
         )
         summary = asyncio.run(run_acceptance(options))
     except AcceptanceBlockedError as error:
         summary = _blocked_summary(
-            [str(error)], checks=getattr(error, "checks", None)
+            [str(error)],
+            checks=getattr(error, "checks", None),
+            prompt_profile=profile_label,
         )
         try:
             write_public_artifacts(summary, output_dir)
@@ -1266,7 +1532,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(
         f"{TOOL_NAME}: overall={summary['overall_status']} "
         f"mechanism={summary['verdict']['mechanism_status']} "
-        f"semantic={summary['verdict']['semantic_status']}",
+        f"semantic={summary['verdict']['semantic_status']} "
+        f"profile={summary['prompt_profile']}",
         file=sys.stderr,
     )
     if args.strict and summary["overall_status"] != "pass":

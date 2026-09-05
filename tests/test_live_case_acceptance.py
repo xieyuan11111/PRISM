@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import sqlite3
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -159,6 +160,7 @@ def test_process_materials_takes_inputs_explicitly_without_mutating_runtime() ->
 def test_run_home_is_selected_as_prism_home_before_runtime_creation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    _plant_bridge_ledger(tmp_path / "output")
     options = runner.RunOptions(
         material_files=tuple(_material_files(tmp_path)),
         output_dir=tmp_path / "output",
@@ -197,6 +199,7 @@ def test_run_home_is_selected_as_prism_home_before_runtime_creation(
 def test_pdf_export_receives_relative_filename(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    _plant_bridge_ledger(tmp_path / "output")
     options = runner.RunOptions(
         material_files=tuple(_material_files(tmp_path)),
         output_dir=tmp_path / "output",
@@ -378,6 +381,7 @@ def test_blocked_summary_reports_preflight_without_claiming_connection() -> None
 def test_runner_uses_target_case_real_graphiti_restart_and_two_cutoffs(
     tmp_path: Path,
 ) -> None:
+    _plant_bridge_ledger(tmp_path / "public")
     material_files = _material_files(tmp_path)
     output_dir = tmp_path / "public"
     options = runner.RunOptions(
@@ -511,3 +515,261 @@ def test_public_summary_rejects_private_paths_and_secret_wording() -> None:
     }
     with pytest.raises(runner.SanitizationError):
         runner.guard_public_summary(leaked, forbidden_fragments=("private/material.md",))
+
+
+# ------------------------------------------------- prompt-profile experiment loop
+
+_BRIDGE_LEDGER_EXTRACTION = {
+    "case": {
+        "case_id": runner.CASE_ID,
+        "case_type": "policy",
+        "canonical_name": "Synthetic bridge case",
+        "start_at": "2026-01-10T00:00:00+00:00",
+        "status": "active",
+    },
+    "nodes": [
+        {
+            "id": "policy-2026-proposal",
+            "case_id": runner.CASE_ID,
+            "node_type": "proposal",
+            "happened_at": "2026-01-10T00:00:00+00:00",
+            "summary": "synthetic bridge node",
+            "source_ids": ["mat_source"],
+        }
+    ],
+    "temporal_facts": [],
+    "claims": [],
+    "conflicts": [],
+    "relations": [],
+    "evidence_gaps": [],
+    "warnings": [],
+}
+
+
+def _plant_bridge_ledger(output_dir: Path) -> None:
+    """Pre-create this run's own home ledger for the bridge projection."""
+
+    data = output_dir / "prism-home" / "data"
+    data.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(str(data / "index.db"))
+    connection.executescript(
+        "CREATE TABLE IF NOT EXISTS case_extraction_ledger ("
+        "case_id TEXT NOT NULL, material_id TEXT NOT NULL,"
+        "material_json TEXT NOT NULL, extraction_json TEXT NOT NULL,"
+        "recorded_at TEXT NOT NULL, updated_at TEXT NOT NULL,"
+        "PRIMARY KEY (case_id, material_id));"
+    )
+    connection.execute(
+        "INSERT INTO case_extraction_ledger VALUES (?,?,?,?,?,?)",
+        (
+            runner.CASE_ID,
+            "mat_bridge",
+            json.dumps({"id": "mat_bridge"}),
+            json.dumps(_BRIDGE_LEDGER_EXTRACTION),
+            "2026-09-05T00:00:00+00:00",
+            "2026-09-05T00:00:00+00:00",
+        ),
+    )
+    connection.commit()
+    connection.close()
+
+
+def _profiled_options(tmp_path: Path, **overrides: Any) -> runner.RunOptions:
+    values: dict[str, Any] = dict(
+        material_files=tuple(_material_files(tmp_path)),
+        output_dir=tmp_path / "output",
+        llm_provider_name="deepseek",
+        llm_api_key_env="DEEPSEEK_API_KEY",
+        llm_base_url="https://api.deepseek.com/v1",
+        llm_model="deepseek-chat",
+        bolt_uri="bolt://127.0.0.1:7688",
+        http_uri="http://127.0.0.1:7475",
+        graphiti_password_env="PRISM_GRAPHITI_PASSWORD",
+        provider="synthetic",
+    )
+    values.update(overrides)
+    return runner.RunOptions(**values)
+
+
+def test_prompt_profile_selection_is_fail_closed() -> None:
+    assert runner.resolve_prompt_profile(None) == "baseline"
+    assert runner.resolve_prompt_profile("baseline") == "baseline"
+    assert runner.resolve_prompt_profile("protocol-v1") == "protocol-v1"
+    for bad in ("protocol-v2", "", "Baseline", "PROTOCOL-V1", "protocol v1", 1):
+        with pytest.raises(runner.AcceptanceInputError):
+            runner.resolve_prompt_profile(bad)
+
+
+def test_run_id_is_safe_readable_and_not_derived_from_private_input() -> None:
+    auto = runner.resolve_run_id(None)
+    repeat = runner.resolve_run_id(None)
+    # Structure pins the derivation: UTC timestamp plus random token only —
+    # never private paths, material content or environment secrets.
+    assert re.fullmatch(r"run-\d{8}T\d{6}Z-[0-9a-f]{6}", auto)
+    assert auto != repeat
+    assert runner.resolve_run_id("live-2026-09-05-a") == "live-2026-09-05-a"
+    for bad in ("", "../escape", "run with spaces", "run/01", "E:\\private", "a" * 65):
+        with pytest.raises(runner.AcceptanceInputError):
+            runner.resolve_run_id(bad)
+
+
+def test_cli_fails_closed_on_unknown_prompt_profile_or_unsafe_run_id(
+    tmp_path: Path,
+) -> None:
+    argv = [
+        "--source-root",
+        str(tmp_path),
+        "--output-dir",
+        str(tmp_path / "out"),
+    ]
+    assert runner._parse_args(argv).prompt_profile == "baseline"
+    assert runner._parse_args(argv).run_id is None
+    assert runner.main([*argv, "--prompt-profile", "protocol-v2"]) == 2
+    assert runner.main([*argv, "--run-id", "bad run id"]) == 2
+
+
+def test_default_runtime_factory_passes_prompt_profile_to_create_runtime(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _plant_bridge_ledger(tmp_path / "output")
+    options = _profiled_options(tmp_path, prompt_profile="protocol-v1", run_id="live-001")
+    monkeypatch.delenv("PRISM_HOME", raising=False)
+    monkeypatch.setattr(runner, "_optional_dependencies_available", lambda: True)
+    monkeypatch.setattr(
+        runner,
+        "build_real_provider_graphiti_factory",
+        lambda opts: (lambda config: object()),
+    )
+    captured: list[dict[str, Any]] = []
+    runtimes = [
+        FakeRuntime(FakeAPI(), PrismConfig()),
+        FakeRuntime(FakeAPI(), PrismConfig()),
+    ]
+
+    async def fake_create_runtime(
+        config_path: Path,
+        *,
+        graphiti_client_factory: Any = None,
+        prompt_profile: Any = None,
+    ) -> Any:
+        captured.append(
+            {
+                "config_path": str(config_path),
+                "prompt_profile": prompt_profile,
+            }
+        )
+        return runtimes.pop(0)
+
+    monkeypatch.setattr(runner, "create_runtime", fake_create_runtime)
+
+    summary = asyncio.run(
+        runner.run_acceptance(
+            options,
+            preflight=lambda: runner.PreflightResult("ready", (), {}),
+            quality_gate=lambda home, materials: {
+                "verdict": {"mechanism_status": "pass", "semantic_status": "pass"}
+            },
+        )
+    )
+
+    # Both runtime creations (first pass and fresh restart) receive the value.
+    assert [call["prompt_profile"] for call in captured] == [
+        "protocol-v1",
+        "protocol-v1",
+    ]
+    assert summary["prompt_profile"] == "protocol-v1"
+    bridge = json.loads(
+        (tmp_path / "output" / "prompt-run-summary.json").read_text(encoding="utf-8")
+    )
+    assert bridge["profile"] == "protocol-v1"
+    assert bridge["run_id"] == "live-001"
+    assert bridge["case_id"] == runner.CASE_ID
+
+
+def test_public_artifacts_label_the_profile_but_never_contain_prompt_text(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _plant_bridge_ledger(tmp_path / "output")
+    options = _profiled_options(tmp_path, prompt_profile="protocol-v1")
+    monkeypatch.delenv("PRISM_HOME", raising=False)
+
+    async def runtime_factory(config_path: Path) -> Any:
+        return FakeRuntime(FakeAPI(), PrismConfig())
+
+    summary = asyncio.run(
+        runner.run_acceptance(
+            options,
+            runtime_factory=runtime_factory,
+            preflight=lambda: runner.PreflightResult("ready", (), {}),
+            quality_gate=lambda home, materials: {
+                "verdict": {"mechanism_status": "pass", "semantic_status": "pass"}
+            },
+        )
+    )
+
+    assert summary["prompt_profile"] == "protocol-v1"
+    output_dir = tmp_path / "output"
+    public = ""
+    for name in (
+        "acceptance-summary.json",
+        "acceptance-summary.md",
+        "prompt-run-summary.json",
+        "run-state.json",
+    ):
+        public += (output_dir / name).read_text(encoding="utf-8")
+    assert "protocol-v1" in public
+    # Runtime status and privacy output never carries prompt text.
+    assert "SILENT PRE-JSON SELF-CHECK" not in public
+    assert "MATERIAL CONTENT" not in public
+    assert not re.search(r"(?i)\b(api[_-]?key|password|secret|token)\b", public)
+
+
+def test_benchmark_reads_the_runners_bridge_file_directly(tmp_path: Path) -> None:
+    import prism_prompt_benchmark as benchmark
+
+    _plant_bridge_ledger(tmp_path / "output")
+    options = _profiled_options(tmp_path, prompt_profile="protocol-v1", run_id="live-001")
+
+    async def runtime_factory(config_path: Path) -> Any:
+        return FakeRuntime(FakeAPI(), PrismConfig())
+
+    asyncio.run(
+        runner.run_acceptance(
+            options,
+            runtime_factory=runtime_factory,
+            preflight=lambda: runner.PreflightResult("ready", (), {}),
+            quality_gate=lambda home, materials: {
+                "verdict": {"mechanism_status": "pass", "semantic_status": "pass"},
+                "coverage": {"source_ids": {"rate": 1.0}},
+            },
+        )
+    )
+
+    bridge_path = tmp_path / "output" / "prompt-run-summary.json"
+    report = benchmark.build_report([bridge_path])
+
+    assert report["inputs"]["run_summaries"] == 1
+    assert report["profiles"]["protocol-v1"]["cases"][runner.CASE_ID]["runs"] == 1
+    assert report["verdict"]["stability_status"] == "insufficient_runs"
+
+
+def test_no_bridge_is_written_when_the_run_fails(tmp_path: Path) -> None:
+    _plant_bridge_ledger(tmp_path / "output")
+    options = _profiled_options(tmp_path)
+
+    async def runtime_factory(config_path: Path) -> Any:
+        return FakeRuntime(FakeAPI(), PrismConfig())
+
+    summary = asyncio.run(
+        runner.run_acceptance(
+            options,
+            runtime_factory=runtime_factory,
+            preflight=lambda: runner.PreflightResult("ready", (), {}),
+            quality_gate=lambda home, materials: {
+                "verdict": {"mechanism_status": "fail", "semantic_status": "fail"}
+            },
+        )
+    )
+
+    assert summary["overall_status"] == "fail"
+    assert not (tmp_path / "output" / "prompt-run-summary.json").exists()

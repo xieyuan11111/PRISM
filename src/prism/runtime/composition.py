@@ -20,7 +20,13 @@ from prism.config import GraphitiConfig, PathConfig, PrismConfig
 from prism.debate import DebateLedger, DebateService
 from prism.domain import EvolutionCase, Material
 from prism.events import EventBus
-from prism.extraction import ExtractionEvidenceGap, ExtractionResult, ExtractionService
+from prism.extraction import (
+    BASELINE_PROMPT_PROFILE,
+    ExtractionEvidenceGap,
+    ExtractionResult,
+    ExtractionService,
+    normalize_prompt_profile,
+)
 from prism.graph import (
     GraphBackend,
     GraphEpisode,
@@ -423,6 +429,7 @@ async def create_runtime(
     firecrawl_client: object | None = None,
     graphiti_client_factory: Callable[[GraphitiConfig], Any] | None = None,
     extraction_service: ExtractionService | OfflineExtractor | None = None,
+    prompt_profile: str | None = None,
 ) -> PrismRuntime:
     """Construct and start a local runtime without implicit external clients.
 
@@ -471,10 +478,35 @@ async def create_runtime(
     An injected ``extraction_service`` is a full override of the default
     router-less/LLM-backed extraction choice, for controlled offline tests
     and embedders; composition itself never calls it.
+
+    ``prompt_profile`` is the controlled experimental-profile seam
+    (:mod:`prism.extraction.profiles`): it is a constructor argument only —
+    never written to config files or any SQLite schema — and it may only
+    flow into the default LLM ``ExtractionService`` this composition itself
+    creates.  ``None``/``"baseline"`` keep the baseline prompt
+    byte-identical (the default production composition).  Combining an
+    experimental profile with an injected ``extraction_service``, or asking
+    for one without a configured LLM router, fails closed with ``ValueError``
+    so a profile selection can never be silently ignored.
     """
 
     config = load_config(config_path)
+    profile = normalize_prompt_profile(prompt_profile)
+    if profile == BASELINE_PROMPT_PROFILE:
+        profile = None
     llm_router = _compose_llm_router(config, llm_transport)
+    if profile is not None:
+        if extraction_service is not None:
+            raise ValueError(
+                "prompt_profile cannot be combined with an injected "
+                "extraction_service; the injection is a full override, so "
+                "the profile selection would be silently ignored"
+            )
+        if llm_router is None:
+            raise ValueError(
+                "prompt_profile requires an LLM router (configured providers "
+                "with an extract task role)"
+            )
     paths = config.resolved_paths()
     for directory in (
         paths.data_dir,
@@ -508,7 +540,11 @@ async def create_runtime(
         extraction_service
         if extraction_service is not None
         else (
-            ExtractionService(llm_router, evidence_locator=store.locate)
+            ExtractionService(
+                llm_router,
+                evidence_locator=store.locate,
+                prompt_profile=profile,
+            )
             if llm_router is not None
             else OfflineExtractor()
         )

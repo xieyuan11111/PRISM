@@ -21,6 +21,7 @@ from prism.domain import (
     TemporalFact,
     TemporalRelation,
 )
+from prism.extraction.profiles import build_profiled_prompt, normalize_prompt_profile
 from prism.extraction.textmatch import (
     fold_for_location,
     paragraph_spans,
@@ -560,13 +561,25 @@ class ExtractionService:
         router: _RouterLike,
         *,
         evidence_locator: _EvidenceLocator | None = None,
+        prompt_profile: str | None = None,
     ) -> None:
+        """``prompt_profile`` is the controlled experimental-profile seam.
+
+        ``None`` (the default; also spelled ``"baseline"``) keeps the strict
+        evolution prompt byte-identical.  A known experimental profile such
+        as ``"protocol-v1"`` only prepends its instruction block in front of
+        the untouched baseline prompt; unknown names are rejected here so a
+        typo can never silently run the baseline.  The default production
+        composition never passes this parameter.
+        """
+
         if router is None or not callable(getattr(router, "complete", None)):
             raise TypeError("router must provide an async complete method")
         if evidence_locator is not None and not callable(evidence_locator):
             raise TypeError("evidence_locator must be callable")
         self._router = router
         self._evidence_locator = evidence_locator
+        self._prompt_profile = normalize_prompt_profile(prompt_profile)
 
     async def extract(self, material: Material) -> ExtractionResult:
         """Legacy-compatible extraction entry point.
@@ -578,6 +591,14 @@ class ExtractionService:
 
         if not isinstance(material, Material):
             raise TypeError("material must be a Material")
+        if self._prompt_profile is not None:
+            # Experimental profiles are a controlled seam on the strict
+            # evolution prompt only; they may never reach the legacy shape.
+            raise ValueError(
+                "prompt_profile applies only to the strict evolution "
+                "extraction prompt (extract_material); the legacy extract "
+                "prompt has no experimental profiles"
+            )
         completion = await self._router.complete(
             "extract", self._prompt(material, strict=False)
         )
@@ -625,10 +646,14 @@ class ExtractionService:
             raise ValueError(
                 "corpus_path is required when no evidence_locator is configured"
             )
-        completion = await self._router.complete(
-            "extract",
-            self._prompt(material, strict=True, target_case=target_case),
-        )
+        prompt = self._evolution_prompt(material, target_case)
+        if self._prompt_profile is not None:
+            prompt = build_profiled_prompt(
+                self._prompt_profile,
+                baseline_prompt=prompt,
+                fetched_at=material.fetched_at,
+            )
+        completion = await self._router.complete("extract", prompt)
         text = getattr(completion, "text", None)
         if not isinstance(text, str):
             raise ExtractionError("extract completion text must be a string")
