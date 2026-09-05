@@ -67,7 +67,7 @@ TOOL_NAME = "prism-prompt-profile-experiment"
 CASE_ID = "prompt-experiment-case"
 CASE_TYPE = "policy"
 CASE_NAME = "Prompt profile experiment case"
-CASE_START_AT = datetime(2026, 1, 1, tzinfo=timezone.utc)
+CASE_START_AT = datetime(2025, 12, 24, tzinfo=timezone.utc)
 
 BRIDGE_FILENAME = "prompt-run-summary.json"
 PLAN_FILENAME = "run-plan.json"

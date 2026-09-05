@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import re
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -28,6 +29,13 @@ import run_prompt_profile_experiment as experiment  # noqa: E402
 from prism.llm import TransportResponse  # noqa: E402
 
 CASE_ID = experiment.CASE_ID
+
+
+def test_default_experiment_case_window_includes_the_beijing_probe_material():
+    """The shipped probe's policy event is on 2025-12-24, not 2026-01-01."""
+    assert experiment.CASE_START_AT <= datetime.fromisoformat(
+        "2025-12-24T00:00:00+00:00"
+    )
 
 LEAK_MARKERS = (
     "SECRET-MATERIAL-qW7",
