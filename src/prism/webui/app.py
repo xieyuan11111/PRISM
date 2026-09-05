@@ -19,6 +19,7 @@ from typing import Any
 from prism.analyzer import ENTRY_KINDS, STAGES
 
 from .controller import CaseHomeController, PrismFacade
+from .status import safe_error_text, safe_identifier
 
 DEFAULT_TITLE = "PRISM Case Home"
 DEFAULT_HOST = "127.0.0.1"
@@ -331,7 +332,7 @@ def build_case_home_page(
                     unresolved_only=bool(unresolved.value),
                 )
             except Exception as error:
-                _report(f"error loading cases: {error}")
+                _report(safe_error_text("load cases", error))
                 return
             cases_table.rows = view["cases"]
             cases_table.update()
@@ -348,7 +349,7 @@ def build_case_home_page(
             try:
                 view = await controller.select_case(case_id)
             except Exception as error:
-                _report(f"error selecting case: {error}")
+                _report(safe_error_text("select case", error))
                 return
             _report(
                 f"selected {view['case_id']} \u2014 {view['name']} "
@@ -368,13 +369,13 @@ def build_case_home_page(
                     kinds=(kind_select.value,) if kind_select.value else None,
                 )
             except Exception as error:
-                _report(f"error loading snapshot: {error}")
+                _report(safe_error_text("load snapshot", error))
                 return
             snapshot = view["snapshot"]
             try:
                 figure = build_timeline_figure(view["timeline"])
             except Exception as error:
-                _report(f"error rendering timeline: {error}")
+                _report(safe_error_text("render timeline", error))
                 return
             if timeline_plot is None:
                 with timeline_plot_container:
@@ -395,11 +396,17 @@ def build_case_home_page(
             )
 
         async def _on_timeline_click(event: Any) -> None:
+            episode_key = ""
             try:
                 episode_key = _clicked_episode_key(event)
                 detail = controller.select_timeline_point(episode_key)
             except Exception as error:
-                _report(f"error selecting timeline point: {error}")
+                safe_key = safe_identifier(episode_key)
+                _report(
+                    f"unknown timeline point: {safe_key}"
+                    if safe_key is not None
+                    else safe_error_text("select timeline point", error)
+                )
                 return
             timeline_detail_md.content = _detail_markdown(detail)
             timeline_detail_md.update()

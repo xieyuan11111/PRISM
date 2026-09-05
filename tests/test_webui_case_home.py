@@ -694,6 +694,4 @@ def test_page_seam_reports_explicit_errors_and_calls_nothing_wrong():
     _element(ui, "input", label="as of").value = "2026-02-02T00:00:00"
     run(_element(ui, "button", text="Load snapshot").kwargs["on_click"](None))
     assert facade.snapshot_calls == []
-    assert any(
-        "timezone-aware" in label.text for label in _labels(ui)
-    )
+    assert any("load snapshot failed (ValueError)" == label.text for label in _labels(ui))

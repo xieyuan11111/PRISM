@@ -16,6 +16,8 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Protocol
 
+from .status import safe_error_text
+
 DEFAULT_PAGE_SIZE = 25
 MAX_PAGE_SIZE = 100
 
@@ -289,7 +291,7 @@ def build_evidence_page(
                     page=number,
                 )
             except Exception as error:
-                _report(f"error searching evidence: {error}")
+                _report(safe_error_text("evidence search", error))
                 return
             current_page[0] = view["page"]
             results_table.rows = view["results"]

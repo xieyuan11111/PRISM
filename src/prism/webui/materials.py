@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from .evidence import parse_time_bound
+from .status import outcome_status, safe_error_text
 
 MATERIAL_SUFFIXES = (".md", ".markdown", ".pdf")
 
@@ -149,6 +150,7 @@ def debate_link_view(link: object) -> dict[str, Any] | None:
 def outcome_view(result: object) -> dict[str, Any]:
     """Project one ``ProcessMaterialResult`` into JSON-safe view data."""
     return {
+        **outcome_status(result),
         "material_id": getattr(result, "material_id"),
         "status": getattr(getattr(result, "pipeline"), "status"),
         "pipeline": pipeline_view(getattr(result, "pipeline")),
@@ -233,6 +235,9 @@ def _status_markdown(view: dict[str, Any]) -> str:
     lines = [
         f"### Appended `{view['material_id']}`",
         f"- Pipeline: **{view['status']}** (replayed: {view['replayed']})",
+        f"- Mechanism: **{view['mechanism_status']}**",
+        f"- Semantic: **{view['semantic_status']}**",
+        f"- Evidence gaps: **{view['evidence_gap_summary']}**",
         f"- Case: {view['case_id']}",
     ]
     for stage in view["pipeline"]["stages"]:
@@ -317,7 +322,7 @@ def build_material_entry_page(
                     parent_debate_run_id=parent_input.value or None,
                 )
             except Exception as error:
-                _report(f"append failed: {error}")
+                _report(safe_error_text("append", error))
                 return
             status_md.content = _status_markdown(view)
             status_md.update()

@@ -292,6 +292,35 @@ def test_view_is_json_safe_and_reports_the_full_outcome(material_file):
     assert link["as_of"] == AS_OF.isoformat()
 
 
+def test_outcome_view_exposes_product_status_layers_without_leaking_details(
+    material_file,
+):
+    controller = _controller(material_file)
+
+    view = run(controller.submit(_material_path(controller), "case-b"))
+
+    assert view["ui_status"] == "success"
+    assert view["mechanism_status"] == "pass"
+    assert view["semantic_status"] == "unknown"
+    assert view["evidence_gap_count"] is None
+    assert view["evidence_gap_summary"] == "not provided"
+
+
+def test_webui_error_text_is_type_only():
+    from prism.webui.status import safe_error_text
+
+    error = RuntimeError(
+        "token=do-not-show prompt=private body C:/Users/private/material.md"
+    )
+
+    text = safe_error_text("append", error)
+
+    assert text == "append failed (RuntimeError)"
+    assert "token" not in text
+    assert "private" not in text
+    assert "C:/" not in text
+
+
 def test_view_without_a_debate_link_reports_none_truthfully(material_file):
     facade = FakeMaterialFacade(result=_result(with_link=False))
     controller = _controller(material_file, facade=facade)
@@ -484,7 +513,7 @@ def test_page_seam_reports_validation_errors_without_any_append(
     run(_element(ui, "button", text="Append material").kwargs["on_click"](None))
 
     assert facade.calls == []
-    assert any("path" in label.text for label in _labels(ui))
+    assert any("append failed (ValueError)" == label.text for label in _labels(ui))
 
     _element(ui, "input", label="Path").value = _material_path(
         controller
@@ -493,7 +522,7 @@ def test_page_seam_reports_validation_errors_without_any_append(
     run(_element(ui, "button", text="Append material").kwargs["on_click"](None))
 
     assert facade.calls == []
-    assert any("target_case" in label.text for label in _labels(ui))
+    assert any("append failed (ValueError)" == label.text for label in _labels(ui))
 
 
 def test_page_seam_reports_pipeline_failures_and_never_claims_success(

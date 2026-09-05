@@ -14,6 +14,10 @@ pip install -e ".[webui]"
 python -m prism.webui
 ```
 
+For the complete first-run setup, including `PRISM_HOME`, optional LLM/PDF
+extras and the native Neo4j boundary, see
+[`docs/webui-getting-started.md`](webui-getting-started.md).
+
 The default server binding is loopback (`127.0.0.1`) and browser auto-open is
 disabled. A non-loopback host is rejected by the default runner in this slice;
 remote exposure and authentication are intentionally not part of this

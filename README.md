@@ -61,6 +61,8 @@ PRISM 要求 Python `>=3.11`。核心安装的默认 `dependencies` 为空：基
 | WebUI | `pip install -e ".[webui]"` | 可选的 NiceGUI 与 Plotly |
 | Graphiti/Neo4j | `pip install -e ".[graphiti]"` | 可选且固定为 live spike 已验证的版本 |
 
+从零启动本机 WebUI 的完整说明见 [`docs/webui-getting-started.md`](docs/webui-getting-started.md)。WebUI 默认只绑定 `127.0.0.1`，不自动打开浏览器；LLM、PDF 和 Graphiti 依赖均按需安装。
+
 运行离线测试套件：
 
 ```console
@@ -335,7 +337,7 @@ three live tests 覆盖真实 Neo4j/Graphiti 的写入、读取、重启后幂�
 
 真实 `graphiti-core==0.29.3` 的 `search` 默认窗口是整个 group 的 10 个结果；当前 adapter 强制使用 100 个结果，作为有界的 spike safeguard，并不是分页。已测试的 3 个案例各自不超过 8 个 episodes，在当时累计图规模下完整返回。超过约 100 个 entity edges 的案例或累计 group 仍需要正式分页设计。
 
-真实验收边界是分层的：真实 provider + 真实材料 + 真实 Graphiti 的机制链已经在项目外完成，包含写入、重启读回、历史 cutoff、报告和 PDF；真实 LLM 语义质量仍为 `partial`，不能包装成 pass。真实 entity/edge 的生产规模质量、正式分页和完整生命周期链仍未完成。Docker / Docker Compose 不属于 PRISM 路线，也不是验收变体。
+真实验收边界是分层的：真实 provider + 真实材料 + 真实 Graphiti 的机制链已经在项目外完成，包含写入、重启读回、历史 cutoff、报告和 PDF；真实 LLM 语义质量当前为 `partial`，作为稳定产品保证仍 `not-yet-verified`，不能包装成 pass。真实 entity/edge 的生产规模质量、正式分页和完整生命周期链仍未完成。Docker / Docker Compose 不属于 PRISM 路线，也不是验收变体。
 
 opt-in live integration tests 只有在环境中同时设置 `PRISM_GRAPHITI_URI` 与 `PRISM_GRAPHITI_PASSWORD` 时才运行，不属于默认 CI：
 

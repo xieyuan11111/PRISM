@@ -4,6 +4,7 @@ from collections.abc import Iterable
 from datetime import datetime
 from typing import Any, Protocol
 from .controller import parse_as_of
+from .status import safe_error_text
 
 class DebateFacade(Protocol):
     async def debate_case(self, case_id: str, question: str, as_of: datetime, perspectives: Iterable[str] | None = None) -> object: ...
@@ -48,14 +49,14 @@ def build_debate_theater_page(controller: DebateTheaterController, ui: Any, *, r
                 view = await controller.run_debate(case_id.value or "", question.value or "", as_of.value or "", tuple(x.strip() for x in (perspectives.value or "").split(",") if x.strip()))
                 if hasattr(output, "value"): output.value = view
                 status.text = f"debate: {view.get('status', 'completed')}"
-            except Exception as error: status.text = f"error: {error}"
+            except Exception as error: status.text = safe_error_text("debate", error)
             status.update()
         async def follow_handler(event: Any = None) -> None:
             try:
                 view = await controller.run_follow_up(parent.value or "", follow_question.value or "", follow_perspective.value or "")
                 if hasattr(output, "value"): output.value = view
                 status.text = f"follow-up: {view.get('status', 'completed')}"
-            except Exception as error: status.text = f"error: {error}"
+            except Exception as error: status.text = safe_error_text("follow-up", error)
             status.update()
         ui.button("Run debate", on_click=run_handler); ui.button("Ask follow-up", on_click=follow_handler)
     return debate_page

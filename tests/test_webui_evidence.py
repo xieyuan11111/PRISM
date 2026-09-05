@@ -476,6 +476,4 @@ def test_page_seam_reports_explicit_validation_errors_without_a_facade_call():
     run(_element(ui, "button", text="Search").kwargs["on_click"](None))
 
     assert controller._api.calls == []
-    assert any(
-        "timezone-aware" in label.text for label in _labels(ui)
-    )
+    assert any("evidence search failed (ValueError)" == label.text for label in _labels(ui))
