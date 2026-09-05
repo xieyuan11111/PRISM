@@ -362,6 +362,12 @@ python tools/prism_quality_gate.py \
 不完整引用或没有实质候选时，结果不会被包装成 `pass`。详见
 [`docs/real-case-quality-gate.md`](docs/real-case-quality-gate.md)。
 
+仓库也提供真实 Graphiti 窄案例验收 runner：
+`tools/run_live_case_acceptance.py`。它只在项目自有 Neo4j/Graphiti 通过
+loopback HTTP/Bolt 可访问且凭据由环境提供时运行；不会自行启动或停止服务，
+也不会把 `OfflineGraphBackend` 当作真实 Graphiti。缺少前置条件时返回
+`BLOCKED`。详见 [`docs/live-case-acceptance.md`](docs/live-case-acceptance.md)。
+
 ## 里程碑状态与诚实边界
 
 | 里程碑 | 已完成 | 尚未完成或未验收 |
