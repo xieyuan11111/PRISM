@@ -595,7 +595,8 @@ def test_prompt_profile_selection_is_fail_closed() -> None:
     assert runner.resolve_prompt_profile(None) == "baseline"
     assert runner.resolve_prompt_profile("baseline") == "baseline"
     assert runner.resolve_prompt_profile("protocol-v1") == "protocol-v1"
-    for bad in ("protocol-v2", "", "Baseline", "PROTOCOL-V1", "protocol v1", 1):
+    assert runner.resolve_prompt_profile("protocol-v2") == "protocol-v2"
+    for bad in ("protocol-v3", "", "Baseline", "PROTOCOL-V1", "protocol v1", 1):
         with pytest.raises(runner.AcceptanceInputError):
             runner.resolve_prompt_profile(bad)
 
@@ -624,7 +625,7 @@ def test_cli_fails_closed_on_unknown_prompt_profile_or_unsafe_run_id(
     ]
     assert runner._parse_args(argv).prompt_profile == "baseline"
     assert runner._parse_args(argv).run_id is None
-    assert runner.main([*argv, "--prompt-profile", "protocol-v2"]) == 2
+    assert runner.main([*argv, "--prompt-profile", "protocol-v3"]) == 2
     assert runner.main([*argv, "--run-id", "bad run id"]) == 2
 
 

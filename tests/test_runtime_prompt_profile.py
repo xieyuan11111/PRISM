@@ -116,7 +116,7 @@ def test_unknown_prompt_profile_fails_closed_at_composition(tmp_path, monkeypatc
         await create_runtime(
             config_path,
             llm_transport=OfflineTransport(),
-            prompt_profile="protocol-v2",
+            prompt_profile="protocol-v3",
         )
 
     with pytest.raises(ValueError, match="unknown prompt_profile"):

@@ -17,10 +17,13 @@ from datetime import datetime
 
 BASELINE_PROMPT_PROFILE = "baseline"
 PROTOCOL_V1_PROFILE = "protocol-v1"
+PROTOCOL_V2_PROFILE = "protocol-v2"
 
 #: The closed registry of selectable prompt profiles.  ``None`` (the
 #: constructor default) is the baseline prompt with no additions.
-KNOWN_PROMPT_PROFILES = frozenset({BASELINE_PROMPT_PROFILE, PROTOCOL_V1_PROFILE})
+KNOWN_PROMPT_PROFILES = frozenset(
+    {BASELINE_PROMPT_PROFILE, PROTOCOL_V1_PROFILE, PROTOCOL_V2_PROFILE}
+)
 
 
 def normalize_prompt_profile(value: object) -> str | None:
@@ -91,6 +94,78 @@ def _protocol_v1_self_check(fetched_at: datetime) -> str:
     )
 
 
+def _protocol_v2_canonical_id_check() -> str:
+    """The fifth silent check added by protocol-v2.
+
+    Protocol-v2 addresses unstable model-chosen identifiers.  It constrains
+    only the spelling and construction of identifiers; it does not add a
+    JSON field, ask for metadata, or replace any deterministic validation.
+    """
+
+    return (
+        "5. CANONICAL ID CHECK: before writing JSON, silently select one "
+        "canonical event/fact identity for each retained candidate and "
+        "construct its id only from the formats below. IDs contain only "
+        "ASCII lowercase letters, digits, and '-'.\n"
+        "- node: node-{node_type}-{source_id}-{YYYYMMDD}; one material, one "
+        "date, and one node_type for a common policy change produces exactly "
+        "one node; put the separate details in facts.\n"
+        "- temporal_fact: fact-{source_id}-p{paragraph}-{ordinal}; the "
+        "ordinal is the 1-based position in original-text order among "
+        "same-kind candidates in that paragraph.\n"
+        "- claim: claim-{source_id}-p{paragraph}-{ordinal}; use the same "
+        "ordinal rule.\n"
+        "- relation: rel-{relation_type}-{source_ref}-{target_ref}; "
+        "source_ref and target_ref are exact canonical IDs of emitted "
+        "candidates.\n"
+        "Normalize node_type, source_id, and relation_type deterministically: "
+        "lowercase the component, replace every character other than ASCII "
+        "lowercase letters, ASCII digits, and '-' with '-', collapse "
+        "consecutive '-' to one '-', and remove leading and trailing '-'. "
+        "Use YYYYMMDD as exactly eight ASCII digits, and use paragraph and "
+        "ordinal as positive integers without padding. The source_id and date "
+        "components must come only from the supplied material metadata or the "
+        "candidate's verified evidence/time fields; never infer, translate, or "
+        "complete them from topic knowledge.\n"
+        "If two candidates would produce the same canonical id, retain only "
+        "the first candidate in original-text order with complete evidence and "
+        "drop every later collision; never add a semantic suffix, random token, "
+        "or extra number to avoid a collision.\n"
+        "Never invent a semantic English name, topic slug, or random number; "
+        "never emit underscores, uppercase letters, non-ASCII characters, or "
+        "an id that does not match its format.\n"
+        "The canonical choice is silent: Do not add any JSON field, alternate "
+        "id, canonical-id metadata, note, or self-check output; use only the "
+        "existing id/fact_id/claim_id/relation_id fields.\n"
+        "Before emitting JSON, ensure every candidate reference field points "
+        "to a node, temporal_fact, or claim actually emitted in this same "
+        "response. A relation still requires an explicitly stated "
+        "relationship and a verbatim quote. The id rule never replaces "
+        "quote, time, source, case, or relation checks; a valid id alone "
+        "never rescues a candidate.\n"
+        "If a paragraph or original-text order cannot be determined, drop "
+        "that candidate.\n"
+    )
+
+
+def _protocol_v2_self_check(fetched_at: datetime) -> str:
+    """Protocol-v1's four checks plus the canonical ID check.
+
+    The complete protocol-v1 instruction text is retained byte-for-byte;
+    protocol-v2 changes only the profile label and inserts item 5 before
+    the existing final instruction.
+    """
+
+    v1 = _protocol_v1_self_check(fetched_at)
+    v2_header = "SILENT PRE-JSON SELF-CHECK — experimental profile protocol-v2.\n"
+    v1_header = "SILENT PRE-JSON SELF-CHECK — experimental profile protocol-v1.\n"
+    return v1.replace(v1_header, v2_header, 1).replace(
+        "After the silent check completes",
+        _protocol_v2_canonical_id_check() + "After the silent check completes",
+        1,
+    )
+
+
 def build_profiled_prompt(
     profile: str | None,
     *,
@@ -109,4 +184,6 @@ def build_profiled_prompt(
         return baseline_prompt
     if normalized == PROTOCOL_V1_PROFILE:
         return _protocol_v1_self_check(fetched_at) + baseline_prompt
+    if normalized == PROTOCOL_V2_PROFILE:
+        return _protocol_v2_self_check(fetched_at) + baseline_prompt
     raise ValueError(f"unknown prompt_profile {normalized!r}")

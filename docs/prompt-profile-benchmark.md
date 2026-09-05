@@ -16,6 +16,8 @@ decided by the same strict parser regardless of profile.
 ExtractionService(router, evidence_locator=store.locate)              # baseline (default)
 ExtractionService(router, evidence_locator=store.locate,
                   prompt_profile="protocol-v1")                        # experimental, opt-in
+ExtractionService(router, evidence_locator=store.locate,
+                  prompt_profile="protocol-v2")                        # experimental, opt-in
 ```
 
 Rules enforced in code (`src/prism/extraction/profiles.py`):
@@ -23,16 +25,18 @@ Rules enforced in code (`src/prism/extraction/profiles.py`):
 * `None` (the default; also spelled `"baseline"`) keeps the strict
   evolution prompt **byte-identical** to the production contract.  The
   default production composition passes no profile.
-* `"protocol-v1"` is the only experimental profile.  It *prepends* its
-  block in front of the complete baseline prompt; the baseline bytes are
-  never edited.
+* `"protocol-v1"` and `"protocol-v2"` are the only experimental profiles.
+  Each *prepends* its block in front of the complete baseline prompt; the
+  baseline bytes are never edited.
 * Unknown, empty, wrongly-cased or non-string profile names raise
   `ValueError` at construction — a typo can never silently run baseline.
 * The profile applies only to `extract_material` (the strict evolution
-  prompt).  The legacy `extract` entry point rejects any non-baseline
+  prompt).  The legacy `extract` entry point rejects every non-baseline
   profile.
 * The profile changes the prompt only: the same completion parses to the
-  same `ExtractionResult` under baseline and protocol-v1.
+  same `ExtractionResult` under baseline, protocol-v1 and protocol-v2.
+* Protocol-v2 is never a default and never a config-file or SQLite value;
+  it is an explicit constructor/CLI selection only.
 
 ## Wiring profiles into real runs
 
@@ -42,6 +46,7 @@ argument only, never written into any config file or SQLite schema:
 ```python
 await create_runtime(config_path)                                # baseline (default)
 await create_runtime(config_path, prompt_profile="protocol-v1")  # experimental, opt-in
+await create_runtime(config_path, prompt_profile="protocol-v2")  # experimental, opt-in
 ```
 
 Fail-closed rules enforced at composition:
@@ -59,7 +64,7 @@ The live acceptance runner exposes the same selection on the CLI:
 python tools/run_live_case_acceptance.py \
     --source-root <PRISM material workspace> \
     --output-dir <acceptance output directory> \
-    --prompt-profile protocol-v1 \
+    --prompt-profile protocol-v2 \
     --run-id live-001
 ```
 
@@ -94,6 +99,64 @@ JSON:
 
 The block also states that the self-check is never part of the response:
 the returned JSON must contain no self-check results, notes or fields.
+
+## protocol-v2: canonical event/fact identities
+
+Protocol-v2 is experimental and opt-in.  It retains all four protocol-v1
+silent checks, then adds **CANONICAL ID CHECK**.  The model silently
+selects one canonical event/fact identity before output and constructs
+IDs with only ASCII lowercase letters, digits and `-`:
+
+* node: `node-{node_type}-{source_id}-{YYYYMMDD}`
+* temporal_fact: `fact-{source_id}-p{paragraph}-{ordinal}`
+* claim: `claim-{source_id}-p{paragraph}-{ordinal}`
+* relation: `rel-{relation_type}-{source_ref}-{target_ref}`
+
+`node_type`, `source_id` and `relation_type` are normalized
+deterministically: lowercase, replace every character other than ASCII
+lowercase letters, ASCII digits and `-` with `-`, collapse consecutive
+hyphens, and remove leading/trailing hyphens.  A common policy change in
+one material, on one date, with one node type produces one node; details
+belong in facts.  Paragraph/ordinal values are positive integers, with
+the ordinal representing 1-based original-text order among same-kind
+candidates in that paragraph.  If either value cannot be determined, the
+candidate is dropped.
+
+The check forbids semantic English naming, topic slugs, random numbers,
+underscores, uppercase and non-ASCII characters.  It adds no JSON field
+or metadata: canonical IDs use the existing `id`, `fact_id`, `claim_id`
+and `relation_id` fields only.  Reference fields must point to candidates
+actually emitted in the same response.  A relation still requires an
+explicitly stated relationship and verbatim evidence.  The ID rule never
+replaces quote, time, source, case or relation validation.
+
+## Preregistered protocol-v2 evaluation
+
+Live comparisons use the same materials, case, policy revision window and
+runner configuration; only the explicit prompt profile varies.  Each
+profile/case group requires at least two completed runs.  Report all
+three metric families for every group:
+
+1. **Stable key intersection** — per candidate kind, report ID
+   intersection, union and intersection/union across runs.  Node and
+   temporal_fact IDs are the primary endpoints because protocol-v1
+   already reduced claim-layer drift while node/fact IDs remained
+   unstable.  Claims are secondary; relations are evaluated only when the
+   material explicitly states them.
+2. **Failure rate** — report material-level extraction failures and
+   candidate validation gaps (especially `candidate_validation_failed`).
+   Protocol-v2 is not accepted if it increases the failure rate relative
+   to the comparison profile.
+3. **Evidence coverage** — report both `source_ids` and
+   `evidence_locator` coverage rates.  Protocol-v2 is not accepted if it
+   reduces either coverage measure.
+
+A protocol-v2 result is considered better only when stable key
+intersection/union improves or is non-inferior, the failure rate does not
+increase, and evidence coverage does not decrease.  If stability improves
+while failures increase or coverage falls, the result is a tradeoff, not
+a win.  Candidate and node counts are diagnostic context only and are
+never a victory condition.
 
 ## The live-run bridge: `prompt-run-summary.json`
 
@@ -136,7 +199,8 @@ The benchmark's `--input` accepts the runner's bridge files verbatim:
 python tools/prism_prompt_benchmark.py \
     --input runs/live-baseline/prompt-run-summary.json \
     --input runs/live-protocol-v1/prompt-run-summary.json \
-    --input runs/live-protocol-v1-r2/prompt-run-summary.json \
+    --input runs/live-protocol-v2/prompt-run-summary.json \
+    --input runs/live-protocol-v2-r2/prompt-run-summary.json \
     --output bench-manifest.json --indent
 ```
 
@@ -162,7 +226,7 @@ runs:
 
 ```
 python tools/prism_prompt_benchmark.py \
-    --input runs/protocol-v1/ --input runs/baseline/ \
+    --input runs/protocol-v1/ --input runs/protocol-v2/ \
     --output bench-manifest.json --indent
 ```
 
@@ -174,7 +238,7 @@ vocabularies:
 ```json
 {
   "schema_version": 1,
-  "profile": "protocol-v1",
+  "profile": "protocol-v2",
   "run_id": "run-01",
   "case_id": "case-alpha",
   "candidates": {
@@ -206,8 +270,8 @@ duplicate `(profile, case, run_id)` triples.
 * **Mechanism vs semantic stay separate.**  Both are reported as status
   counts per profile and per group; neither is folded into the stability
   verdict.
-* **Real provider execution is not implemented.**  Live execution lives in
-  the acceptance runner; this tool stays offline and reads sanitized
+* **Real provider execution is not implemented.**  Live execution lives
+  in the acceptance runner; this tool stays offline and reads sanitized
   summaries only (offline inputs and `prompt-run-summary.json` bridges),
   never calling an LLM, the network or a Graphiti adapter.
 

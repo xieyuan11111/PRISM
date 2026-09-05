@@ -4,6 +4,7 @@ from .profiles import (
     BASELINE_PROMPT_PROFILE,
     KNOWN_PROMPT_PROFILES,
     PROTOCOL_V1_PROFILE,
+    PROTOCOL_V2_PROFILE,
     build_profiled_prompt,
     normalize_prompt_profile,
 )
@@ -34,6 +35,7 @@ __all__ = [
     "KNOWN_PROMPT_PROFILES",
     "MATERIAL_ROLES",
     "PROTOCOL_V1_PROFILE",
+    "PROTOCOL_V2_PROFILE",
     "build_profiled_prompt",
     "normalize_prompt_profile",
 ]
