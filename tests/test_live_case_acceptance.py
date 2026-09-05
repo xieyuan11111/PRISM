@@ -400,6 +400,7 @@ def test_runner_uses_target_case_real_graphiti_restart_and_two_cutoffs(
                 kind="evolution_node",
                 source_ids=("mat_1",),
                 evidence=(SimpleNamespace(),),
+                payload=json.dumps({"node_type": "implementation"}),
                 reference_time=datetime(2026, 8, 1, tzinfo=UTC),
                 valid_at=datetime(2026, 8, 1, tzinfo=UTC),
                 invalid_at=None,
@@ -432,6 +433,7 @@ def test_runner_uses_target_case_real_graphiti_restart_and_two_cutoffs(
             "reasons": ["synthetic reason"],
         },
         "substantive": {"total": 2},
+        "distributions": {"node_type": {"implementation": 3}},
         "evidence_gaps": {"total": 1},
         "coverage": {
             "source_ids": {"rate": 1.0},
@@ -468,6 +470,10 @@ def test_runner_uses_target_case_real_graphiti_restart_and_two_cutoffs(
         runner.CASE_ID,
     ]
     assert second_api.report_calls == [(runner.CASE_ID, runner.CUTOFFS[-1][1].isoformat())]
+    assert summary["distributions"]["node_type"] == {"implementation": 3}
+    assert summary["cutoffs"][-1]["node_type"] == {"implementation": 1}
+    assert summary["graph_write"]["first_pass_added"] == 4
+    assert summary["graph_write"]["first_pass_skipped"] == 0
     assert [item.graphiti.enabled for item in configs] == [True, True]
     assert [item.graphiti.database for item in configs] == ["neo4j", "neo4j"]
 

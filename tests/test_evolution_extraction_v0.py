@@ -2074,6 +2074,13 @@ def test_prompt_demands_verbatim_quotes_and_line_based_paragraph_numbers():
     assert "do not emit that candidate at all" in prompt
 
 
+def test_prompt_declares_observation_time_order_invariants():
+    prompt = service()[0]._prompt(material(), strict=True)
+
+    assert "observed_at must be on or after valid_at" in prompt
+    assert "observed_at must not be earlier than happened_at or stated_at" in prompt
+
+
 def test_every_accepted_evidence_locator_is_verbatim_and_corpus_relative():
     result = run(
         service()[0].extract_material(

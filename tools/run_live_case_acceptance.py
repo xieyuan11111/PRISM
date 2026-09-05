@@ -514,6 +514,16 @@ def _pipeline_summary(records: Sequence[dict[str, Any]], stage_counts: Mapping[s
                 "case_id": item["case_id"],
                 "warnings": item["warnings"],
                 "error_type": item["error_type"],
+                **(
+                    {"graph_added": item["graph_added"]}
+                    if isinstance(item.get("graph_added"), int)
+                    else {}
+                ),
+                **(
+                    {"graph_skipped": item["graph_skipped"]}
+                    if isinstance(item.get("graph_skipped"), int)
+                    else {}
+                ),
                 **({"failed_stage": item["failed_stage"]} if item.get("failed_stage") else {}),
             }
             for item in records
@@ -1031,16 +1041,6 @@ async def run_acceptance(
     gaps = quality.get("evidence_gaps") if isinstance(quality.get("evidence_gaps"), Mapping) else {}
     coverage = quality.get("coverage") if isinstance(quality.get("coverage"), Mapping) else {}
     distributions = quality.get("distributions") if isinstance(quality.get("distributions"), Mapping) else {}
-    if cutoff_results:
-        late = cutoff_results[-1]
-        node_type = dict(distributions.get("node_type") or {})
-        for key, value in late.get("node_type", {}).items():
-            node_type[key] = node_type.get(key, 0) + value
-        relation_type = dict(distributions.get("relation_type") or {})
-        for key, value in late.get("relation_type", {}).items():
-            relation_type[key] = relation_type.get(key, 0) + value
-        distributions = {**distributions, "node_type": node_type, "relation_type": relation_type}
-
     summary: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "tool": TOOL_NAME,
