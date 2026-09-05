@@ -43,7 +43,7 @@ LLM 语义稳定性：仍需保持 semantic-partial 的诚实边界
 | Graphiti 合成 live spike | live-mechanism-pass | 原生 Neo4j/Graphiti 写入、重启、cutoff、幂等 |
 | 真实 provider + 真实材料 + Graphiti | live-mechanism-pass | 已完成端到端机制验收；语义质量另行判定 |
 | prompt profiles | experimental | baseline、protocol-v1、protocol-v2 |
-| split-v1 | experimental | Flash 单材料三轮核心 node/fact 稳定；跨案例未完成 |
+| split-v1 | experimental | Flash 单材料三轮核心 node/fact 稳定；第二政策与学术案例复现均为 unstable，baseline 继续默认 |
 
 ## 4. 尚未完成的 v1 收口项
 
@@ -51,8 +51,6 @@ LLM 语义稳定性：仍需保持 semantic-partial 的诚实边界
 工程文档与实际状态完全同步
 WebUI 从零安装/配置/使用说明完善
 WebUI 最终本机真实冒烟
-第二个政策案例的 split-v1 复现
-学术案例的 split-v1 复现
 一个完整生命周期案例验收
 CONTRIBUTING.md
 CHANGELOG.md
@@ -71,8 +69,8 @@ v1 RC 报告与版本整理
 
 ```text
 accepted evidence/source coverage 可达到 100%
-核心 node/fact 在指定 Flash split-v1 实验中出现稳定交集
-claims 与 relations 仍需更多案例验证
+core node/fact 在指定 Flash split-v1 单材料实验中出现稳定交集
+第二政策和学术案例跨运行稳定性不足，claims 与 relations 仍需更多案例验证
 provider 仍可能产生候选级校验 gap 或 JSON envelope failure
 semantic-partial 不等于系统机制失败
 ```
