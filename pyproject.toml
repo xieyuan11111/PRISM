@@ -32,6 +32,14 @@ webui = [
     "plotly>=5.24,<7",
 ]
 
+# PRISM's own LLM network layer uses the official openai Python SDK
+# (AsyncOpenAI) through prism.llm.OpenAISDKTransport. The dependency is an
+# explicit opt-in: the default runtime stays dependency-free and offline,
+# and the SDK is imported lazily only when a real transport call is made.
+openai-sdk = [
+    "openai>=2.24,<3",
+]
+
 # Graphiti/Neo4j remains opt-in and is NEVER part of the default install;
 # PRISM's default runtime stays fully offline without it. Pinned to the
 # versions verified in the Phase B live spike (docs/graphiti-spike-plan.md,

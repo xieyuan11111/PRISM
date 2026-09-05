@@ -39,7 +39,7 @@ from prism.ingestion import IngestionService
 from prism.llm import (
     LLMRouter,
     LLMTransport,
-    OpenAICompatibleTransport,
+    OpenAISDKTransport,
     Provider,
     TaskRoute,
 )
@@ -265,8 +265,10 @@ def _compose_llm_router(
         TaskRoute(role=role, providers=(provider_name,))
         for role, provider_name in task_roles.items()
     ]
+    # The default real transport speaks the official openai SDK (imported
+    # lazily on first use, so composing this runtime stays offline).
     selected_transport = (
-        transport if transport is not None else OpenAICompatibleTransport()
+        transport if transport is not None else OpenAISDKTransport()
     )
     return LLMRouter(
         providers=providers,

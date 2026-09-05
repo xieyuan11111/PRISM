@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 
 import pytest
 
 from prism.config import LLMConfig, LLMProviderConfig, PrismConfig
 from prism.llm import (
     LLMRouter,
+    LLMTransportError,
     MissingAPIKeyError,
-    OpenAICompatibleTransport,
+    OpenAISDKTransport,
     TransportResponse,
 )
 from prism.runtime import create_runtime
@@ -124,23 +126,75 @@ def test_configured_providers_and_routes_build_router_without_reading_key(
     run(exercise())
 
 
-def test_default_transport_is_constructed_but_never_called_implicitly(
+def test_default_transport_is_official_sdk_and_composition_stays_lazy(
     tmp_path, monkeypatch
 ):
     monkeypatch.setenv("PRISM_HOME", str(tmp_path / "home"))
     monkeypatch.delenv("PRISM_TEST_API_KEY", raising=False)
+    # Poisoning the openai entry proves runtime composition never needs the
+    # SDK: the default transport is constructed lazily and would only import
+    # the SDK when a completion or connection check is actually attempted.
+    monkeypatch.setitem(sys.modules, "openai", None)
 
     async def exercise():
         runtime = await create_runtime(configured_runtime_file(tmp_path))
         try:
             assert isinstance(runtime.llm_router, LLMRouter)
-            assert isinstance(
-                runtime.llm_router._transport, OpenAICompatibleTransport
-            )
+            assert isinstance(runtime.llm_router._transport, OpenAISDKTransport)
+            assert runtime.llm_router._transport._stream is False
             assert runtime.llm_router.usage.calls == 0
+            monkeypatch.setenv("PRISM_TEST_API_KEY", "key")
+            with pytest.raises(LLMTransportError, match="openai-sdk"):
+                await runtime.llm_router.complete("extract", "prompt")
         finally:
             await runtime.close()
-        assert runtime.llm_router.usage.calls == 0
+        # One explicit attempt was made (and failed closed at the lazy SDK
+        # import); composition itself never triggered any call.
+        assert runtime.llm_router.usage.calls == 1
+
+    run(exercise())
+
+
+def test_every_llm_backed_service_shares_one_router_and_transport(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("PRISM_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("PRISM_TEST_API_KEY", "key")
+    config_path = tmp_path / "config.json"
+    PrismConfig(
+        llm=LLMConfig(
+            providers={
+                "primary": LLMProviderConfig(
+                    model="provider/model-v1",
+                    base_url="https://llm.example.test/v1",
+                    api_key_env="PRISM_TEST_API_KEY",
+                )
+            },
+            task_roles={
+                "extract": "primary",
+                "summarize": "primary",
+                "debate": "primary",
+                "summarize_report": "primary",
+                "adjudicate": "primary",
+            },
+        )
+    ).save(config_path)
+    transport = OfflineTransport()
+
+    async def exercise():
+        runtime = await create_runtime(config_path, llm_transport=transport)
+        try:
+            # extract / debate / report / adjudicate all flow through the one
+            # router (and therefore the one transport) composed by the runtime;
+            # no service builds its own LLM protocol.
+            assert runtime.extraction_service._router is runtime.llm_router
+            assert runtime.debate_service._router is runtime.llm_router
+            assert runtime.report_service._router is runtime.llm_router
+            assert runtime.adjudicator._router is runtime.llm_router
+            assert runtime.llm_router._transport is transport
+            assert transport.calls == []
+        finally:
+            await runtime.close()
 
     run(exercise())
 

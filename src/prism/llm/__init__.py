@@ -1,7 +1,10 @@
-"""Dependency-free, async LLM routing and OpenAI-compatible HTTP transport.
+"""Async LLM routing and the official-openai-SDK transport.
 
 The public API contains immutable provider/route models, :class:`LLMRouter`,
-small result and usage value objects, and explicit router exceptions.
+small result and usage value objects, explicit router exceptions, and
+:class:`OpenAISDKTransport` — the transport that drives the official
+``openai`` package's ``AsyncOpenAI`` client.  The SDK is an opt-in extra
+and is imported lazily; importing this package stays dependency-free.
 """
 
 from .router import (
@@ -21,7 +24,7 @@ from .router import (
     TransportResponse,
     Usage,
 )
-from .transport import LLMTransportError, OpenAICompatibleTransport
+from .transport import LLMTransportError, OpenAISDKTransport
 
 __all__ = [
     "Completion",
@@ -32,7 +35,7 @@ __all__ = [
     "MissingAPIKeyError",
     "MissingProviderError",
     "MissingRoleError",
-    "OpenAICompatibleTransport",
+    "OpenAISDKTransport",
     "Provider",
     "RetriesExhaustedError",
     "RetryPolicy",
