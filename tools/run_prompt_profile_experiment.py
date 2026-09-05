@@ -104,6 +104,11 @@ class ExperimentOptions:
     sdk_json_mode: bool = False
     execute: bool = False
     split_v1: bool = False
+    case_id: str = CASE_ID
+    case_type: str = CASE_TYPE
+    case_name: str = CASE_NAME
+    case_start_at: datetime = CASE_START_AT
+    case_status: str = "active"
 
 
 def _write_json(path: Path, payload: Mapping[str, Any]) -> None:
@@ -201,7 +206,11 @@ def build_plan(options: ExperimentOptions) -> dict[str, Any]:
         "execute": options.execute,
         "profile": options.prompt_profile,
         "run_id": options.run_id,
-        "case_id": CASE_ID,
+        "case_id": options.case_id,
+        "case_type": options.case_type,
+        "case_name": options.case_name,
+        "case_start_at": options.case_start_at.isoformat(),
+        "case_status": options.case_status,
         "provider": options.llm_provider_name,
         "model": options.llm_model,
         "graph_backend": "offline",
@@ -260,7 +269,10 @@ def _split_failure_stage(error: BaseException) -> str | None:
 
 
 async def _process_materials(
-    runtime: Any, materials: tuple[acceptance.MaterialFile, ...]
+    runtime: Any,
+    materials: tuple[acceptance.MaterialFile, ...],
+    *,
+    case: EvolutionCase,
 ) -> dict[str, Any]:
     records: list[dict[str, Any]] = []
     for item in materials:
@@ -278,16 +290,10 @@ async def _process_materials(
                 # case start keeps them deterministic across reruns.
                 {
                     "source": item.material_id,
-                    "published_at": CASE_START_AT.isoformat(),
-                    "case_tags": [CASE_ID],
+                    "published_at": case.start_at.isoformat(),
+                    "case_tags": [case.case_id],
                 },
-                target_case=EvolutionCase(
-                    CASE_ID,
-                    CASE_TYPE,
-                    CASE_NAME,
-                    CASE_START_AT,
-                    "active",
-                ),
+                target_case=case,
             )
         except Exception as error:  # one material never aborts the run
             records.append(
@@ -362,7 +368,17 @@ async def run_experiment(
                 _install_split_v1(
                     runtime, prompt_profile=options.prompt_profile
                 )
-            materials = await _process_materials(runtime, options.material_files)
+            materials = await _process_materials(
+                runtime,
+                options.material_files,
+                case=EvolutionCase(
+                    options.case_id,
+                    options.case_type,
+                    options.case_name,
+                    options.case_start_at,
+                    options.case_status,
+                ),
+            )
         finally:
             await runtime.close()
     finally:
@@ -374,7 +390,7 @@ async def run_experiment(
 
     if quality_gate is None:
         quality = acceptance._default_quality_gate(
-            home, materials, case_id=CASE_ID
+            home, materials, case_id=options.case_id
         )
     else:
         quality = quality_gate(home, materials)
@@ -383,7 +399,9 @@ async def run_experiment(
     if not isinstance(quality, Mapping):
         raise ExperimentError("quality gate must return a JSON object")
 
-    bridge_extractions = list(acceptance.read_case_extractions(home, CASE_ID))
+    bridge_extractions = list(
+        acceptance.read_case_extractions(home, options.case_id)
+    )
     failed_gaps: list[dict[str, str]] = []
     for record in materials.get("records", ()):
         if not isinstance(record, Mapping) or record.get("status") != "failed":
@@ -403,7 +421,7 @@ async def run_experiment(
     bridge = acceptance.build_prompt_run_summary(
         profile=options.prompt_profile,
         run_id=options.run_id,
-        case_id=CASE_ID,
+        case_id=options.case_id,
         extractions=tuple(bridge_extractions),
         quality=quality,
     )
@@ -433,6 +451,12 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--llm-api-key-env", default=DEFAULT_API_KEY_ENV)
     parser.add_argument("--llm-base-url", required=True)
     parser.add_argument("--llm-model", required=True)
+    parser.add_argument("--case-id", default=CASE_ID)
+    parser.add_argument("--case-type", default=CASE_TYPE,
+                        choices=("policy", "academic_discourse", "public_issue"))
+    parser.add_argument("--case-name", default=CASE_NAME)
+    parser.add_argument("--case-start-at", default=CASE_START_AT.isoformat())
+    parser.add_argument("--case-status", default="active")
     parser.add_argument("--prompt-profile", default="baseline")
     parser.add_argument("--run-id", default=None)
     parser.add_argument("--sdk-stream", action="store_true")
@@ -462,6 +486,19 @@ def main(argv: list[str] | None = None) -> int:
         profile_label = acceptance.resolve_prompt_profile(args.prompt_profile)
         run_id = acceptance.resolve_run_id(args.run_id)
         material_files = collect_experiment_materials(args.source_root)
+        case_id = acceptance._require_label("case id", args.case_id)
+        if not isinstance(args.case_name, str) or not args.case_name.strip():
+            raise acceptance.AcceptanceInputError("case name must be non-empty")
+        try:
+            case_start_at = datetime.fromisoformat(args.case_start_at)
+        except ValueError as error:
+            raise acceptance.AcceptanceInputError(
+                "case start must be an ISO 8601 datetime"
+            ) from error
+        if case_start_at.tzinfo is None or case_start_at.utcoffset() is None:
+            raise acceptance.AcceptanceInputError(
+                "case start must be timezone-aware"
+            )
         options = ExperimentOptions(
             material_files=material_files,
             output_dir=output_dir,
@@ -479,6 +516,11 @@ def main(argv: list[str] | None = None) -> int:
             sdk_json_mode=args.sdk_json_mode,
             execute=args.execute,
             split_v1=args.split_v1,
+            case_id=case_id,
+            case_type=args.case_type,
+            case_name=args.case_name.strip(),
+            case_start_at=case_start_at,
+            case_status=args.case_status,
         )
 
         if not args.execute:

@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 import re
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -29,6 +29,7 @@ import run_prompt_profile_experiment as experiment  # noqa: E402
 from prism.llm import TransportResponse  # noqa: E402
 
 CASE_ID = experiment.CASE_ID
+UTC = timezone.utc
 
 
 def test_default_experiment_case_window_includes_the_beijing_probe_material():
@@ -36,6 +37,32 @@ def test_default_experiment_case_window_includes_the_beijing_probe_material():
     assert experiment.CASE_START_AT <= datetime.fromisoformat(
         "2025-12-24T00:00:00+00:00"
     )
+
+
+def test_experiment_options_carry_an_explicit_case_context():
+    options = experiment.ExperimentOptions(
+        material_files=(),
+        output_dir=Path("out"),
+        llm_provider_name="provider",
+        llm_api_key_env="KEY",
+        llm_base_url="https://example.test/v1",
+        llm_model="model",
+        prompt_profile="baseline",
+        run_id="run-1",
+        case_id="academic-case",
+        case_type="academic_discourse",
+        case_name="Academic discourse case",
+        case_start_at=datetime(2020, 1, 1, tzinfo=UTC),
+        case_status="active",
+    )
+
+    plan = experiment.build_plan(options)
+
+    assert plan["case_id"] == "academic-case"
+    assert plan["case_type"] == "academic_discourse"
+    assert plan["case_name"] == "Academic discourse case"
+    assert plan["case_start_at"] == "2020-01-01T00:00:00+00:00"
+    assert plan["case_status"] == "active"
 
 LEAK_MARKERS = (
     "SECRET-MATERIAL-qW7",
