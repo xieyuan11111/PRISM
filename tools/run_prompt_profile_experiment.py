@@ -59,6 +59,7 @@ import run_live_case_acceptance as acceptance
 from prism.config import LLMConfig, LLMProviderConfig, PrismConfig
 from prism.domain import EvolutionCase
 from prism.llm import OpenAISDKTransport
+from prism.extraction import SplitExtractionService
 from prism.runtime import OfflineGraphBackend, create_runtime
 
 SCHEMA_VERSION = 1
@@ -102,6 +103,7 @@ class ExperimentOptions:
     sdk_stream: bool = False
     sdk_json_mode: bool = False
     execute: bool = False
+    split_v1: bool = False
 
 
 def _write_json(path: Path, payload: Mapping[str, Any]) -> None:
@@ -205,6 +207,7 @@ def build_plan(options: ExperimentOptions) -> dict[str, Any]:
         "graph_backend": "offline",
         "sdk_stream": options.sdk_stream,
         "sdk_json_mode": options.sdk_json_mode,
+        "split_v1": options.split_v1,
         "materials": len(options.material_files),
         "material_ids": [item.material_id for item in options.material_files],
         "ready": ready,
@@ -218,6 +221,42 @@ def _build_transport(options: ExperimentOptions) -> Any:
     return OpenAISDKTransport(
         stream=options.sdk_stream, json_mode=options.sdk_json_mode
     )
+
+
+def _install_split_v1(runtime: Any, *, prompt_profile: str | None) -> None:
+    """Use the explicit split extractor only for this experiment runtime."""
+
+    router = runtime.llm_router
+    if router is None:
+        raise ExperimentError("split-v1 requires the LLM router")
+    if runtime.adjudicator is not None:
+        raise ExperimentError(
+            "split-v1 requires an extraction-only experiment configuration"
+        )
+    split = SplitExtractionService(
+        router,
+        evidence_locator=runtime.evidence_store.locate,
+        prompt_profile=prompt_profile,
+    )
+    # Experiment-local override after normal composition; the default
+    # runtime composition and production pipeline remain unchanged.
+    runtime.extraction_service = split
+    runtime.pipeline_service._extraction = split
+    runtime.api._extraction = split
+
+
+def _split_failure_stage(error: BaseException) -> str | None:
+    """Find a closed split-stage label in a wrapped pipeline error."""
+
+    current: BaseException | None = error
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        stage = getattr(current, "stage", None)
+        if stage in {"stage_a", "stage_b"}:
+            return stage
+        current = current.__cause__ or current.__context__
+    return None
 
 
 async def _process_materials(
@@ -256,6 +295,7 @@ async def _process_materials(
                     "material_id": item.material_id,
                     "status": "failed",
                     "error_type": type(error).__name__,
+                    "failure_stage": _split_failure_stage(error),
                 }
             )
             continue
@@ -318,6 +358,10 @@ async def run_experiment(
                     "the prompt experiment requires the offline graph backend; "
                     "Graphiti must stay disabled"
                 )
+            if options.split_v1:
+                _install_split_v1(
+                    runtime, prompt_profile=options.prompt_profile
+                )
             materials = await _process_materials(runtime, options.material_files)
         finally:
             await runtime.close()
@@ -340,19 +384,22 @@ async def run_experiment(
         raise ExperimentError("quality gate must return a JSON object")
 
     bridge_extractions = list(acceptance.read_case_extractions(home, CASE_ID))
-    failed_count = int(materials.get("failed", 0) or 0)
-    if failed_count:
-        # A failed extraction has no ledger row. Preserve that run-level fact
-        # in the sanitized benchmark input without copying its error message,
-        # prompt, material, or path into the public bridge.
-        bridge_extractions.append(
-            {
-                "evidence_gaps": [
-                    {"gap_type": "pipeline_failure"}
-                    for _ in range(failed_count)
-                ]
-            }
+    failed_gaps: list[dict[str, str]] = []
+    for record in materials.get("records", ()):
+        if not isinstance(record, Mapping) or record.get("status") != "failed":
+            continue
+        stage = record.get("failure_stage")
+        gap_type = (
+            f"{stage}_failure"
+            if stage in {"stage_a", "stage_b"}
+            else "pipeline_failure"
         )
+        failed_gaps.append({"gap_type": gap_type})
+    if failed_gaps:
+        # A failed extraction has no ledger row. Preserve only the closed
+        # failure stage/count in the sanitized benchmark input — never its
+        # error message, prompt, material, or path.
+        bridge_extractions.append({"evidence_gaps": failed_gaps})
     bridge = acceptance.build_prompt_run_summary(
         profile=options.prompt_profile,
         run_id=options.run_id,
@@ -399,6 +446,11 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         action="store_true",
         help="explicit opt-in for REAL provider calls (default: offline plan)",
     )
+    parser.add_argument(
+        "--split-v1",
+        action="store_true",
+        help="experimental Flash-only two-stage extraction structure",
+    )
     return parser.parse_args(argv)
 
 
@@ -426,6 +478,7 @@ def main(argv: list[str] | None = None) -> int:
             sdk_stream=args.sdk_stream,
             sdk_json_mode=args.sdk_json_mode,
             execute=args.execute,
+            split_v1=args.split_v1,
         )
 
         if not args.execute:

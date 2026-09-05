@@ -268,6 +268,7 @@ def test_execute_runs_extraction_offline_and_writes_sanitized_summary(
     # The extraction service drove the router, which drove the (fake) SDK
     # transport: one completion per material through the unified path.
     assert len(transport.calls) == 2
+    assert all("SPLIT-V1" not in call["payload"]["prompt"] for call in transport.calls)
     assert transport.calls[0]["payload"]["model"] == "provider/model-v1"
     assert "Policy update" in transport.calls[0]["payload"]["prompt"]
     assert transport.calls[0]["provider"].base_url == (

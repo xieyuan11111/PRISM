@@ -20,6 +20,7 @@ from .service import (
     ExtractionService,
     MATERIAL_ROLES,
 )
+from .split import SplitExtractionError, SplitExtractionService
 
 __all__ = [
     "ACCUMULATION_STATUSES",
@@ -36,6 +37,8 @@ __all__ = [
     "MATERIAL_ROLES",
     "PROTOCOL_V1_PROFILE",
     "PROTOCOL_V2_PROFILE",
+    "SplitExtractionError",
+    "SplitExtractionService",
     "build_profiled_prompt",
     "normalize_prompt_profile",
 ]
