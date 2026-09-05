@@ -136,6 +136,13 @@ provider 偶尔会返回用于自检的 `node_ids_verified` 等 audit-only 字�
 可独立成立且有自身证据的节点可以保留并移除悬空引用，否则候选进入显式
 evidence gap，绝不凭空补造缺失的 claim。
 
+对于真实 provider 观察到的有限格式漂移，抽取层还允许将一个包含可验证
+`quote` 的单个 evidence object，或一个能在当前材料中逐字定位的单个 quote
+字符串，规范化为单元素 evidence 数组；规范化会留下 warning 并继续经过
+source/quote/time 校验。`evidence_map`、带有未定义字段的对象、坏 quote、
+跨材料 source 和其他未知形状仍会被拒绝。详见
+[`docs/real-case-quality-gate.md`](docs/real-case-quality-gate.md)。
+
 预测始终是带不确定性的 claim，不会提升为已经确认的 `TemporalFact`；相互矛盾的候选保留为可报告的 conflict audit item 与图关系。确定性报告将“文档发布”与实质演变分开计数，没有受支持变化的材料不会生成填充用 publication node。
 
 ## M2：自动多视角辩论

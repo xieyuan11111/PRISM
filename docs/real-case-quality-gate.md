@@ -43,6 +43,14 @@ pipeline 全部成功并不等于 semantic pass。存在失败材料、证据缺
 退出码 0，但 verdict 会如实保留在 JSON 中。输入/数据/脱敏错误分别返回
 明确的非零退出码。
 
+## Provider 格式漂移
+
+真实 provider 偶尔会把单个可验证的 evidence object 或单个可逐字定位的
+quote string 作为 `evidence` 返回。抽取层只对这两种明确形状做单元素数组
+规范化，并在 warning 中记录；随后仍执行 source、quote、时间和候选绑定
+校验。未知对象、`evidence_map`、reasoning、坏 quote 或跨材料引用不会被
+宽松接受，而是保留为候选级 gap/失败。
+
 ## 隐私边界
 
 输出只包含计数、比率、闭合词表标签和判定原因，不复制材料正文、URL、绝对

@@ -129,6 +129,13 @@ GAP_PAYLOAD_FIELDS: dict[str, frozenset[str]] = {
 # belongs in a model-facing candidate snapshot.
 GAP_PAYLOAD_EVIDENCE_FIELDS = frozenset({"source_id", "quote", "paragraph", "page"})
 
+# The only fields a bare (non-array) evidence object may carry and still be
+# normalized into a single-element evidence array; see
+# ``ExtractionService._normalized_evidence_items``.
+_NORMALIZABLE_EVIDENCE_FIELDS = frozenset(
+    {"source_id", "quote", "paragraph", "page"}
+)
+
 
 def _validate_gap_payload(value: object, path: str = "candidate_payload") -> None:
     """Reject anything that is not plain, JSON-safe candidate data.
@@ -2389,6 +2396,70 @@ class ExtractionService:
             exact=verbatim == quote,
         )
 
+    def _normalized_evidence_items(
+        self,
+        path: str,
+        value: object,
+        material: Material,
+        *,
+        audit: _BindingAudit | None = None,
+    ) -> list[Any]:
+        """The evidence items to bind, after two narrow shape normalizations.
+
+        Real providers occasionally emit ``evidence`` as one bare locator
+        object or one bare quote string instead of the required JSON array.
+        Exactly those two shapes are rewritten into an equivalent
+        single-element array whose item then passes through the same strict
+        per-item field checks and source/quote resolver as list items, so
+        nothing is bound that the array path would have rejected.  Every
+        other non-array value — an evidence map keyed by candidate id, an
+        object with unknown fields or without a quote, a blank string, a
+        number, null — keeps the historical validation error, and each
+        normalization leaves an explicit warning through the binding audit.
+        """
+
+        if isinstance(value, list):
+            return value
+        item: dict[str, Any] | None = None
+        notice = ""
+        if (
+            isinstance(value, dict)
+            and set(value) <= _NORMALIZABLE_EVIDENCE_FIELDS
+            and isinstance(value.get("quote"), str)
+            and value["quote"].strip()
+        ):
+            # This is a one-material call whose candidate source array has
+            # already been forced to the input material id, so an absent
+            # source_id can only default to that material — never to a
+            # foreign or invented one.
+            item = {
+                "source_id": value.get("source_id", material.id),
+                "quote": value["quote"],
+                "paragraph": value.get("paragraph"),
+                "page": value.get("page"),
+            }
+            notice = (
+                f"{path} was a single evidence object; normalized to a "
+                "single-element evidence array (evidence_single_object_normalized)"
+            )
+        elif isinstance(value, str) and value.strip():
+            item = {
+                "source_id": material.id,
+                "quote": value,
+                "paragraph": None,
+                "page": None,
+            }
+            notice = (
+                f"{path} was a bare string; normalized to a single-element "
+                f"evidence array bound to material {material.id!r} "
+                "(evidence_single_string_normalized)"
+            )
+        if item is None:
+            raise ExtractionError(f"{path} must be a JSON array")
+        if audit is not None:
+            audit.notices.append(notice)
+        return [item]
+
     def _bind_evidence(
         self,
         path: str,
@@ -2399,7 +2470,7 @@ class ExtractionService:
         *,
         audit: _BindingAudit | None = None,
     ) -> tuple[EvidenceLocator, ...]:
-        items = self._array(path, value)
+        items = self._normalized_evidence_items(path, value, material, audit=audit)
         if not items:
             raise ExtractionError(f"{path} must not be empty")
         bound: list[EvidenceLocator] = []
