@@ -1,9 +1,10 @@
 # M1 Temporal Core Acceptance Boundary
 
 This document states what the repository can verify offline and what the
-Phase B live spike (2026-09-03) confirmed with deterministic model clients
-(see the Live Graphiti boundary section). It does not claim that
-real-provider extraction quality or a complete real-case semantic acceptance.
+Phase B live spike plus the 2026-09-05 real-case run confirmed. It keeps
+Graphiti mechanism acceptance separate from real-provider semantic quality;
+the latter remains `partial` rather than being presented as a complete
+real-case semantic acceptance.
 
 ## Implemented semantics
 
@@ -95,10 +96,16 @@ two-cutoff exclusion and registry-restart readback all passed with
 deterministic injected Graphiti model clients (no external LLM/embedding
 API).  That run used synthetic fixtures, never real corpus material.
 
-What remains unverified on a live server: extraction through a real LLM
-provider (real model calls, cost, prompt drift), the resulting
-real-entity/edge graph, and an end-to-end rerun over a real policy/news
-case.  The offline timeline semantics are PRISM service-layer guarantees;
-the deterministic live run proves Graphiti 0.29.3 persists and returns the
-M1 episodes exactly as PRISM writes them, not that real-provider extraction
-produces correct M1 structure.
+The 2026-09-05 project-external run additionally exercised real-provider
+extraction over a narrow policy case and wrote the resulting accepted
+records to real Graphiti. It verified the mechanism path, restart/readback,
+historical cutoff and report/PDF path, while the quality gate remained
+`semantic=partial` because candidate-level gaps and provider output drift
+remained. The run is therefore evidence that the real production path can be
+executed, not evidence that every real provider output is semantically
+correct or that a complete lifecycle chain has been reconstructed.
+
+Still unverified as a stable product guarantee are cross-case prompt
+generalization, a complete proposal/publication/implementation/revision/
+expiry chain, production-scale Graphiti pagination and stable relation
+extraction across cases.

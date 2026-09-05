@@ -1,4 +1,9 @@
-# PRISM Graphiti/Neo4j Spike — Phase Plan
+# PRISM Graphiti / Neo4j Spike Plan
+
+> **当前部署决策：** PRISM 使用原生 Neo4j launcher、独立 home/data/logs/run
+> 目录和 loopback 专用端口。Docker、Docker Compose 与容器化部署不是本项目
+> 路线，也不是安装、CI 或验收前置；文中若保留旧 compose 文件名，仅用于说明
+> 历史设计背景，不作为当前操作步骤。
 
 > **Status**: Phase A (code + offline verification) is implemented. Phase B
 > (live spike against a real PRISM-owned Graphiti/Neo4j instance) was executed
@@ -86,13 +91,14 @@ configuration, credentials or data.
   metadata: graphiti-core 0.29.3's `Graphiti(uri, user, password, ...)`
   constructor does **not** consume a database argument, and PRISM does not
   forward one to that constructor.
-- **Ports**: host **7475** (HTTP) and **7688** (Bolt), mapped to the
-  container's standard 7474/7687.  These avoid the default local Neo4j ports
-  but are only **suggested values**.
+- **Ports**: the native PRISM-owned instance uses **7475** (HTTP) and
+  **7688** (Bolt), avoiding the default local Neo4j ports. These are the
+  dedicated ports used by the accepted local spike.
 - **Preflight**: run `python deploy/graphiti-spike/check_ports.py` before
-  `docker compose up`.  A successful preflight does **not guarantee** the
-  ports remain free until the container binds (a concurrent process can race
-  it); treat it as a reduction of risk, not a reservation.
+  starting the native launcher. A successful preflight does **not guarantee**
+  the ports remain free until the service binds (a concurrent process can race
+  it); treat it as a reduction of risk, not a reservation. Docker is not a
+  PRISM installation or deployment prerequisite.
 - **Config the operator writes** (in `PRISM_HOME/config.json` or an explicit
   config):
 
@@ -128,11 +134,11 @@ variables.
 | Variable | Required by | Purpose |
 |---|---|---|
 | `PRISM_GRAPHITI_URI` | opt-in integration tests | `bolt://host:port` of the PRISM-owned Neo4j |
-| `PRISM_GRAPHITI_PASSWORD` | runtime + tests + compose | password for the PRISM-owned container user |
+| `PRISM_GRAPHITI_PASSWORD` | runtime + tests + native launcher | password for the PRISM-owned Neo4j user |
 | `PRISM_GRAPHITI_USERNAME` | optional | only when `graphiti.username_env` is set; otherwise PRISM uses Neo4j's standard user `neo4j` |
 | `PRISM_GRAPHITI_DATABASE` | optional | database for the opt-in tests and runtime config example — default `neo4j`, the Community container's single built-in database. Not passed to the Graphiti 0.29.3 constructor; it must equal the group because graphiti realises a Neo4j group as a database (see section 3) |
 | `PRISM_GRAPHITI_GROUP` | optional | group for the opt-in integration tests — defaults to `PRISM_GRAPHITI_DATABASE` and must stay equal to it (`neo4j` on the Community container); `GraphitiConfig` rejects a mismatch when enabled |
-| `PRISM_GRAPHITI_HTTP_PORT` / `PRISM_GRAPHITI_BOLT_PORT` | optional | host ports published by compose (defaults 7475/7688) |
+| `PRISM_GRAPHITI_HTTP_PORT` / `PRISM_GRAPHITI_BOLT_PORT` | optional | dedicated native-listener ports (defaults 7475/7688) |
 | `PRISM_HOME` | PRISM generally | local data/config directory |
 
 ---
@@ -203,23 +209,22 @@ as remaining:
 7. **Resolved for this environment**: the isolated PRISM-owned Neo4j
    Community 5.26 server uses the built-in `neo4j` database; HTTP and Bolt
    stayed bound to 127.0.0.1 (ports 7475/7688), loopback-only.
-8. **Not exercised**: the Docker Compose variant (compose/healthcheck
-   syntax); Docker was not installed on the spike machine, so the
-   standalone PRISM-owned native Neo4j launcher (own JDK, data dir and
-   venv under the spike area) was started and used instead.  The deploy
-   template remains the documented way to reproduce the spike elsewhere.
+8. **Out of scope by decision**: Docker Compose and containerized deployment
+   are not PRISM routes and are not required for installation, CI, or live
+   acceptance. The executed variant used the standalone PRISM-owned native
+   Neo4j launcher with its own JDK, data directory and loopback ports.
 
 ---
 
 ## 6. Phase B procedure and executed variant
 
-1. Copy `deploy/graphiti-spike/.env.example` to
-   `deploy/graphiti-spike/.env` and set `PRISM_GRAPHITI_PASSWORD` to a strong
-   random value.
+1. Prepare a local, protected environment containing
+   `PRISM_GRAPHITI_PASSWORD` with a strong random value. Do not commit this
+   environment file.
 2. Run `python deploy/graphiti-spike/check_ports.py` (preflight; see
    section 3 — no guarantee of lasting availability).
-3. Start the PRISM-owned services:
-   `docker compose -f deploy/graphiti-spike/compose.yaml up -d`.
+3. Start the PRISM-owned native Neo4j service with its isolated home, data,
+   logs and run directories. Do not use Docker.
 4. Export `PRISM_GRAPHITI_URI=bolt://localhost:7688` and
    `PRISM_GRAPHITI_PASSWORD` (and optionally `PRISM_GRAPHITI_USERNAME`;
    `PRISM_GRAPHITI_DATABASE`/`PRISM_GRAPHITI_GROUP` default to `neo4j` and
@@ -233,9 +238,9 @@ as remaining:
 8. Run the full offline suite again to prove the live spike did not break the
    default offline behavior.
 
-**Executed variant and run record (2026-09-03)**. Docker was unavailable on
-the spike machine, so the steps above were executed against the standalone
-PRISM-owned native Neo4j Community 5.26 server under the spike area (its own
+**Executed variant and run record (2026-09-03)**. The steps above were executed
+against the standalone PRISM-owned native Neo4j Community 5.26 server under
+the spike area (its own
 JDK, data directory and venv), started for this run; the service stayed bound
 to 127.0.0.1 only (HTTP 7475 / Bolt 7688).  The spike connected exclusively
 to that server and never to any other Neo4j on the machine.  Environment:
@@ -259,14 +264,12 @@ the pinned extra installed.
 
 Running Phase B on a machine:
 
-- downloads the Neo4j container image and starts a container named
-  `prism-graphiti-spike`;
-- creates a PRISM-owned Docker volume
-  (`prism_graphiti_neo4j_data`) holding real graph data;
+- starts the PRISM-owned native Neo4j process under its isolated home and
+  data/logs/run directories;
 - publishes host ports 7475/7688 (or the configured overrides) — this is a
   real, visible service bind;
 - writes **real episodes** (PRISM domain data written through the adapter)
-  into the PRISM-owned container's single `neo4j` database under
+  into the PRISM-owned native instance's single `neo4j` database under
   group/database `neo4j` — the only group the Community edition can serve
   (graphiti 0.29.3 realises a group as a database; two groups on one
   Community instance are not possible, so no second group is ever written);
@@ -286,18 +289,19 @@ Running Phase B on a machine:
   rebuilding `index.db` would lose them (timeline readback from stored
   bodies still works, but cross-restart write idempotency and body-less
   search attribution would degrade until rows are re-recorded);
-- leaves all of the above running/data present until explicitly torn down
+- leaves the process/data present until explicitly torn down
   (section 8).
 
-Phase A deliberately performs none of these: no containers, no database, no
+Phase A deliberately performs none of these: no native service, no database, no
 venv/package installs, no network, no service start/stop, no config or
 credential reads of any existing GTI/Neo4j setup.
 
 ## 8. Rollback (planned)
 
-1. Stop and remove the PRISM-owned container **and its data volume**:
-   `docker compose -f deploy/graphiti-spike/compose.yaml down -v`.
-2. Delete `deploy/graphiti-spike/.env` (it holds the real password).
+1. Stop the PRISM-owned native Neo4j process and verify that its loopback
+   ports are released.
+2. Remove the protected local environment holding the real password when it
+   is no longer needed.
 3. Unset the environment variables from section 4 in the shell/profile.
 4. Remove the `graphiti` block from the PRISM config (or set
    `"enabled": false`) — the runtime then returns to the fully offline

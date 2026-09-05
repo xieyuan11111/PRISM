@@ -207,7 +207,7 @@ PRISM_HOME/                 # 项目根目录（默认 ./，可用环境变量 P
 
 棱镜计划作为**开源项目**发布到 GitHub（MIT 许可，先本地跑通 M0 再公开，但代码标准从第一天按开源写）。
 
-- **可移植**：路径用项目相对路径 + `PRISM_HOME` 环境变量，不硬编码绝对路径；Neo4j/Graphiti 提供 Docker Compose 一键部署；LLM provider 模板化，示例用占位符。
+- **可移植**：路径用项目相对路径 + `PRISM_HOME` 环境变量，不硬编码绝对路径；Graphiti/Neo4j 使用原生 launcher、独立 home 和专用 loopback 端口；Docker/Docker Compose 不属于本项目路线；LLM provider 模板化，示例用占位符。
 - **插件化**：数据源、分析视角、摄入格式、LLM provider 全部做成可插拔接口，贡献者无需改核心即可扩展。
 - **无残留**：示例配置全占位符，真实密钥只在本机 `secrets.env`（.gitignore 排除）；发布前做一次"开源审查"扫描残留路径/密钥/个人引用。
 - **文档边界**：不提及任何私人记忆系统或外部 Agent 框架作为依赖，自我表述为纯自托管开源软件。

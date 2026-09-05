@@ -64,13 +64,13 @@
 **Graphiti 关键事实（2026-08-31 确认）**：
 - 开源，MIT 许可，GitHub `getzep/graphiti`，作者团队 Zep。
 - 运行在 Neo4j（≥5.26）/ FalkorDB（≥1.1.2）/ Neptune 上，可完全自托管。
-- 提供 MCP server 部署方式（Docker + Neo4j）。
+- 提供 MCP server 部署方式；PRISM 本项目不采用 Docker/Docker Compose，Graphiti 使用原生 Neo4j launcher 与独立运行目录。
 - 双时态边、自动事实失效、episode 级溯源——正好对应棱镜"演变+失效+可回溯"需求。
 - 棱镜部署：独立 Neo4j（或 FalkorDB）+ 独立 Graphiti 实例 + 独立配置/凭据/备份。
 
 > 与棱镜需求的对齐度极高：Graphiti 本来就是"记录什么现在为真、什么曾为真"的设计，`valid_at/invalid_at` 正是棱镜追踪政策/观点演变需要的语义。
 
-> ⚠️ **底层图库许可说明**：Neo4j Community 为 **GPLv3**，FalkorDB 为 **SSPLv1**。棱镜以**独立客户端进程**连接这些图数据库（通过驱动 API），不包含、不修改、不分发其代码——GPL/SSPL 的传染义务不适用于"独立进程间通信"这一边界。Docker Compose 部署时两者以独立容器运行。此边界需在开源文档（README/贡献指南）中向贡献者明确说明。
+> ⚠️ **底层图库许可说明**：Neo4j Community 为 **GPLv3**，FalkorDB 为 **SSPLv1**。棱镜以**独立客户端进程**连接这些图数据库（通过驱动 API），不包含、不修改、不分发其代码——GPL/SSPL 的传染义务不适用于"独立进程间通信"这一边界。PRISM 当前采用原生 Neo4j launcher、独立 home/data/logs/run 目录和 loopback 端口，不采用 Docker Compose 容器化部署。此边界需在开源文档（README/贡献指南）中向贡献者明确说明。
 
 ---
 

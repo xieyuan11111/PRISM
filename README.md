@@ -19,6 +19,8 @@ PRISM 以可审计的 Markdown 语料为事实材料正本，以 SQLite/FTS5 建
 - 不可变报告版本、可选 PDF 导出、指定视角追问，以及追加材料与既有辩论上下文的确定性关联；
 - 可选 NiceGUI 案例主页：用 Plotly 展示历史时间线，并通过可点击节点查看带来源的证据定位信息；
 - 默认完全离线、显式选择后才启用的 Graphiti/Neo4j spike 配置、部署模板和 live-test gate；
+- PRISM 自有 LLM 调用统一通过官方 OpenAI Python SDK；prompt profile、protocol-v2
+  canonical ID 与 split-v1 两阶段抽取均为显式 experimental 能力；
 - 所有已完成模块均有离线测试覆盖。
 
 语料目录中的 Markdown 文件是可读的材料正本。SQLite 是可重建的文本索引，同时承载项目自有的持久化账本；Graphiti/GTI 是可选的时序图后端。默认测试不需要真实 provider 凭据或外部服务。
@@ -310,7 +312,7 @@ pip install -e ".[graphiti]"
 }
 ```
 
-此示例连接 PRISM 自有容器中唯一的内置 `neo4j` 数据库。模板使用 Neo4j Community Edition，服务名为 `prism-graphiti-spike`，不设置自定义默认数据库。对 `graphiti-core==0.29.3` 而言，显式 `group_id` 会被当作数据库选择：`add_episode` 会在两者不同时选择 `database=group_id`。换句话说，realises a Neo4j group as a database；因此 `enabled: true` 时 `database` 与 `group_id` 必须相同，此处都为 `neo4j`。PRISM 会在构造客户端前拒绝两者不一致的配置。隔离来自独立的 PRISM 自有容器、Neo4j home、服务和数据卷，不来自 Community 实例中的多个 group；Community Edition 不支持这种多数据库隔离。
+此示例连接 PRISM 自有原生 Neo4j 实例中的内置 `neo4j` 数据库。PRISM 不使用 Docker 或 Docker Compose 作为安装、运行或验收前置；隔离来自独立的 Neo4j home、服务进程、数据目录和专用端口。对 `graphiti-core==0.29.3` 而言，显式 `group_id` 会被当作数据库选择：`add_episode` 会在两者不同时选择 `database=group_id`。换句话说，realises a Neo4j group as a database；因此 `enabled: true` 时 `database` 与 `group_id` 必须相同，此处都为 `neo4j`。PRISM 会在构造客户端前拒绝两者不一致的配置。隔离不来自 Community 实例中的多个 group；Community Edition 不支持这种多数据库隔离。
 
 `database` 是 PRISM adapter metadata，`Graphiti(uri, user, password, ...)` 构造函数不会消费它；它必须与 Graphiti 实际选库使用的 `group_id` 相等。`graphiti.uri` 必须显式携带非默认端口，标准 7474/7687 不会被自动套用，从而避免误连默认本地 Neo4j。
 
@@ -318,11 +320,11 @@ pip install -e ".[graphiti]"
 
 真实路径会通过 `src/prism/graph/registry.py` 在现有 `index.db` 中增量创建 `graphiti_episode_registry`，记录 PRISM `episode_key`、Graphiti 分配的真实 uuid、group/database 和 canonical episode body，不存凭据、host 或绝对路径。该持久映射使跨进程重启的重复写入保持 no-op，并让不带 body 的 `EntityEdge` 搜索结果仍能正确归属。`PrismRuntime.close()` 会关闭它创建的 backend 与 registry；调用方也可向 `create_runtime` 注入 `graph_backend`/`graphiti_client_factory`，其中调用方注入的 `graph_backend` 是完全覆盖，不会另建 registry。
 
-项目提供 `deploy/graphiti-spike/` 部署模板。运行前可执行端口预检，但预检不构成端口保留：
+项目提供 `deploy/graphiti-spike/` 中的原生 Neo4j 参考配置和端口预检。运行前可执行端口预检，但预检不构成端口保留：
 
 ```console
 python deploy/graphiti-spike/check_ports.py
-docker compose -f deploy/graphiti-spike/compose.yaml up -d
+# 使用原生 Neo4j launcher 启动 PRISM-owned 实例；不要使用 Docker
 ```
 
 ### Phase B 真实验收记录
@@ -333,7 +335,7 @@ three live tests 覆盖真实 Neo4j/Graphiti 的写入、读取、重启后幂�
 
 真实 `graphiti-core==0.29.3` 的 `search` 默认窗口是整个 group 的 10 个结果；当前 adapter 强制使用 100 个结果，作为有界的 spike safeguard，并不是分页。已测试的 3 个案例各自不超过 8 个 episodes，在当时累计图规模下完整返回。超过约 100 个 entity edges 的案例或累计 group 仍需要正式分页设计。
 
-未验收范围包括：真实 provider extraction 仍属于尚未验证（not-yet-verified）的范围；真实 entity/edge 图质量、针对真实政策/新闻 corpus 的端到端重跑、生产规模分页，以及 Docker Compose/healthcheck 变体本身（执行环境未安装 Docker，实际使用的是独立的 native Neo4j launcher）。
+真实验收边界是分层的：真实 provider + 真实材料 + 真实 Graphiti 的机制链已经在项目外完成，包含写入、重启读回、历史 cutoff、报告和 PDF；真实 LLM 语义质量仍为 `partial`，不能包装成 pass。真实 entity/edge 的生产规模质量、正式分页和完整生命周期链仍未完成。Docker / Docker Compose 不属于 PRISM 路线，也不是验收变体。
 
 opt-in live integration tests 只有在环境中同时设置 `PRISM_GRAPHITI_URI` 与 `PRISM_GRAPHITI_PASSWORD` 时才运行，不属于默认 CI：
 
@@ -373,7 +375,7 @@ loopback HTTP/Bolt 可访问且凭据由环境提供时运行；不会自行启�
 | 里程碑 | 已完成 | 尚未完成或未验收 |
 |---|---|---|
 | M0 基础能力 | 领域模型、可移植配置、Markdown/PDF/OCR 摄入、raw 留存、SQLite/FTS5、自动管线、持久案例账本与离线测试；真实 UBS RC 已在项目外跑通机制链 | 真实案例的语义质量仍可能为 `partial`，不能以 pipeline 成功代替完整事件链验收 |
-| M1 时序核心 | 时序事实/关系、事实失效与修订、冲突并存、历史截止点、双截止点比较、证据定位；合成数据的 Graphiti live round-trip 已通过 | 真实 LLM extraction、真实 entity/edge 质量、真实案例端到端重跑仍未验收 |
+| M1 时序核心 | 时序事实/关系、事实失效与修订、冲突并存、历史截止点、双截止点比较、证据定位；合成 Graphiti live round-trip 与真实 provider/真实材料的 Graphiti 机制链已通过 | 真实 LLM 语义稳定性仍为 `partial`；完整 proposal→publication→implementation→revision→expiry 链、生产规模分页仍未验收 |
 | M2 自动辩论 | 3–4 个视角、同一 EvidenceBundle、陈述分类、单轮交叉质询、证据约束综合、SQLite 审计与两类真实 provider smoke | 多轮辩论、运行中用户中断、实时流式控制仍未完成 |
 | M3 产品切片 | `snapshot`/`compare`、`--stage`/`--kind`、报告版本与 PDF、指定视角追问、材料/父辩论关联、NiceGUI 案例主页、Plotly 时间线、Debate Theater v0、证据浏览与材料入口 | 实时流式辩论、拖拽上传、模型设置、认证、远程暴露和完整多并行案例交互仍未完成 |
 
@@ -385,18 +387,18 @@ loopback HTTP/Bolt 可访问且凭据由环境提供时运行；不会自行启�
 | `FIRECRAWL_API_KEY` | 显式启用 Firecrawl research 时使用 |
 | `PRISM_PDF_RENDERER` | 指定 Edge/Chromium PDF renderer |
 | `PRISM_GRAPHITI_URI` | opt-in Graphiti integration tests 的 `bolt://host:port` |
-| `PRISM_GRAPHITI_PASSWORD` | Graphiti runtime、tests 与 compose 使用的密码 |
+| `PRISM_GRAPHITI_PASSWORD` | Graphiti runtime、tests 与原生 Neo4j launcher 使用的密码 |
 | `PRISM_GRAPHITI_USERNAME` | 仅在 `graphiti.username_env` 被设置时使用；否则采用 `neo4j` |
 | `PRISM_GRAPHITI_DATABASE` | 可选数据库名；Community 模板默认为 `neo4j` |
 | `PRISM_GRAPHITI_GROUP` | 可选 group；默认跟随 `PRISM_GRAPHITI_DATABASE` 且必须与其相同 |
-| `PRISM_GRAPHITI_HTTP_PORT` / `PRISM_GRAPHITI_BOLT_PORT` | compose 发布的 host ports，默认 7475/7688 |
+| `PRISM_GRAPHITI_HTTP_PORT` / `PRISM_GRAPHITI_BOLT_PORT` | 原生 Neo4j listener 的专用端口，默认 7475/7688 |
 | `GRAPHITI_TELEMETRY_ENABLED` | Graphiti 0.29.3 telemetry 开关；PRISM builder 默认设为 `false`，除非 operator 已显式导出 `true` |
 
 真实 API key、Cookie 或密码不得写入配置、corpus、图谱、日志、报告或仓库。
 
 ## 许可证与依赖边界
 
-PRISM 的目标许可证为 **MIT**；`LICENSE`、`CONTRIBUTING.md`、`CHANGELOG.md` 与 `CODE_OF_CONDUCT.md` 属于正式发布前仍待补齐的治理文件。核心包的默认依赖列表为空；`pdf`、`webui`、`graphiti` 都是显式选择的 optional extra：
+PRISM 的目标许可证为 **MIT**；`LICENSE` 已存在，`CONTRIBUTING.md`、`CHANGELOG.md`、`CODE_OF_CONDUCT.md`、`SECURITY.md` 与 CI 属于正式发布前仍待补齐的治理文件。核心包的默认依赖列表为空；`pdf`、`webui`、`graphiti` 都是显式选择的 optional extra：
 
 - `pdf` 固定使用 `markdown==3.10.2`、`pypdf==6.16.1`，并依赖系统中已安装的 Microsoft Edge 或兼容 Chromium；
 - `webui` 使用 `nicegui==2.24.2`、`plotly>=5.24,<7`，不会因导入核心模块而启动 Web 框架或监听端口；
@@ -405,6 +407,8 @@ PRISM 的目标许可证为 **MIT**；`LICENSE`、`CONTRIBUTING.md`、`CHANGELOG
 
 ## 进一步阅读
 
+- [v1 范围冻结](docs/v1-scope.md)
+- [v1 发布状态](docs/release-status.md)
 - [M1 时序核心验收边界](docs/m1-temporal.md)
 - [M2 自动辩论验收](docs/m2-debate.md)
 - [M3 材料追加与辩论上下文关联](docs/m3-material-debate-link.md)
