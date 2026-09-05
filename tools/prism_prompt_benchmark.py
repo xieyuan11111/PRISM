@@ -399,9 +399,11 @@ def _type_stability(per_run: list[dict[str, int]]) -> dict[str, Any]:
 
 
 def _differing_ids_bounded(ids: list[str], limit: int = 8) -> str:
-    if len(ids) <= limit:
-        return ", ".join(ids)
-    return ", ".join(ids[:limit]) + f" (+{len(ids) - limit} more)"
+    rendered = ", ".join(ids)
+    if len(rendered) <= 80:
+        return rendered
+    prefix = rendered[:77].rsplit(", ", 1)[0]
+    return prefix + "..."
 
 
 def _reduce_group(runs: list[_Run]) -> dict[str, Any]:

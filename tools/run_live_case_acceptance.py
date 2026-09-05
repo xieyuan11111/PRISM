@@ -583,9 +583,15 @@ def _pipeline_summary(records: Sequence[dict[str, Any]], stage_counts: Mapping[s
     }
 
 
-def _default_quality_gate(home: Path, materials: Mapping[str, Any]) -> dict[str, Any]:
+def _default_quality_gate(
+    home: Path,
+    materials: Mapping[str, Any],
+    *,
+    case_id: str = CASE_ID,
+) -> dict[str, Any]:
+    _require_label("quality gate case id", case_id)
     run_summary = {
-        "case_id": CASE_ID,
+        "case_id": case_id,
         "input_files": materials["total"],
         "materials": {
             "successful": materials["processed"],
@@ -605,7 +611,7 @@ def _default_quality_gate(home: Path, materials: Mapping[str, Any]) -> dict[str,
                 "--run-dir",
                 str(home),
                 "--case-id",
-                CASE_ID,
+                case_id,
                 "--output",
                 str(report_path),
                 "--indent",

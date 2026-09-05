@@ -324,18 +324,36 @@ async def run_experiment(
         else:
             os.environ["PRISM_HOME"] = previous_home
 
-    gate = quality_gate or acceptance._default_quality_gate
-    quality = gate(home, materials)
+    if quality_gate is None:
+        quality = acceptance._default_quality_gate(
+            home, materials, case_id=CASE_ID
+        )
+    else:
+        quality = quality_gate(home, materials)
     if hasattr(quality, "__await__"):
         quality = await quality
     if not isinstance(quality, Mapping):
         raise ExperimentError("quality gate must return a JSON object")
 
+    bridge_extractions = list(acceptance.read_case_extractions(home, CASE_ID))
+    failed_count = int(materials.get("failed", 0) or 0)
+    if failed_count:
+        # A failed extraction has no ledger row. Preserve that run-level fact
+        # in the sanitized benchmark input without copying its error message,
+        # prompt, material, or path into the public bridge.
+        bridge_extractions.append(
+            {
+                "evidence_gaps": [
+                    {"gap_type": "pipeline_failure"}
+                    for _ in range(failed_count)
+                ]
+            }
+        )
     bridge = acceptance.build_prompt_run_summary(
         profile=options.prompt_profile,
         run_id=options.run_id,
         case_id=CASE_ID,
-        extractions=acceptance.read_case_extractions(home, CASE_ID),
+        extractions=tuple(bridge_extractions),
         quality=quality,
     )
     forbidden = {

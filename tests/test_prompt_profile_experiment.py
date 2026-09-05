@@ -342,3 +342,19 @@ def test_execute_never_reveals_the_api_key_in_its_artifacts(
 
     for artifact in output_dir.glob("*.json"):
         assert "sk-live-never-leak" not in artifact.read_text(encoding="utf-8")
+
+
+def test_failed_materials_are_projected_as_sanitized_pipeline_gaps():
+    extractions = ({"nodes": [], "evidence_gaps": []},)
+    bridge = experiment.acceptance.build_prompt_run_summary(
+        profile="baseline",
+        run_id="run-01",
+        case_id=CASE_ID,
+        extractions=extractions
+        + ({"evidence_gaps": [{"gap_type": "pipeline_failure"}]},),
+        quality={
+            "verdict": {"mechanism_status": "fail", "semantic_status": "fail"}
+        },
+    )
+
+    assert bridge["gap_types"] == {"pipeline_failure": 1}

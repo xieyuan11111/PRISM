@@ -108,6 +108,23 @@ def test_stability_reducer_computes_intersection_union_frequency(tmp_path):
     assert node["ids"]["differing_ids"] == ["node-a", "node-c"]
 
 
+def test_report_reasons_are_bounded_for_many_long_candidate_ids(tmp_path):
+    runs = [
+        run_summary(
+            "run-1",
+            facts=[f"fact-{index:03d}-" + "x" * 30 for index in range(10)],
+        ),
+        run_summary(
+            "run-2",
+            facts=[f"other-{index:03d}-" + "y" * 30 for index in range(10)],
+        ),
+    ]
+
+    report = build(tmp_path, runs)
+
+    assert all(len(reason) <= 200 for reason in report["verdict"]["reasons"])
+
+
 def test_perfectly_stable_group_is_stable(tmp_path):
     report = build(
         tmp_path,
