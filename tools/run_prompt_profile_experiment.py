@@ -100,6 +100,7 @@ class ExperimentOptions:
     prompt_profile: str
     run_id: str
     sdk_stream: bool = False
+    sdk_json_mode: bool = False
     execute: bool = False
 
 
@@ -203,6 +204,7 @@ def build_plan(options: ExperimentOptions) -> dict[str, Any]:
         "model": options.llm_model,
         "graph_backend": "offline",
         "sdk_stream": options.sdk_stream,
+        "sdk_json_mode": options.sdk_json_mode,
         "materials": len(options.material_files),
         "material_ids": [item.material_id for item in options.material_files],
         "ready": ready,
@@ -213,7 +215,9 @@ def build_plan(options: ExperimentOptions) -> dict[str, Any]:
 def _build_transport(options: ExperimentOptions) -> Any:
     # The one LLM path this tool ever uses: the official-SDK transport,
     # shared with the runtime default, with streaming as the only option.
-    return OpenAISDKTransport(stream=options.sdk_stream)
+    return OpenAISDKTransport(
+        stream=options.sdk_stream, json_mode=options.sdk_json_mode
+    )
 
 
 async def _process_materials(
@@ -386,6 +390,11 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--run-id", default=None)
     parser.add_argument("--sdk-stream", action="store_true")
     parser.add_argument(
+        "--sdk-json-mode",
+        action="store_true",
+        help="request OpenAI-compatible JSON object mode through the official SDK",
+    )
+    parser.add_argument(
         "--execute",
         action="store_true",
         help="explicit opt-in for REAL provider calls (default: offline plan)",
@@ -415,6 +424,7 @@ def main(argv: list[str] | None = None) -> int:
             prompt_profile=profile_label,
             run_id=run_id,
             sdk_stream=args.sdk_stream,
+            sdk_json_mode=args.sdk_json_mode,
             execute=args.execute,
         )
 

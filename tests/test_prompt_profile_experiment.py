@@ -142,8 +142,9 @@ class RecordingTransportFactory:
     instances: list["RecordingTransportFactory.Transport"] = []
 
     class Transport:
-        def __init__(self, *, stream: bool = False) -> None:
+        def __init__(self, *, stream: bool = False, json_mode: bool = False) -> None:
             self.stream = stream
+            self.json_mode = json_mode
             self.calls: list[dict] = []
 
         async def complete(self, *, provider, api_key, payload, timeout):
@@ -200,6 +201,7 @@ def test_plan_mode_validates_without_creating_a_runtime_or_importing_sdk(
     plan = json.loads((output_dir / "run-plan.json").read_text(encoding="utf-8"))
     assert plan["execute"] is False
     assert plan["sdk_stream"] is False
+    assert plan["sdk_json_mode"] is False
     assert plan["profile"] == "baseline"
     assert plan["case_id"] == CASE_ID
     assert plan["materials"] == 2
@@ -332,6 +334,23 @@ def test_sdk_stream_flag_reaches_the_sdk_transport(
         == 0
     )
     assert fake_sdk_transport.instances[-1].stream is True
+
+
+def test_sdk_json_mode_flag_reaches_the_sdk_transport(
+    source_root, output_dir, monkeypatch, fake_sdk_transport
+):
+    monkeypatch.setenv("PRISM_TEST_EXP_KEY", "offline-test-key")
+
+    assert (
+        experiment.main(
+            base_args(source_root, output_dir)
+            + ["--execute", "--sdk-stream", "--sdk-json-mode"]
+        )
+        == 0
+    )
+    transport = fake_sdk_transport.instances[-1]
+    assert transport.stream is True
+    assert transport.json_mode is True
 
 
 def test_execute_never_reveals_the_api_key_in_its_artifacts(

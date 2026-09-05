@@ -69,9 +69,15 @@ class OpenAISDKTransport:
         *,
         client_factory: Any | None = None,
         stream: bool = False,
+        json_mode: bool = False,
     ) -> None:
+        if not isinstance(stream, bool):
+            raise TypeError("stream must be bool")
+        if not isinstance(json_mode, bool):
+            raise TypeError("json_mode must be bool")
         self._client_factory = client_factory
-        self._stream = bool(stream)
+        self._stream = stream
+        self._json_mode = json_mode
         self._clients: dict[tuple[str, str, float], Any] = {}
 
     async def complete(
@@ -92,6 +98,8 @@ class OpenAISDKTransport:
             "stream": self._stream,
             "timeout": timeout,
         }
+        if self._json_mode:
+            request["response_format"] = {"type": "json_object"}
         try:
             if self._stream:
                 return await self._complete_streaming(

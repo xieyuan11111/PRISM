@@ -286,6 +286,25 @@ def test_complete_uses_official_non_streaming_chat_completions():
     assert "secret" not in str(call)
 
 
+def test_json_mode_uses_the_sdk_response_format_without_changing_stream_mode():
+    client = FakeClient(completions=FakeCompletions(response=completion("{}")))
+    transport = make_transport(client, json_mode=True)
+
+    response = run(
+        transport.complete(
+            provider=provider(),
+            api_key="secret",
+            payload={"model": "chosen-model", "prompt": "Return JSON"},
+            timeout=7.5,
+        )
+    )
+
+    assert response == TransportResponse(text="{}")
+    (call,) = client.chat.completions.calls
+    assert call["stream"] is False
+    assert call["response_format"] == {"type": "json_object"}
+
+
 def test_complete_passes_messages_through_when_payload_provides_them():
     client = FakeClient(completions=FakeCompletions(response=completion()))
     transport = make_transport(client)
@@ -391,6 +410,27 @@ def test_stream_mode_collects_delta_content_and_requires_finish_reason():
     (call,) = client.chat.completions.calls
     assert call["stream"] is True
     assert call["timeout"] == 4.5
+
+
+def test_stream_json_mode_uses_the_sdk_response_format():
+    transport, client = streaming_transport(
+        [chunk(content="{}"), chunk(finish_reason="stop")],
+        stream=True,
+        json_mode=True,
+    )
+
+    response = run(
+        transport.complete(
+            provider=provider(),
+            api_key="secret",
+            payload={"model": "m", "prompt": "p"},
+            timeout=1,
+        )
+    )
+
+    assert response.text == "{}"
+    (call,) = client.chat.completions.calls
+    assert call["response_format"] == {"type": "json_object"}
 
 
 def test_stream_mode_accepts_length_finish_reason():
