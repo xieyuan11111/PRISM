@@ -462,10 +462,12 @@ async def _material_record(runtime: Any, item: MaterialFile) -> dict[str, Any]:
     return record
 
 
-async def _process_materials(runtime: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+async def _process_materials(
+    runtime: Any, materials: Sequence[MaterialFile]
+) -> tuple[dict[str, Any], dict[str, Any]]:
     records: list[dict[str, Any]] = []
     stage_counts: dict[str, int] = {}
-    for item in runtime_materials(runtime):
+    for item in materials:
         try:
             record = await _material_record(runtime, item)
         except Exception as error:
@@ -880,6 +882,10 @@ async def run_acceptance(
         )
 
     home, config_path = prepare_run_home(options)
+    # Runtime path resolution is anchored by PRISM_HOME.  Keep this acceptance
+    # run fully output-local rather than allowing the default ~/.prism home to
+    # receive the temporary SQLite/index ledgers.
+    os.environ["PRISM_HOME"] = str(home)
     factory = runtime_factory
     if factory is None:
         if not _optional_dependencies_available():
@@ -895,10 +901,11 @@ async def run_acceptance(
 
     failures: list[dict[str, Any]] = []
     first: Any = await _create_runtime(factory, config_path)
-    first._acceptance_materials = options.material_files
     try:
         _ensure_graphiti_runtime(first)
-        material_records, stage_counts = await _process_materials(first)
+        material_records, stage_counts = await _process_materials(
+            first, options.material_files
+        )
         first_dispatch_error_count = len(getattr(first, "dispatch_errors", ()) or ())
     finally:
         await first.close()
@@ -921,7 +928,7 @@ async def run_acceptance(
     semantic_status = verdict.get("semantic_status", "fail")
 
     second: Any = await _create_runtime(factory, config_path)
-    second._acceptance_materials = options.material_files
+
     restart_merge_added = 0
     restart_merge_skipped = 0
     registry_readback = False
@@ -987,10 +994,12 @@ async def run_acceptance(
             exporter = pdf_exporter or second.api.export_report_pdf
             try:
                 export = await _await_result(
-                    exporter(report_version_id, options.output_dir / "report.pdf")
+                    exporter(report_version_id, "report.pdf")
                 )
                 pdf_status = "exported"
-                pdf_pages = getattr(export, "pages", None)
+                pdf_pages = getattr(export, "page_count", None)
+                if pdf_pages is None:
+                    pdf_pages = getattr(export, "pages", None)
             except Exception as error:
                 pdf_status = "unavailable"
                 failures.append(

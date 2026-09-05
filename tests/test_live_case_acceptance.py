@@ -111,6 +111,10 @@ class FakeAPI:
         self.report_calls.append((case_id, as_of.isoformat() if as_of else None))
         return SimpleNamespace(version_id="rv_synthetic", markdown="report")
 
+    async def export_report_pdf(self, version_id: str, destination: Path) -> Any:
+        destination.write_bytes(b"%PDF-synthetic")
+        return SimpleNamespace(page_count=1)
+
 
 class FakeRuntime:
     def __init__(self, api: FakeAPI, config: PrismConfig) -> None:
@@ -131,6 +135,103 @@ class FakeRuntime:
 
     async def close(self) -> None:
         self.closed = True
+
+
+def test_process_materials_takes_inputs_explicitly_without_mutating_runtime() -> None:
+    """The live runner must not attach ad-hoc state to slots-based runtime."""
+    runtime = FakeRuntime(FakeAPI(), PrismConfig())
+    materials = tuple(
+        runner.MaterialFile(
+            material_id=f"mat_{index}",
+            path=Path(f"material-{index}.md"),
+            sha256="a" * 64,
+            size_bytes=1,
+        )
+        for index in range(4)
+    )
+
+    records, _ = asyncio.run(runner._process_materials(runtime, materials))
+
+    assert len(records["records"]) == 4
+    assert not hasattr(runtime, "_acceptance_materials")
+
+
+def test_run_home_is_selected_as_prism_home_before_runtime_creation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    options = runner.RunOptions(
+        material_files=tuple(_material_files(tmp_path)),
+        output_dir=tmp_path / "output",
+        llm_provider_name="deepseek",
+        llm_api_key_env="DEEPSEEK_API_KEY",
+        llm_base_url="https://example.invalid/v1",
+        llm_model="test-model",
+        bolt_uri="bolt://127.0.0.1:7688",
+        http_uri="http://127.0.0.1:7475",
+        graphiti_password_env="PRISM_GRAPHITI_PASSWORD",
+        provider="deepseek",
+    )
+    monkeypatch.delenv("PRISM_HOME", raising=False)
+    captured: list[Path] = []
+
+    async def runtime_factory(config_path: Path) -> Any:
+        captured.append(config_path)
+        return FakeRuntime(FakeAPI(), PrismConfig())
+
+    async def quality_gate(home: Path, materials: Any) -> dict[str, Any]:
+        return {"verdict": {"mechanism_status": "pass", "semantic_status": "pass"}}
+
+    asyncio.run(
+        runner.run_acceptance(
+            options,
+            runtime_factory=runtime_factory,
+            preflight=lambda: runner.PreflightResult("ready", (), {}),
+            quality_gate=quality_gate,
+        )
+    )
+    config_path = tmp_path / "output" / "prism-home" / "config.json"
+    assert captured == [config_path, config_path]
+    assert Path(__import__("os").environ["PRISM_HOME"]) == config_path.parent
+
+
+def test_pdf_export_receives_relative_filename(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    options = runner.RunOptions(
+        material_files=tuple(_material_files(tmp_path)),
+        output_dir=tmp_path / "output",
+        llm_provider_name="deepseek",
+        llm_api_key_env="DEEPSEEK_API_KEY",
+        llm_base_url="https://example.invalid/v1",
+        llm_model="test-model",
+        bolt_uri="bolt://127.0.0.1:7688",
+        http_uri="http://127.0.0.1:7475",
+        graphiti_password_env="PRISM_GRAPHITI_PASSWORD",
+        provider="deepseek",
+    )
+    monkeypatch.delenv("PRISM_HOME", raising=False)
+    destinations: list[object] = []
+
+    async def runtime_factory(config_path: Path) -> Any:
+        return FakeRuntime(FakeAPI(), PrismConfig())
+
+    async def quality_gate(home: Path, materials: Any) -> dict[str, Any]:
+        return {"verdict": {"mechanism_status": "pass", "semantic_status": "pass"}}
+
+    async def pdf_exporter(version_id: str, destination: object) -> Any:
+        destinations.append(destination)
+        return SimpleNamespace(page_count=1)
+
+    asyncio.run(
+        runner.run_acceptance(
+            options,
+            runtime_factory=runtime_factory,
+            preflight=lambda: runner.PreflightResult("ready", (), {}),
+            quality_gate=quality_gate,
+            pdf_exporter=pdf_exporter,
+        )
+    )
+    assert destinations == ["report.pdf"]
 
 
 def _material_files(root: Path) -> list[runner.MaterialFile]:
