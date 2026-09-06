@@ -493,7 +493,7 @@ class FirecrawlSearchProvider:
             response = await self._client.post(
                 endpoint, headers=headers, json_body=dict(body), timeout=timeout
             )
-        except TimeoutError as exc:
+        except TimeoutError:
             raise FirecrawlTimeoutError(
                 f"request to {endpoint} timed out after {timeout:g}s"
             ) from None

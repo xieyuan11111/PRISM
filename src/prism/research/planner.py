@@ -33,7 +33,6 @@ from .models import (
     PRIORITY_MIN,
     RESEARCH_PHASES,
     SOURCE_TYPES,
-    CONCEPT_TARGET_MIN,
     MAX_RESEARCH_CONCEPTS,
     ResearchConcept,
     ResearchPlan,

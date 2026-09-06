@@ -32,7 +32,6 @@ from prism.ingestion import IngestionResult
 from prism.pipeline import PipelineError
 from prism.report import ReportDocument, ReportService
 from prism.sources import (
-    ScholarlyMetadataClient,
     SourceFetchError,
     SourceItem,
     extract_doi,

@@ -130,7 +130,6 @@ class CaseService:
                 "extraction must carry a case to be recorded; caseless "
                 "extractions are indexed but never accumulated"
             )
-        case_id = extraction.case.case_id
         async with self._lock:
             return await self._record_bound_locked(material, extraction)
 

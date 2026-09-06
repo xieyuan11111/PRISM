@@ -41,7 +41,7 @@ python -m pip install -e ".[webui,openai-sdk,pdf]"
 使用 `PRISM_HOME` 指定 PRISM 的本地数据、配置、corpus、索引和报告目录。示例：
 
 ```console
-set PRISM_HOME=C:\Users\your-name\prism-home
+set PRISM_HOME=%LOCALAPPDATA%\prism-home
 ```
 
 也可以在 Unix-like shell 中使用：

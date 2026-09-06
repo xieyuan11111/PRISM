@@ -22,6 +22,10 @@ graphiti    Optional Graphiti / Neo4j integration
 
 The default core install is offline. Do not make optional services mandatory for core imports or offline tests.
 
+The v1 Ruff gate checks production/tool symbol correctness (`F` rules). Tests
+remain behavior-gated by pytest; broader formatting modernization is a
+separate refactor, not a release-blocking rewrite.
+
 ## Native Neo4j route
 
 PRISM does not use Docker or Docker Compose. Optional Graphiti work uses a PRISM-owned native Neo4j launcher with an isolated home, data/logs/run directories and loopback-only ports. Do not add Docker as an installation, CI or acceptance prerequisite.
@@ -31,7 +35,7 @@ PRISM does not use Docker or Docker Compose. Optional Graphiti work uses a PRISM
 1. Add a failing test before changing behavior.
 2. Implement the smallest safe change.
 3. Run focused tests, then the full offline suite.
-4. Run memory-only compile checks and `git diff --check`.
+4. Run memory-only compile checks, `ruff check .` and `git diff --check`.
 5. Keep commits narrow and reversible.
 
 Do not treat a pipeline completion as semantic success. Never loosen quote, time, source, case or relation validation merely to increase candidate counts.

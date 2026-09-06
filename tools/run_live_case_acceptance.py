@@ -54,7 +54,6 @@ import secrets
 import socket
 import sqlite3
 import sys
-from types import TracebackType
 from typing import Any
 from urllib.parse import quote, urlsplit
 
@@ -1528,7 +1527,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     except AcceptanceInputError as error:
         print(f"{TOOL_NAME}: input-error ({type(error).__name__})", file=sys.stderr)
         return 2
-    except SanitizationError as error:
+    except SanitizationError:
         print(f"{TOOL_NAME}: sanitization-error", file=sys.stderr)
         return 3
     except Exception as error:

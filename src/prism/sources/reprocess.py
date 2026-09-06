@@ -14,7 +14,7 @@ import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterable, Mapping
+from typing import Callable, Iterable, Mapping
 
 from .http import HttpGetter
 from .models import FailureKind, SourceFetchError, SourceItem

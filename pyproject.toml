@@ -15,6 +15,7 @@ dependencies = []
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
+    "ruff==0.15.10",
 ]
 
 # PDF export is optional: Markdown is the source of truth and the adapter
@@ -62,3 +63,13 @@ where = ["src"]
 addopts = "-ra"
 testpaths = ["tests"]
 pythonpath = ["src"]
+
+[tool.ruff]
+target-version = "py311"
+extend-exclude = ["tests", ".hermes", ".codex-test-tmp", "deploy"]
+
+[tool.ruff.lint]
+# v1 lint gate targets reliable undefined/unused-symbol defects in production
+# and tools. Formatting/style modernization and test-fixture style are kept
+# outside the release gate until a dedicated refactor.
+select = ["F"]
