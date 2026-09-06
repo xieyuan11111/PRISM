@@ -90,6 +90,42 @@ class _LazyAPI:
     ) -> object:
         return await self._api().add_material(source, target_case, metadata, **kwargs)
 
+    async def process_material(
+        self,
+        source: object,
+        metadata: object = None,
+        *,
+        target_case: object = None,
+    ) -> object:
+        return await self._api().process_material(
+            source, metadata, target_case=target_case
+        )
+
+    async def material_journey(self, material_id: str) -> object:
+        return await self._api().material_journey(material_id)
+
+    async def material_journeys(
+        self, *, case_id: object = None, status: object = None
+    ) -> object:
+        return await self._api().material_journeys(
+            case_id=case_id, status=status
+        )
+
+
+def _upload_staging_root() -> Any:
+    """Resolve the upload staging root inside ``PRISM_HOME`` (fixed path).
+
+    The staging area is anchored directly on ``PRISM_HOME`` with a fixed
+    directory name (``staging/uploads``) that is never derived from
+    request data (security notes §2 of the workbench requirements).
+    Resolving lazily keeps this importable and side-effect free; it stays
+    consistent with the staging service's default controlled root, which
+    is ``PRISM_HOME`` as well.
+    """
+    from prism.config import PathConfig
+
+    return PathConfig.prism_home() / "staging" / "uploads"
+
 
 def run(
     start_runtime: Callable[[], Awaitable[Any]] = _start_runtime,
@@ -118,7 +154,10 @@ def run(
     from nicegui import app as nicegui_app
 
     holder: dict[str, Any] = {}
-    create_app(_LazyAPI(holder), title=title)
+
+    create_app(
+        _LazyAPI(holder), title=title, upload_staging_root=_upload_staging_root
+    )
 
     async def _startup() -> None:
         holder["runtime"] = await start_runtime()

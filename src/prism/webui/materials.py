@@ -11,6 +11,14 @@ returned view reports the pipeline status and stage audit, the saved report
 version, and the debate-link prior/current evidence-bundle hashes with the
 stale flag; a facade failure propagates and is never rewritten into a fake
 success.
+
+Workbench Phase A extends the ``/materials`` page over the same facade:
+a browser-upload card (staged bytes via :mod:`prism.webui.upload`, then the
+identical ``add_material`` path) and a read-only journey card (projections
+from :mod:`prism.webui.journey`, with refresh polling and the explicit
+failed-material retry).  The legacy project-local path intake remains
+registered unchanged as the compatibility entry (its controllers and tests
+keep their exact behaviour).
 """
 
 from __future__ import annotations
@@ -24,6 +32,33 @@ from .evidence import parse_time_bound
 from .status import outcome_status, safe_error_text
 
 MATERIAL_SUFFIXES = (".md", ".markdown", ".pdf")
+
+#: Journey polling interval for the auto-refresh timer (WB-2.7).
+_JOURNEY_POLL_SECONDS = 1.5
+
+#: Columns of the material journey list table (WB-2.1).
+_JOURNEY_COLUMNS = [
+    {"name": "material_id", "label": "Material", "field": "material_id",
+     "align": "left", "sortable": True},
+    {"name": "display_name", "label": "Title", "field": "display_name",
+     "align": "left"},
+    {"name": "case_id", "label": "Case", "field": "case_id",
+     "align": "left"},
+    {"name": "lifecycle_status", "label": "Lifecycle",
+     "field": "lifecycle_status", "align": "left", "sortable": True},
+    {"name": "ui_status", "label": "Status", "field": "ui_status",
+     "align": "left"},
+    {"name": "mechanism_status", "label": "Mechanism",
+     "field": "mechanism_status", "align": "left"},
+    {"name": "semantic_status", "label": "Semantic",
+     "field": "semantic_status", "align": "left"},
+    {"name": "evidence_gap_count", "label": "Gaps",
+     "field": "evidence_gap_count", "align": "right", "sortable": True},
+    {"name": "occurred_at", "label": "Last outcome", "field": "occurred_at",
+     "align": "left"},
+    {"name": "failed_stage", "label": "Failed stage", "field": "failed_stage",
+     "align": "left"},
+]
 
 
 class MaterialEntryFacade(Protocol):
@@ -272,6 +307,8 @@ def _status_markdown(view: dict[str, Any]) -> str:
 def build_material_entry_page(
     controller: MaterialEntryController, ui: Any, *,
     title: str = "PRISM Material Entry",
+    upload_controller: Any | None = None,
+    journey_controller: Any | None = None,
 ) -> Any:
     """Register the ``/materials`` intake page on the given ``ui`` module.
 
@@ -282,6 +319,15 @@ def build_material_entry_page(
     page performs no remote upload, no file copying and no permission
     management: the caller types a project-local path they explicitly
     provide (FR-8.9 keeps data modifications audited through the facade).
+
+    Workbench Phase A adds two optional sections without touching the
+    legacy path intake: a browser upload card (``upload_controller`` —
+    MD/PDF bytes staged under a server-generated name, appended through
+    the same ``add_material`` facade) and a material journey card
+    (``journey_controller`` — the read-only journey list, per-material
+    step detail, refresh polling and the explicit retry).  Both default to
+    ``None`` so callers that only need the path intake keep the exact
+    legacy page.
     """
     @ui.page("/materials")
     def material_entry_page() -> None:
@@ -289,7 +335,9 @@ def build_material_entry_page(
         status_md = ui.markdown("_No material appended in this session._")
 
         with ui.card().classes("w-full"):
-            ui.label("Append one material").classes("text-bold")
+            ui.label("Append one material by project-local path").classes(
+                "text-bold"
+            )
             path_input = ui.input(
                 label="Path (MD/PDF, project-local)",
                 placeholder="materials/note.md",
@@ -333,6 +381,233 @@ def build_material_entry_page(
 
         with ui.card().classes("w-full"):
             ui.button("Append material", on_click=_append)
+
+        # ---------------------------------------------- browser upload card
+        # The tracker lets the upload card hand its freshly appended
+        # material to the journey card's polling without either section
+        # depending on the other being present.
+        journey_tracker: dict[str, Any] = {"set_active": None}
+        if upload_controller is not None:
+            staged_state: dict[str, Any] = {"staged": None}
+
+            async def _on_upload(event: Any = None) -> None:
+                try:
+                    name, data = upload_controller.read_event(event)
+                    staged = upload_controller.stage(name, data)
+                except (TypeError, ValueError) as error:
+                    _report(f"upload rejected: {error}")
+                    return
+                except Exception as error:
+                    _report(safe_error_text("receive upload", error))
+                    return
+                # One staging slot per session: staging a new file first
+                # discards the previously staged one, so an abandoned
+                # upload cannot linger in the staging area forever.
+                previous = staged_state.get("staged")
+                if previous is not None:
+                    try:
+                        upload_controller.discard(previous)
+                    except Exception as error:
+                        _report(safe_error_text("discard upload", error))
+                staged_state["staged"] = staged
+                staged_label.text = (
+                    f"Staged: {staged.original_name} "
+                    f"({staged.size_bytes} bytes, "
+                    f"sha256 {staged.sha256[:12]}\u2026)"
+                )
+                staged_label.update()
+                _report(
+                    f"staged {staged.original_name}; select a target case "
+                    "and submit"
+                )
+
+            async def _load_cases(event: Any = None) -> None:
+                try:
+                    options = await upload_controller.load_case_options()
+                except Exception as error:
+                    _report(safe_error_text("load cases", error))
+                    return
+                upload_case_select.options = options
+                upload_case_select.update()
+                _report(f"{len(options)} recorded case(s) selectable")
+
+            async def _submit_upload(event: Any = None) -> None:
+                staged = staged_state.get("staged")
+                if staged is None:
+                    _report("choose or upload a file first")
+                    return
+                selected_case = upload_case_select.value
+                if (
+                    not isinstance(selected_case, str)
+                    or not selected_case.strip()
+                ):
+                    _report("select a target case first")
+                    return
+                try:
+                    view = await upload_controller.submit(
+                        staged,
+                        selected_case,
+                        as_of=upload_as_of_input.value or None,
+                        use_llm=bool(upload_use_llm_switch.value),
+                        parent_debate_run_id=(
+                            upload_parent_input.value or None
+                        ),
+                    )
+                except Exception as error:
+                    _report(safe_error_text("append upload", error))
+                    return
+                staged_state["staged"] = None
+                staged_label.text = "No file staged yet."
+                staged_label.update()
+                upload_status_md.content = _status_markdown(view)
+                upload_status_md.update()
+                _report(f"uploaded {view['material_id']} ({view['status']})")
+                set_active = journey_tracker.get("set_active")
+                if set_active is not None:
+                    await set_active(view["material_id"])
+
+            with ui.card().classes("w-full"):
+                ui.label("Upload a material (single MD/PDF)").classes(
+                    "text-bold"
+                )
+                ui.upload(
+                    label="Choose or drop an MD/PDF file",
+                    auto_upload=True,
+                    on_upload=_on_upload,
+                ).classes("w-full")
+                staged_label = ui.label("No file staged yet.")
+                upload_case_select = ui.select(
+                    options={}, value=None,
+                    label="Target case (choose from list)",
+                )
+                with ui.row():
+                    ui.button("Load cases", on_click=_load_cases)
+                    ui.button(
+                        "Append uploaded material", on_click=_submit_upload
+                    )
+                upload_as_of_input = ui.input(
+                    label="Upload as of (optional, ISO 8601, timezone-aware)",
+                    placeholder="2026-09-01T00:00:00+00:00",
+                )
+                upload_parent_input = ui.input(
+                    label="Upload parent debate run (optional)",
+                    placeholder="run-1",
+                )
+                upload_use_llm_switch = ui.switch(
+                    "Use LLM for report (upload)", value=False
+                )
+                upload_status_md = ui.markdown("_No upload appended yet._")
+
+        # --------------------------------------------- journey list card
+        if journey_controller is not None:
+            from .journey import journey_markdown
+
+            journey_state: dict[str, Any] = {"material_id": None}
+
+            async def _set_active_material(material_id: Any) -> None:
+                if not isinstance(material_id, str) or not material_id.strip():
+                    return
+                journey_state["material_id"] = material_id
+                await _load_and_render_journey(material_id)
+
+            journey_tracker["set_active"] = _set_active_material
+
+            async def _load_and_render_journey(material_id: str) -> None:
+                try:
+                    data = await journey_controller.load_journey(material_id)
+                except Exception as error:
+                    _report(safe_error_text("load journey", error))
+                    return
+                _render_journey(data)
+
+            def _render_journey(data: dict[str, Any]) -> None:
+                journey_md.content = journey_markdown(data)
+                journey_md.update()
+
+            async def _refresh_materials(event: Any = None) -> None:
+                status_filter = journey_filter_select.value or None
+                try:
+                    payload = await journey_controller.load_journeys(
+                        status=status_filter
+                    )
+                except Exception as error:
+                    _report(safe_error_text("load materials", error))
+                    return
+                materials_table.rows = payload["materials"]
+                materials_table.update()
+                _report(f"{payload['count']} material journey(s) loaded")
+
+            async def _on_journey_selected(event: Any = None) -> None:
+                rows = list(getattr(event, "args", None) or ())
+                if not rows:
+                    return
+                row = rows[0]
+                material_id = (
+                    row.get("material_id", "") if isinstance(row, dict) else ""
+                )
+                if not material_id:
+                    return
+                journey_state["material_id"] = material_id
+                await _load_and_render_journey(material_id)
+                _report(f"journey loaded for {material_id}")
+
+            async def _retry_selected(event: Any = None) -> None:
+                material_id = journey_state.get("material_id")
+                if not material_id:
+                    _report("select a material in the table first")
+                    return
+                try:
+                    view = await journey_controller.retry(material_id)
+                except Exception as error:
+                    _report(safe_error_text("retry", error))
+                    return
+                await _load_and_render_journey(material_id)
+                _report(
+                    f"retry finished for {view['material_id']} "
+                    f"({view['status']})"
+                )
+
+            async def _poll_active_journey() -> None:
+                material_id = journey_state.get("material_id")
+                if not material_id:
+                    return
+                try:
+                    data = await journey_controller.load_journey(material_id)
+                except Exception as error:
+                    _report(safe_error_text("refresh journey", error))
+                    return
+                _render_journey(data)
+                if journey_controller.is_terminal(data):
+                    journey_state["material_id"] = None
+
+            with ui.card().classes("w-full"):
+                ui.label("Materials and journeys").classes("text-bold")
+                journey_filter_select = ui.select(
+                    options={
+                        "": "all statuses",
+                        "committed": "committed",
+                        "failed": "failed",
+                        "pending": "processing",
+                        "unknown": "unknown",
+                    },
+                    value="",
+                    label="Status filter (lifecycle)",
+                )
+                materials_table = ui.table(
+                    columns=_JOURNEY_COLUMNS,
+                    rows=[],
+                    selection="single",
+                    on_select=_on_journey_selected,
+                )
+                with ui.row():
+                    ui.button("Refresh materials", on_click=_refresh_materials)
+                    ui.button(
+                        "Retry failed material", on_click=_retry_selected
+                    )
+                journey_md = ui.markdown("_No material journey loaded._")
+                # Journey refresh polling (WB-2.7): the timer is a no-op
+                # until a material is active and stops at a terminal state.
+                ui.timer(_JOURNEY_POLL_SECONDS, _poll_active_journey)
 
     return material_entry_page
 

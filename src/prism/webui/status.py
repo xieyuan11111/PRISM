@@ -32,6 +32,21 @@ def pipeline_ui_status(value: object) -> str:
     }.get(value, "ready")
 
 
+def lifecycle_ui_status(value: object) -> str:
+    """Map a material lifecycle outcome to a user-facing status.
+
+    ``committed`` is the only state that maps to success (the pipeline
+    machinery finished); ``pending`` stays loading, ``failed`` stays
+    failure and anything unrecognized — including ``unknown`` — stays
+    unknown, never a success (WB-3.4/WB-3.6).
+    """
+    return {
+        "committed": "success",
+        "failed": "failure",
+        "pending": "loading",
+    }.get(value, "unknown")
+
+
 def outcome_status(result: object) -> dict[str, Any]:
     """Project available quality layers without inventing semantic verdicts."""
     pipeline = getattr(result, "pipeline", None)
