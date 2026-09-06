@@ -56,9 +56,10 @@ PRISM 要求 Python `>=3.11`。核心安装的默认 `dependencies` 为空：基
 | 用途 | 安装命令 | 边界 |
 |---|---|---|
 | 核心 | `pip install -e .` | 默认依赖为空，保持离线 |
-| 开发与离线测试 | `pip install -e ".[dev]"` | 仅加入 pytest |
+| 开发与离线测试 | `pip install -e ".[dev]"` | pytest + Ruff；只运行离线检查 |
 | PDF 导出 | `pip install -e ".[pdf]"` | 可选的 Python-Markdown 与 pypdf |
 | WebUI | `pip install -e ".[webui]"` | 可选的 NiceGUI 与 Plotly |
+| 真实 LLM | `pip install -e ".[openai-sdk]"` | 官方 OpenAI Python SDK；凭据只从环境读取 |
 | Graphiti/Neo4j | `pip install -e ".[graphiti]"` | 可选且固定为 live spike 已验证的版本 |
 
 从零启动本机 WebUI 的完整说明见 [`docs/webui-getting-started.md`](docs/webui-getting-started.md)。WebUI 默认只绑定 `127.0.0.1`，不自动打开浏览器；LLM、PDF 和 Graphiti 依赖均按需安装。
@@ -68,6 +69,170 @@ PRISM 要求 Python `>=3.11`。核心安装的默认 `dependencies` 为空：基
 ```console
 python -m pytest -q
 ```
+
+### 从零安装并启动 WebUI
+
+PRISM v1 是本机单用户、loopback-only 的初步产品，不需要 Docker 或 Docker Compose。
+
+#### 安装
+
+在仓库根目录执行：
+
+```console
+python -m pip install -e ".[webui,openai-sdk,pdf]"
+```
+
+也可以按需安装：
+
+```console
+python -m pip install -e ".[webui]"       # 只运行 WebUI
+python -m pip install -e ".[openai-sdk]"  # 使用真实 LLM
+python -m pip install -e ".[pdf]"         # 导出 PDF
+python -m pip install -e ".[dev]"         # 测试与 Ruff
+```
+
+需要复现锁定依赖时：
+
+```console
+uv sync --extra webui --extra openai-sdk --extra pdf
+```
+
+#### 设置本地数据目录
+
+`PRISM_HOME` 保存配置、`raw/`、`corpus/`、SQLite 索引和报告。Windows 示例：
+
+```console
+set PRISM_HOME=%LOCALAPPDATA%\prism-home
+```
+
+Git Bash 示例：
+
+```bash
+export PRISM_HOME="$LOCALAPPDATA/prism-home"
+```
+
+#### 配置 LLM
+
+PRISM 自有 LLM 调用统一使用官方 OpenAI Python SDK。配置文件只保存连接地址、模型名和环境变量名，不保存 key：
+
+```json
+{
+  "llm": {
+    "providers": {
+      "primary": {
+        "model": "your-model",
+        "api_key_env": "PRISM_LLM_API_KEY",
+        "base_url": "https://api.example.com/v1",
+        "timeout": 120,
+        "concurrency_limit": 1
+      }
+    },
+    "task_roles": {
+      "extract": "primary",
+      "summarize_report": "primary",
+      "debate": "primary",
+      "adjudicate": "primary"
+    }
+  }
+}
+```
+
+然后只在当前终端提供凭据：
+
+```console
+set PRISM_LLM_API_KEY=your-real-key
+```
+
+没有 LLM 配置时仍可使用默认离线能力；PRISM 不会自动联网。`base_url` 会原样交给官方 SDK。
+
+#### 启动
+
+```console
+python -m prism.webui
+```
+
+手动打开：
+
+```text
+http://127.0.0.1:8765
+```
+
+也可以指定 loopback 端口：
+
+```console
+python -m prism.webui --host 127.0.0.1 --port 8765
+```
+
+不会自动打开浏览器，也不会默认监听公网。页面如下：
+
+```text
+/           案例列表、历史时间线、snapshot、节点与证据详情
+/debate     多视角辩论、交叉质询、综合、指定视角追问
+/evidence   证据搜索、来源/时间过滤与分页
+/materials  追加明确指定案例的本地 Markdown/PDF 材料
+```
+
+#### 基本使用流程
+
+```text
+选择案例
+→ 查看历史状态和时间线
+→ 点击节点查看证据定位
+→ 检索材料
+→ 追加材料并查看 pipeline 状态
+→ 发起辩论和追问
+→ 保存报告版本
+→ 导出 PDF
+```
+
+界面会分别显示：
+
+```text
+pipeline status
+mechanism_status
+semantic_status
+evidence gap
+```
+
+真实 LLM 结果为 `partial` 时不会被包装成成功结论；证据不足、时间不合法或关系无法由原文支持时，会保留 gap 而不是猜测。
+
+#### 可选启用 Graphiti
+
+WebUI 默认使用离线图后端。需要真实时序图谱时，安装：
+
+```console
+python -m pip install -e ".[graphiti]"
+```
+
+Graphiti 使用 PRISM 自有的原生 Neo4j launcher、独立 home/data/logs/run 目录、loopback 监听和专用端口。Docker / Docker Compose 不属于 PRISM 路线。
+
+示例配置：
+
+```json
+{
+  "graphiti": {
+    "enabled": true,
+    "uri": "bolt://127.0.0.1:7688",
+    "database": "neo4j",
+    "group_id": "neo4j",
+    "username_env": "",
+    "password_env": "PRISM_GRAPHITI_PASSWORD",
+    "timeout": 30
+  }
+}
+```
+
+密码只放当前进程环境：
+
+```console
+set PRISM_GRAPHITI_PASSWORD=your-local-neo4j-password
+```
+
+#### 停止服务
+
+在运行 WebUI 的终端按 `Ctrl+C`。停止后，默认 `8765` 端口应释放。
+
+完整安装、配置、状态、错误和安全说明见 [`docs/webui-getting-started.md`](docs/webui-getting-started.md)。
 
 ## 离线 CLI
 
