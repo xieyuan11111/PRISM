@@ -127,6 +127,110 @@ class ProcessMaterialResult:
     debate_link: MaterialDebateLink | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class MaterialJourneyView:
+    """Read-only material-journey projection shared by CLI and WebUI (WB-2).
+
+    The facade composes this from recorded audit data only — the evidence
+    store's index entry, the pipeline's public queries (completed run, last
+    failure, lifecycle outcome, durable run audit, case outcome), the
+    durable case binding and the audit's report-version link — so surfaces
+    never assemble their own fact view (H-6).  Paths stay project-relative
+    exactly as the store records them; no stage result payloads are carried.
+
+    ``lifecycle_status`` is the outcome-ledger truth (``pending`` is the
+    in-process transient, ``unknown`` means no outcome was ever recorded);
+    ``mechanism_status``/``semantic_status``/``evidence_gap_count`` follow
+    the same honest-projection rules as the intake status view: a material
+    has no per-material semantic verdict, so ``semantic_status`` stays
+    ``unknown`` rather than being guessed, and the gap detail is available
+    only while the completed run's extraction result is in process.
+    """
+
+    material_id: str
+    display_name: str | None = None
+    source_format: str | None = None
+    case_id: str | None = None
+    raw_path: str | None = None
+    corpus_path: str | None = None
+    content_hash: str | None = None
+    fetched_at: datetime | None = None
+    occurred_at: datetime | None = None
+    lifecycle_status: str = "unknown"
+    run: object | None = None
+    run_audit: object | None = None
+    failure: object | None = None
+    mechanism_status: str = "unknown"
+    semantic_status: str = "unknown"
+    evidence_gap_count: int | None = None
+    evidence_gaps: tuple[str, ...] = ()
+    unresolved_conflicts: tuple[str, ...] = ()
+    report_version_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.material_id, str) or not self.material_id.strip():
+            raise ValueError("material_id must be a non-empty string")
+        lifecycle = {"pending", "failed", "committed", "unknown"}
+        if self.lifecycle_status not in lifecycle:
+            raise ValueError(
+                "lifecycle_status must be one of: " + ", ".join(sorted(lifecycle))
+            )
+        for name in ("fetched_at", "occurred_at"):
+            value = getattr(self, name)
+            if value is not None and (
+                not isinstance(value, datetime)
+                or value.tzinfo is None
+                or value.utcoffset() is None
+            ):
+                raise ValueError(f"{name} must be timezone-aware")
+        for name in ("mechanism_status",):
+            if self.mechanism_status not in {"pass", "fail", "unknown"}:
+                raise ValueError(
+                    f"{name} must be pass, fail or unknown"
+                )
+        if self.semantic_status not in {"pass", "partial", "fail", "unknown"}:
+            raise ValueError(
+                "semantic_status must be pass, partial, fail or unknown"
+            )
+        count = self.evidence_gap_count
+        if isinstance(count, bool) or not isinstance(count, int | None):
+            raise TypeError("evidence_gap_count must be an int or None")
+        if count is not None and count < 0:
+            raise ValueError("evidence_gap_count must not be negative")
+        object.__setattr__(self, "evidence_gaps", tuple(self.evidence_gaps))
+        object.__setattr__(
+            self, "unresolved_conflicts", tuple(self.unresolved_conflicts)
+        )
+        for name in ("report_version_id",):
+            value = getattr(self, name)
+            if value is not None and (
+                not isinstance(value, str) or not value.strip()
+            ):
+                raise ValueError(f"{name} must be a non-empty string or None")
+
+
+def _journey_display_path(value: object) -> str | None:
+    """Project a stored material path for display without absolute leaks.
+
+    The corpus path is already project-relative as the store records it, but
+    the raw path is persisted absolutely; its informative part starts at the
+    ``raw``/``corpus`` top-level segment, so an absolute value is reduced to
+    that trailing relative path.  An absolute path without a recognizable
+    anchor yields ``None`` (rendered as "not recorded") rather than leaking
+    a local filesystem location.
+    """
+    if not isinstance(value, str) or not value.strip():
+        return None
+    candidate = Path(value)
+    if not candidate.is_absolute():
+        return value
+    parts = candidate.parts
+    for index, part in enumerate(parts):
+        if part in ("raw", "corpus"):
+            return Path(*parts[index:]).as_posix()
+    return None
+
+
 def _is_pathlike_input(source: object) -> bool:
     if isinstance(source, Path):
         return True
@@ -241,6 +345,18 @@ class _ScholarlyMetadataClient(Protocol):
 
 
 class _PipelineService(Protocol):
+    """The core pipeline contract the facade HARD-requires.
+
+    ``run_material`` is the one operation every pipeline — including
+    pre-workbench implementations — provides; the workbench-era journey
+    and audit capabilities (:meth:`run_for`, :meth:`failure_for`,
+    :meth:`outcome_for`, :meth:`outcomes`, :meth:`audit_for`,
+    :meth:`case_outcome_for`, :meth:`note_report_version`) are OPTIONAL
+    and duck-typed at each call site, so an older pipeline keeps
+    constructing and serving through the facade.  Implementations that
+    provide the full surface match :class:`_JourneyPipelineService`.
+    """
+
     async def run_material(
         self,
         result: IngestionResult,
@@ -249,9 +365,29 @@ class _PipelineService(Protocol):
         target_case: EvolutionCase | None = ...,
     ) -> object: ...
 
+
+class _JourneyPipelineService(_PipelineService, Protocol):
+    """The OPTIONAL workbench capability surface over the core contract.
+
+    Declared for documentation and typing only — the facade never requires
+    it: every method below is resolved through duck typing, and a pipeline
+    without one simply projects ``unknown``/``None`` (or skips the
+    annotation) instead of failing.
+    """
+
     def run_for(self, material_id: str) -> object | None: ...
 
+    def failure_for(self, material_id: str) -> object | None: ...
+
+    def outcome_for(self, material_id: str) -> object | None: ...
+
+    def outcomes(self) -> tuple: ...
+
+    def audit_for(self, material_id: str) -> object | None: ...
+
     def case_outcome_for(self, material_id: str) -> object | None: ...
+
+    def note_report_version(self, material_id: str, version_id: str) -> None: ...
 
 
 class _CaseService(Protocol):
@@ -409,6 +545,8 @@ class PrismAPI:
             "evidence_store", evidence_store, "index_file"
         )
         _required_dependency("evidence_store", evidence_store, "search")
+        store_get = getattr(evidence_store, "get", None)
+        self._store_getter = store_get if callable(store_get) else None
         self._graph = _required_dependency(
             "graph_service", graph_service, "timeline"
         )
@@ -543,6 +681,174 @@ class PrismAPI:
         if not callable(get):
             raise TypeError("case_overview_service must provide get()")
         return get(case_id)
+
+    async def material_journey(self, material_id: str) -> MaterialJourneyView:
+        """Return the read-only journey projection of one material (WB-2.6).
+
+        Composes recorded audit data only: the evidence store's index entry
+        (display name, project-relative raw/corpus paths, content hash), the
+        pipeline's public queries (completed run, last failure, lifecycle
+        outcome, durable run audit, accumulated-case outcome), the durable
+        case binding and the run audit's report-version link.  The method is
+        read-only and idempotent — it never triggers or retries anything —
+        and it never invents state: an unknown material raises
+        :class:`LookupError` and a material without a recorded outcome
+        projects ``lifecycle_status="unknown"``.
+        """
+        if not isinstance(material_id, str) or not material_id.strip():
+            raise ValueError("material_id must be a non-empty string")
+        material_id = material_id.strip()
+        entry = self._store_getter(material_id) if self._store_getter else None
+        if entry is None:
+            raise LookupError(f"material not found: {material_id}")
+        return self._material_journey(material_id, entry)
+
+    async def material_journeys(
+        self, *, case_id: str | None = None, status: str | None = None
+    ) -> tuple[MaterialJourneyView, ...]:
+        """List every material's journey projection (WB-2.1/WB-2.6).
+
+        Sources are the pipeline's recorded lifecycle outcomes (the durable
+        ledger hydrated at startup plus this process's runs); a ledger row
+        whose index entry is gone is kept as a ledger-only row so failures
+        stay auditable.  ``case_id`` filters by the durable case binding and
+        ``status`` by lifecycle (``pending``/``failed``/``committed``/
+        ``unknown``); results are ordered by the outcome time, most recent
+        first.  Read-only and idempotent.  A pipeline without the optional
+        ``outcomes()`` capability lists nothing — an honest empty view for
+        an older pipeline, never a crash.
+        """
+        if self._pipeline is None:
+            raise ValueError("pipeline_service is required for material_journeys()")
+        if case_id is not None and (
+            not isinstance(case_id, str) or not case_id.strip()
+        ):
+            raise ValueError("case_id must be a non-empty string or None")
+        if status is not None and status not in {
+            "pending", "failed", "committed", "unknown",
+        }:
+            raise ValueError(
+                "status must be one of: committed, failed, pending, unknown"
+            )
+        outcomes_getter = getattr(self._pipeline, "outcomes", None)
+        if not callable(outcomes_getter):
+            return ()
+        views: list[MaterialJourneyView] = []
+        for outcome in outcomes_getter():
+            material_id = getattr(outcome, "material_id", None)
+            if not isinstance(material_id, str) or not material_id.strip():
+                continue
+            entry = (
+                self._store_getter(material_id)
+                if self._store_getter else None
+            )
+            view = self._material_journey(material_id, entry)
+            if case_id is not None and view.case_id != case_id:
+                continue
+            if status is not None and view.lifecycle_status != status:
+                continue
+            views.append(view)
+        # Most recent outcome first; rows without a recorded outcome time
+        # (never announced in any observed process) sort last.
+        views.sort(key=lambda view: (
+            view.occurred_at or datetime.min.replace(tzinfo=timezone.utc),
+            view.material_id,
+        ))
+        views.reverse()
+        return tuple(views)
+
+    def _material_journey(
+        self, material_id: str, entry: object | None
+    ) -> MaterialJourneyView:
+        """Compose one journey view from recorded audit data (H-6)."""
+        if self._pipeline is None:
+            raise ValueError("pipeline_service is required for material_journey()")
+        def query(name: str) -> object | None:
+            method = getattr(self._pipeline, name, None)
+            return method(material_id) if callable(method) else None
+
+        outcome = query("outcome_for")
+        lifecycle = (
+            getattr(outcome, "status", None)
+            if outcome is not None else "unknown"
+        )
+        if lifecycle not in {"pending", "failed", "committed"}:
+            lifecycle = "unknown"
+        run = query("run_for")
+        audit = query("audit_for")
+        failure = query("failure_for")
+        case_outcome = query("case_outcome_for")
+        case_id = getattr(case_outcome, "case_id", None)
+        if not isinstance(case_id, str) or not case_id.strip():
+            case_id = None
+        if case_id is None and self._case_service is not None:
+            binder = getattr(self._case_service, "case_for_material", None)
+            if callable(binder):
+                bound = binder(material_id)
+                if isinstance(bound, str) and bound.strip():
+                    case_id = bound
+        report_version_id = getattr(audit, "report_version_id", None)
+        if not isinstance(report_version_id, str) or not report_version_id.strip():
+            report_version_id = None
+        mechanism = {
+            "committed": "pass",
+            "failed": "fail",
+        }.get(lifecycle, "unknown")
+        gap_count: int | None = None
+        gaps: tuple[str, ...] = ()
+        conflicts: tuple[str, ...] = ()
+        if run is not None:
+            gap_count = 0
+            for stage in getattr(run, "stages", ()) or ():
+                result = getattr(stage, "result", None)
+                if isinstance(result, ExtractionResult):
+                    gaps = gaps + tuple(
+                        gap.gap_type
+                        + (f" on {gap.item_kind}" if gap.item_kind else "")
+                        + f": {gap.detail}"
+                        for gap in result.evidence_gaps
+                    )
+                    conflicts = conflicts + tuple(
+                        f"unresolved conflict {conflict.conflict_id}: "
+                        f"{conflict.subject} {conflict.predicate} -> "
+                        + " | ".join(conflict.alternatives)
+                        for conflict in result.conflicts
+                    )
+            gap_count = len(gaps)
+        fetched_at = getattr(entry, "fetched_at", None) if entry is not None else None
+        return MaterialJourneyView(
+            material_id=material_id,
+            display_name=getattr(entry, "title", None) if entry is not None else None,
+            source_format=(
+                getattr(entry, "original_format", None)
+                if entry is not None else None
+            ),
+            case_id=case_id,
+            raw_path=_journey_display_path(
+                getattr(entry, "raw_path", None) if entry is not None else None
+            ),
+            corpus_path=_journey_display_path(
+                getattr(entry, "path", None) if entry is not None else None
+            ),
+            content_hash=(
+                getattr(entry, "content_hash", None) if entry is not None else None
+            ),
+            fetched_at=fetched_at if isinstance(fetched_at, datetime) else None,
+            occurred_at=(
+                getattr(outcome, "occurred_at", None)
+                if outcome is not None else None
+            ),
+            lifecycle_status=lifecycle,
+            run=run,
+            run_audit=audit,
+            failure=failure,
+            mechanism_status=mechanism,
+            semantic_status="unknown",
+            evidence_gap_count=gap_count,
+            evidence_gaps=gaps,
+            unresolved_conflicts=conflicts,
+            report_version_id=report_version_id,
+        )
 
     async def ingest_material(
         self,
@@ -869,6 +1175,13 @@ class PrismAPI:
             use_llm=use_llm,
             trigger="material_added",
         )
+        # Audit-only annotation (WB-2): link this material's durable run
+        # audit to the version the append saved, so the journey's analyzed
+        # step survives restarts.  Pipelines without the seam simply skip it.
+        note = getattr(self._pipeline, "note_report_version", None)
+        version_id = getattr(version, "version_id", None)
+        if callable(note) and isinstance(version_id, str) and version_id.strip():
+            note(result.material_id, version_id)
         return replace(result, report_version=version, debate_link=link)
 
     def _resolve_parent_debate(

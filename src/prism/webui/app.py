@@ -14,6 +14,7 @@ same timelines and evidence (FR-8.10).
 from __future__ import annotations
 
 from html import escape
+from pathlib import Path
 from typing import Any
 
 from prism.analyzer import ENTRY_KINDS, STAGES
@@ -285,6 +286,18 @@ def _kind_options() -> dict[str, str]:
     return {"": "all kinds"} | {kind: kind for kind in sorted(ENTRY_KINDS)}
 
 
+def _facade_supports(api: object, *operations: str) -> bool:
+    """Whether the injected facade provides every named operation."""
+    return all(callable(getattr(api, name, None)) for name in operations)
+
+
+def _default_upload_staging_root() -> Path:
+    """The controlled staging default: ``<PRISM_HOME>/staging/uploads``."""
+    from prism.config import PathConfig
+
+    return PathConfig.prism_home() / "staging" / "uploads"
+
+
 def build_case_home_page(
     controller: CaseHomeController, ui: Any, *, title: str = DEFAULT_TITLE
 ) -> Any:
@@ -436,12 +449,34 @@ def build_case_home_page(
     return case_home
 
 
-def create_app(api: PrismFacade, *, title: str = DEFAULT_TITLE) -> Any:
+def create_app(
+    api: PrismFacade,
+    *,
+    title: str = DEFAULT_TITLE,
+    upload_staging_root: object = None,
+    upload_controlled_root: object = None,
+) -> Any:
     """Build the case-home NiceGUI pages over ``api`` without serving them.
 
     Raises :class:`WebUIUnavailableError` with install instructions when
     NiceGUI or the timeline's Plotly renderer is missing; neither optional
     dependency is imported at module scope.
+
+    ``PrismFacade`` promises only the case-home queries, and this factory
+    honours exactly that contract: the case home always registers, while
+    every richer page (debate theater, evidence browser, the material
+    intake with its workbench sections) registers only when the injected
+    facade provides that page's operations — an older, narrower facade
+    (e.g. a case-only fake) keeps building the app instead of crashing at
+    construction.
+
+    ``upload_staging_root`` (a path or a lazy provider resolving to one)
+    anchors the browser-upload staging area; it defaults to
+    ``<PRISM_HOME>/staging/uploads``.  The staging service validates on
+    every use that this root sits inside the controlled root —
+    ``PRISM_HOME`` by default, or the explicitly declared
+    ``upload_controlled_root`` (a path or lazy provider) for callers whose
+    staging root deliberately lives elsewhere.
     """
     ui = _nicegui()
     # This app factory requests the timeline-enabled case home. Keep the
@@ -452,11 +487,40 @@ def create_app(api: PrismFacade, *, title: str = DEFAULT_TITLE) -> Any:
     build_case_home_page(controller, ui, title=title)
     from .debate import DebateTheaterController, build_debate_theater_page
     from .evidence import EvidenceBrowserController, build_evidence_page
+    from .journey import MaterialJourneyController
     from .materials import MaterialEntryController, build_material_entry_page
+    from .upload import UploadController, UploadStagingService
 
-    build_debate_theater_page(DebateTheaterController(api), ui)
-    build_evidence_page(EvidenceBrowserController(api), ui)
-    build_material_entry_page(MaterialEntryController(api), ui)
+    if _facade_supports(api, "debate_case", "follow_up_debate"):
+        build_debate_theater_page(DebateTheaterController(api), ui)
+    if _facade_supports(api, "search") or _facade_supports(
+        api, "search_evidence"
+    ):
+        build_evidence_page(EvidenceBrowserController(api), ui)
+    if _facade_supports(api, "add_material"):
+        if upload_staging_root is None:
+            upload_staging_root = _default_upload_staging_root()
+        build_material_entry_page(
+            MaterialEntryController(api),
+            ui,
+            upload_controller=UploadController(
+                api,
+                UploadStagingService(
+                    upload_staging_root,
+                    controlled_root=upload_controlled_root,
+                ),
+            ),
+            journey_controller=(
+                MaterialJourneyController(api)
+                if _facade_supports(
+                    api,
+                    "material_journey",
+                    "material_journeys",
+                    "process_material",
+                )
+                else None
+            ),
+        )
     from nicegui import app as nicegui_app
 
     return nicegui_app

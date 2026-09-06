@@ -50,10 +50,14 @@ from prism.sources import redact_audit_text
 from prism.store import IndexOutcome
 
 from .outcomes import (
+    AUDIT_COMPLETED,
+    AUDIT_FAILED,
     COMMITTED,
     FAILED,
     PENDING,
     PipelineOutcome,
+    PipelineRunAudit,
+    StageAuditRecord,
 )
 
 
@@ -151,13 +155,19 @@ _Clock = Callable[[], datetime]
 
 
 class PipelineError(RuntimeError):
-    """A pipeline stage failed; completed stages remain auditable."""
+    """A pipeline attempt failed; completed stages remain auditable.
+
+    ``stage`` names the pipeline stage that failed and is ``None`` when the
+    failure preceded any stage (a resolver error) or followed all of them
+    (a terminal-outcome persistence failure) — the audit trail of
+    already-completed stages travels in ``stages`` either way.
+    """
 
     def __init__(
         self,
         message: str,
         *,
-        stage: str,
+        stage: str | None,
         material_id: str,
         stages: Iterable["PipelineStage"] = (),
     ) -> None:
@@ -364,6 +374,7 @@ class PipelineService:
         self._failures: dict[str, PipelineFailure] = {}
         self._case_outcomes: dict[str, object] = {}
         self._outcomes: dict[str, PipelineOutcome] = {}
+        self._run_audits: dict[str, PipelineRunAudit] = {}
         if outcome_store is not None:
             # Terminal outcomes survive process restarts: hydrate the query
             # view from the durable local ledger.  The completed-run registry
@@ -378,6 +389,31 @@ class PipelineService:
                         "outcome_store entries must be PipelineOutcome objects"
                     )
                 self._outcomes[outcome.material_id] = outcome
+                if outcome.status == FAILED:
+                    # Restart recovery: the structured PipelineFailure is an
+                    # in-process record, so the durable failed outcome must
+                    # rebuild it (stage/error_type/message plus the failure
+                    # time) — otherwise post-restart journeys lose the failed
+                    # step's error entirely (a validated failed outcome
+                    # always carries a non-empty error_type and message).
+                    self._failures[outcome.material_id] = PipelineFailure(
+                        material_id=outcome.material_id,
+                        stage=outcome.stage,
+                        error_type=outcome.error_type or "",
+                        message=outcome.message or "",
+                        failed_at=outcome.occurred_at,
+                    )
+            # The run audit is the same kind of restart-surviving projection
+            # for stage-level detail (older stores may not offer it yet).
+            audit_entries = getattr(outcome_store, "run_audit_entries", None)
+            if callable(audit_entries):
+                for audit in audit_entries():
+                    if not isinstance(audit, PipelineRunAudit):
+                        raise TypeError(
+                            "run_audit_entries must return PipelineRunAudit "
+                            "objects"
+                        )
+                    self._run_audits[audit.material_id] = audit
 
     async def run_material(
         self,
@@ -443,17 +479,47 @@ class PipelineService:
                     result, correlation_id, started_at, target_case
                 )
             except Exception as exc:
-                self._record_failure(material_id, exc)
+                try:
+                    self._record_failure(material_id, exc)
+                except Exception:
+                    # The durable ledger is failing too; the original error
+                    # stays authoritative and the in-memory records already
+                    # written by _record_failure keep the attempt auditable
+                    # until a retry succeeds.
+                    pass
                 raise
-            self._failures.pop(material_id, None)
-            self._persist_outcome(
-                PipelineOutcome(
-                    material_id,
-                    COMMITTED,
-                    run.finished_at,
-                    correlation_id=run.correlation_id,
-                )
+            audit = self._audit_from_run(run)
+            outcome = PipelineOutcome(
+                material_id,
+                COMMITTED,
+                run.finished_at,
+                correlation_id=run.correlation_id,
             )
+            try:
+                self._persist_terminal(outcome, audit)
+            except Exception as exc:
+                # Conservative failure: the terminal state was not durably
+                # accepted, so the attempt is reported as failed — never as
+                # a committed run without its audit — and the in-process
+                # completed-run registration is rolled back so a retry in
+                # this SAME process re-executes instead of returning the
+                # duplicate skip (remediation must stay possible).
+                error = PipelineError(
+                    "terminal outcome persistence failed for material "
+                    f"{redact_audit_text(material_id)!r}: "
+                    f"{redact_audit_text(str(exc))}",
+                    stage=None,
+                    material_id=material_id,
+                    stages=run.stages,
+                )
+                error.__cause__ = exc
+                self._abort_completed(material_id, run)
+                try:
+                    self._record_failure(material_id, error)
+                except Exception:
+                    pass
+                raise error
+            self._failures.pop(material_id, None)
             return run
 
     def run_for(self, material_id: str) -> PipelineRun | None:
@@ -508,6 +574,59 @@ class PipelineService:
         if not isinstance(material_id, str) or not material_id.strip():
             raise ValueError("material_id must be a non-empty string")
         return self._case_outcomes.get(material_id)
+
+    def audit_for(self, material_id: str) -> PipelineRunAudit | None:
+        """The current rebuildable run audit of one material, or ``None``.
+
+        The audit is the restart-surviving projection of the latest attempt's
+        stage records (name/status/detail — never result payloads) plus the
+        report-version link recorded by the append flow.  It hydrates from
+        the durable ledger at construction and is replaced by every new
+        attempt, so a successful retry never leaves a stale failed audit.
+        """
+        if not isinstance(material_id, str) or not material_id.strip():
+            raise ValueError("material_id must be a non-empty string")
+        return self._run_audits.get(material_id)
+
+    def note_report_version(self, material_id: str, version_id: str) -> None:
+        """Record which report version the material's append produced.
+
+        Called by :meth:`PrismAPI.add_material` after it saved (or
+        idempotently replayed) the ``material_added`` version: the link is
+        audit data about the append, not a new fact — the version itself
+        lives in the immutable report ledger.  Annotating requires the
+        material's current attempt to be committed, mirroring the append
+        flow's own ordering.
+        """
+        _require_text("material_id", material_id)
+        _require_text("version_id", version_id)
+        material_id = material_id.strip()
+        existing = self._run_audits.get(material_id)
+        if existing is None:
+            outcome = self._outcomes.get(material_id)
+            if outcome is None or outcome.status != COMMITTED:
+                raise ValueError(
+                    f"material {material_id!r} has no committed run audit to "
+                    "annotate with a report version"
+                )
+            existing = PipelineRunAudit(
+                material_id=material_id, status=AUDIT_COMPLETED
+            )
+        elif existing.status != AUDIT_COMPLETED:
+            raise ValueError(
+                f"material {material_id!r} has no committed run audit to "
+                "annotate with a report version"
+            )
+        updated = PipelineRunAudit(
+            material_id=material_id,
+            status=existing.status,
+            stages=existing.stages,
+            started_at=existing.started_at,
+            finished_at=existing.finished_at,
+            correlation_id=existing.correlation_id,
+            report_version_id=version_id.strip(),
+        )
+        self._record_run_audit(updated)
 
     async def handle_event(self, event: Event) -> bool:
         """Handle ``material.ingested`` events; ignore everything else.
@@ -870,15 +989,93 @@ class PipelineService:
         """
         audit = self._failure_audit(material_id, exc)
         self._failures[material_id] = audit
-        self._persist_outcome(
-            PipelineOutcome(
-                material_id,
-                FAILED,
-                audit.failed_at,
-                stage=audit.stage,
-                error_type=audit.error_type,
-                message=audit.message,
-            )
+        outcome = PipelineOutcome(
+            material_id,
+            FAILED,
+            audit.failed_at,
+            stage=audit.stage,
+            error_type=audit.error_type,
+            message=audit.message,
+        )
+        stages = tuple(exc.stages) if isinstance(exc, PipelineError) else ()
+        run_audit = PipelineRunAudit(
+            material_id=material_id,
+            status=AUDIT_FAILED,
+            stages=tuple(
+                StageAuditRecord(stage.name, stage.status, stage.detail)
+                for stage in stages
+            ),
+            finished_at=audit.failed_at,
+        )
+        self._persist_terminal(outcome, run_audit)
+
+    def _persist_terminal(
+        self, outcome: PipelineOutcome, audit: PipelineRunAudit
+    ) -> None:
+        """Persist one terminal outcome together with its run audit.
+
+        Stores that offer ``record_terminal()`` get both rows in one atomic
+        transaction.  Older two-step stores are written AUDIT FIRST, then
+        the outcome: a committed outcome can therefore never exist durably
+        without its audit, and an interruption between the two writes leaves
+        at worst a rebuildable audit — a state the next retry simply
+        rewrites (``pending`` outcomes never reach this seam).
+        """
+        record_terminal = (
+            getattr(self._outcome_store, "record_terminal", None)
+            if self._outcome_store is not None
+            else None
+        )
+        if callable(record_terminal):
+            record_terminal(outcome, audit)
+            self._outcomes[outcome.material_id] = outcome
+            self._run_audits[audit.material_id] = audit
+            return
+        self._record_run_audit(audit)
+        self._persist_outcome(outcome)
+
+    def _abort_completed(self, material_id: str, run: PipelineRun) -> None:
+        """Undo one in-process completed-run registration.
+
+        Called when the terminal persistence of an otherwise completed run
+        failed: the material must stop looking completed in this process so
+        the same-process duplicate skip cannot block the remediation retry.
+        """
+        self._completed.pop(material_id, None)
+        self._case_outcomes.pop(material_id, None)
+        correlation_id = run.correlation_id
+        if (
+            correlation_id is not None
+            and self._by_correlation.get(correlation_id) == material_id
+        ):
+            del self._by_correlation[correlation_id]
+
+    def _record_run_audit(self, audit: PipelineRunAudit) -> None:
+        """Keep the current run audit in memory and, when supported, on disk.
+
+        The durable side is duck-typed through the injected outcome store:
+        stores that predate run audits (or ``None``) simply skip it, and the
+        in-memory audit still serves this process's queries.
+        """
+        self._run_audits[audit.material_id] = audit
+        if self._outcome_store is not None:
+            record = getattr(self._outcome_store, "record_run_audit", None)
+            if callable(record):
+                record(audit)
+
+    @staticmethod
+    def _audit_from_run(run: PipelineRun) -> PipelineRunAudit:
+        """Project one completed run into its rebuildable audit record."""
+        return PipelineRunAudit(
+            material_id=run.material_id,
+            status=AUDIT_COMPLETED,
+            stages=tuple(
+                StageAuditRecord(stage.name, stage.status, stage.detail)
+                for stage in run.stages
+            ),
+            started_at=run.started_at,
+            finished_at=run.finished_at,
+            correlation_id=run.correlation_id,
         )
 
     def _persist_outcome(self, outcome: PipelineOutcome) -> None:
