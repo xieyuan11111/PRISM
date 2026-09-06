@@ -51,7 +51,7 @@ LLM 语义稳定性：仍需保持 semantic-partial 的诚实边界
 工程文档与实际状态完全同步
 WebUI 从零安装/配置/使用说明完善
 WebUI 最终本机真实冒烟
-一个完整生命周期案例验收
+完整生命周期案例验收（住房公积金候选材料包已验证为 partial；proposal/publication/expiry 仍未证实）
 CONTRIBUTING.md
 CHANGELOG.md
 CODE_OF_CONDUCT.md
@@ -71,6 +71,7 @@ v1 RC 报告与版本整理
 accepted evidence/source coverage 可达到 100%
 core node/fact 在指定 Flash split-v1 单材料实验中出现稳定交集
 第二政策和学术案例跨运行稳定性不足，claims 与 relations 仍需更多案例验证
+住房公积金生命周期候选材料包已形成 draft/implementation/revision 中间链，但 expiry/replacement 仍未验证
 provider 仍可能产生候选级校验 gap 或 JSON envelope failure
 semantic-partial 不等于系统机制失败
 ```
