@@ -13,6 +13,7 @@ All notable changes to PRISM are documented here.
 - Experimental prompt profiles (`protocol-v1`, `protocol-v2`), prompt benchmark and `split-v1` two-stage extraction.
 - Native Neo4j / Graphiti real mechanism acceptance runner and quality gate.
 - v1 scope and release-status documentation.
+- v1.0.0-rc.1 local WebUI smoke and acceptance report.
 
 ### Changed
 

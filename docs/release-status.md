@@ -14,7 +14,7 @@ LLM 语义稳定性：仍需保持 semantic-partial 的诚实边界
 正式发布收口：未完成
 ```
 
-当前不能称为已经发布的 v1，因为文档同步、WebUI 最终冒烟、开源治理、CI、lint、依赖可复现和安全扫描尚未全部完成。
+v1.0.0-rc.1 的文档、治理、离线 CI 配置、lint、依赖锁定、安全扫描和本机 WebUI 冒烟已完成。正式 v1.0.0 是否发布取决于本机用户反馈；真实 LLM 语义泛化仍保持 `partial` 边界。
 
 ## 2. 状态分类
 
@@ -48,19 +48,8 @@ LLM 语义稳定性：仍需保持 semantic-partial 的诚实边界
 ## 4. 尚未完成的 v1 收口项
 
 ```text
-工程文档与实际状态完全同步
-WebUI 从零安装/配置/使用说明完善
-WebUI 最终本机真实冒烟
 完整生命周期案例验收（住房公积金候选材料包已验证为 partial；proposal/publication/expiry 仍未证实）
-CONTRIBUTING.md
-CHANGELOG.md
-CODE_OF_CONDUCT.md
-SECURITY.md
-.github/workflows/ci.yml
-ruff 配置与 lint gate
-依赖可复现策略
-最终密钥/路径/身份扫描
-v1 RC 报告与版本整理
+v1.0.0 正式发布决定（等待 RC 本机使用反馈）
 ```
 
 ## 5. 真实语义边界
