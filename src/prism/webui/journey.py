@@ -29,6 +29,7 @@ from typing import Any, Protocol
 from prism.api.facade import MaterialJourneyView
 
 from .materials import outcome_view, pipeline_view
+from .reports import report_detail_url
 from .status import lifecycle_ui_status
 
 #: The fixed journey step order (WB-2.2 / requirements §7.2).
@@ -307,6 +308,13 @@ def journey_view_data(view: MaterialJourneyView) -> dict[str, Any]:
         "evidence_gaps": list(view.evidence_gaps),
         "unresolved_conflicts": list(view.unresolved_conflicts),
         "report_version_id": view.report_version_id,
+        # The Phase C deep link into the report center (WB-4.6): present
+        # only when the audit actually linked a saved report version.
+        "report_url": (
+            report_detail_url(view.report_version_id)
+            if view.report_version_id
+            else None
+        ),
         "steps": journey_steps(view),
     }
 
@@ -326,6 +334,12 @@ def material_row(view: MaterialJourneyView) -> dict[str, Any]:
         "occurred_at": _iso(view.occurred_at),
         "failed_stage": getattr(failure, "stage", None) if failure else None,
         "error_type": getattr(failure, "error_type", None) if failure else None,
+        "report_version_id": view.report_version_id,
+        "report_url": (
+            report_detail_url(view.report_version_id)
+            if view.report_version_id
+            else None
+        ),
     }
 
 
@@ -358,7 +372,14 @@ def journey_markdown(data: dict[str, Any]) -> str:
         f"- Corpus copy: `{data.get('corpus_path') or 'not recorded'}`",
     ]
     if data.get("report_version_id"):
-        lines.append(f"- Report version: `{data['report_version_id']}`")
+        link = (
+            f" — [open report]({data['report_url']})"
+            if data.get("report_url")
+            else ""
+        )
+        lines.append(
+            f"- Report version: `{data['report_version_id']}`{link}"
+        )
     failure = data.get("failure")
     if failure:
         failed_in = failure.get("stage") or "before any stage"

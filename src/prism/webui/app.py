@@ -90,6 +90,34 @@ _EVIDENCE_BUCKETS = (
     "relations",
 )
 
+#: Columns of the selected case's recent material runs (Phase C; the row
+#: projection is the shared journey ``material_row`` with its
+#: ``lifecycle_ui_status`` badge).
+_CASE_MATERIAL_COLUMNS = [
+    {"name": "material_id", "label": "Material", "field": "material_id",
+     "align": "left", "sortable": True},
+    {"name": "display_name", "label": "Title", "field": "display_name",
+     "align": "left"},
+    {"name": "lifecycle_status", "label": "Lifecycle",
+     "field": "lifecycle_status", "align": "left", "sortable": True},
+    {"name": "ui_status", "label": "Status", "field": "ui_status",
+     "align": "left"},
+    {"name": "occurred_at", "label": "Last outcome", "field": "occurred_at",
+     "align": "left"},
+    {"name": "failed_stage", "label": "Failed stage", "field": "failed_stage",
+     "align": "left"},
+]
+
+#: Columns of the selected case's report versions (Phase C).
+_CASE_REPORT_COLUMNS = [
+    {"name": "version_id", "label": "Version", "field": "version_id",
+     "align": "left", "sortable": True},
+    {"name": "trigger", "label": "Trigger", "field": "trigger",
+     "align": "left", "sortable": True},
+    {"name": "created_at", "label": "Created", "field": "created_at",
+     "align": "left", "sortable": True},
+]
+
 
 def _stage_line(entry: dict[str, Any]) -> str:
     window = entry["valid_at"] + (
@@ -282,6 +310,17 @@ def _stage_options() -> dict[str, str]:
     return {"": "all stages"} | {stage: stage for stage in sorted(STAGES)}
 
 
+def _material_status_options() -> dict[str, str]:
+    """The lifecycle filter vocabulary, shared with the journey list page."""
+    return {
+        "": "all statuses",
+        "committed": "committed",
+        "failed": "failed",
+        "pending": "processing",
+        "unknown": "unknown",
+    }
+
+
 def _kind_options() -> dict[str, str]:
     return {"": "all kinds"} | {kind: kind for kind in sorted(ENTRY_KINDS)}
 
@@ -368,6 +407,14 @@ def build_case_home_page(
                 f"selected {view['case_id']} \u2014 {view['name']} "
                 f"({view['status']})"
             )
+            # Phase C linkage: selecting a case also loads its recent
+            # material runs and report versions (each panel only when the
+            # facade provides that read; a load failure is reported by the
+            # panel itself, never as an empty list).
+            if controller.materials_available:
+                await _refresh_case_materials()
+            if controller.reports_available:
+                await _refresh_case_reports()
 
         async def _load_snapshot(event: Any = None) -> None:
             nonlocal timeline_plot
@@ -425,6 +472,87 @@ def build_case_home_page(
             timeline_detail_md.update()
             _report(f"selected timeline point {episode_key}")
 
+        # --------------------------------------- Phase C linkage panels
+        # Both handlers and cards exist only when the controller detected
+        # the matching read-only facade capability; an older case-only
+        # facade keeps the exact legacy page.
+        async def _refresh_case_materials(event: Any = None) -> None:
+            if controller.selected_case_id is None:
+                _report("select a case in the table first")
+                return
+            status_filter = case_material_status.value or None
+            try:
+                payload = await controller.load_case_materials(
+                    controller.selected_case_id, status=status_filter
+                )
+            except Exception as error:
+                _report(safe_error_text("load case materials", error))
+                case_materials_md.content = (
+                    "**failed** \u2014 material runs could not be loaded"
+                )
+                case_materials_md.update()
+                return
+            case_materials_table.rows = payload["materials"]
+            case_materials_table.update()
+            case_materials_md.content = (
+                "_no material runs recorded for this case_"
+                if payload["count"] == 0
+                else (
+                    f"_{payload['count']} recent material run(s) "
+                    "(cross-session outcome ledger), newest first_"
+                )
+            )
+            case_materials_md.update()
+            _report(
+                f"{payload['count']} material run(s) loaded for "
+                f"{payload['case_id']}"
+            )
+
+        async def _refresh_case_reports(event: Any = None) -> None:
+            if controller.selected_case_id is None:
+                _report("select a case in the table first")
+                return
+            try:
+                payload = await controller.load_case_reports(
+                    controller.selected_case_id
+                )
+            except Exception as error:
+                _report(safe_error_text("load case reports", error))
+                case_reports_md.content = (
+                    "**failed** \u2014 report versions could not be loaded"
+                )
+                case_reports_md.update()
+                return
+            case_reports_table.rows = payload["reports"]
+            case_reports_table.update()
+            case_reports_md.content = (
+                "_no report versions recorded for this case_"
+                if payload["count"] == 0
+                else f"_{payload['count']} report version(s), newest first_"
+            )
+            case_reports_md.update()
+            _report(
+                f"{payload['count']} report version(s) loaded for "
+                f"{payload['case_id']}"
+            )
+
+        async def _open_case_report(event: Any = None) -> None:
+            rows = list(getattr(event, "args", None) or ())
+            if not rows:
+                return
+            row = rows[0]
+            route = row.get("detail_url", "") if isinstance(row, dict) else ""
+            if not route:
+                return
+            navigate = getattr(ui, "navigate", None)
+            opener = getattr(navigate, "to", None)
+            if callable(opener):
+                opener(route)
+            else:
+                _report(
+                    f"selected report {row.get('version_id')}; open {route}"
+                )
+
         with ui.card().classes("w-full"):
             cases_table = ui.table(
                 columns=_CASE_COLUMNS,
@@ -445,6 +573,49 @@ def build_case_home_page(
                 timeline_detail_md = ui.markdown("_Select a timeline point for details._")
             with ui.expansion("Evidence"):
                 evidence_md = ui.markdown("_no snapshot loaded_")
+
+        # Phase C linkage panels come after the snapshot card so the legacy
+        # page (and its element order) is preserved when the capabilities
+        # are absent.
+        if controller.materials_available:
+            with ui.card().classes("w-full"):
+                ui.label(
+                    "Selected case materials (recent runs, cross-session)"
+                ).classes("text-bold")
+                case_material_status = ui.select(
+                    options=_material_status_options(),
+                    value="",
+                    label="Material status filter (lifecycle)",
+                )
+                with ui.row():
+                    ui.button(
+                        "Refresh case materials",
+                        on_click=_refresh_case_materials,
+                    )
+                case_materials_table = ui.table(
+                    columns=_CASE_MATERIAL_COLUMNS,
+                    rows=[],
+                )
+                case_materials_md = ui.markdown(
+                    "_select a case to load its recent material runs_"
+                )
+
+        if controller.reports_available:
+            with ui.card().classes("w-full"):
+                ui.label("Selected case report versions").classes("text-bold")
+                with ui.row():
+                    ui.button(
+                        "Refresh case reports", on_click=_refresh_case_reports
+                    )
+                case_reports_table = ui.table(
+                    columns=_CASE_REPORT_COLUMNS,
+                    rows=[],
+                    selection="single",
+                    on_select=_open_case_report,
+                )
+                case_reports_md = ui.markdown(
+                    "_select a case to load its report versions_"
+                )
 
     return case_home
 

@@ -87,6 +87,17 @@ def _validated_version_ref(value: object) -> str:
     return normalized
 
 
+def report_detail_url(version_id: object) -> str:
+    """The deep link to one report version's detail page (WB-4.6).
+
+    The same short-identifier rule as the export filename applies — a
+    path-like or blank id never becomes a URL — and the id is percent-
+    encoded so the link carries exactly one route segment.
+    """
+    normalized = _validated_version_ref(version_id)
+    return "/reports/" + quote(normalized, safe="")
+
+
 def report_row(version: object) -> dict[str, Any]:
     """Project one report version into a JSON-safe list row."""
     input_hash = getattr(version, "input_hash")
@@ -303,6 +314,9 @@ def report_detail_view(
         "markdown": markdown,
         "render_markdown": escape(markdown, quote=False),
         "raw_markdown_block": _raw_markdown_block(markdown),
+        # The Phase C linkage back to the case home (constant route; the
+        # case itself is identified by the view's case_id metadata).
+        "case_home_url": "/",
         "mechanism_status": mechanism_status,
         "semantic_status": semantic_status,
         "mechanism_ui": quality_ui_status(mechanism_status),
@@ -828,7 +842,8 @@ def build_report_pages(
 
             return _handler
 
-        with ui.card().classes("w-full"):
+        metadata_card = ui.card().classes("w-full")
+        with metadata_card:
             ui.label("Version metadata and lineage").classes("text-bold")
             metadata_md = ui.markdown("_not loaded_")
             with ui.row() as quality_row:
@@ -872,6 +887,13 @@ def build_report_pages(
             f"**ready** — report version `{view['version_id']}` "
             "(immutable)"
         )
+        # Phase C linkage: the case this version belongs to is explored on
+        # the case home, so the detail page links back there.
+        with metadata_card:
+            ui.link(
+                f"Back to case home ({view['case_id']})",
+                view["case_home_url"],
+            )
         metadata_md.content = _metadata_markdown(view)
         quality_md.content = _quality_markdown(view)
         citations_md.content = _citations_markdown(view)
@@ -922,6 +944,7 @@ __all__ = [
     "export_result_view",
     "lineage_rows",
     "locator_rows",
+    "report_detail_url",
     "report_detail_view",
     "report_row",
     "short_hash",
