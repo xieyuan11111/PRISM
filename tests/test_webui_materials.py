@@ -311,11 +311,11 @@ def test_outcome_view_exposes_product_status_layers_without_leaking_details(
 
     view = run(controller.submit(_material_path(controller), "case-b"))
 
-    assert view["ui_status"] == "success"
+    assert view["ui_status"] == "成功"
     assert view["mechanism_status"] == "pass"
     assert view["semantic_status"] == "unknown"
     assert view["evidence_gap_count"] is None
-    assert view["evidence_gap_summary"] == "not provided"
+    assert view["evidence_gap_summary"] == "未提供"
 
 
 def test_webui_error_text_is_type_only():
@@ -477,13 +477,13 @@ def _build_page(controller):
 def test_page_seam_lists_the_explicit_intake_controls(material_file):
     ui = _build_page(_controller(material_file))
 
-    for label in ("Path", "Target case", "as of",
-                  "Parent debate run (optional)"):
+    for label in ("路径", "目标案例", "截止时间",
+                  "父辩论运行(可选)"):
         assert _element(ui, "input", label=label) is not None
     assert _element(ui, "switch", text="LLM").kwargs["value"] is False
-    _element(ui, "button", text="Append material")
+    _element(ui, "button", text="追加材料")
     status = _element(ui, "markdown")
-    assert "No material" in status.content
+    assert "尚未追加" in status.content
 
 
 def test_page_seam_appends_through_the_controller_and_shows_the_outcome(
@@ -493,12 +493,12 @@ def test_page_seam_appends_through_the_controller_and_shows_the_outcome(
     controller = _controller(material_file, facade=facade)
     ui = _build_page(controller)
 
-    _element(ui, "input", label="Path").value = _material_path(
+    _element(ui, "input", label="路径").value = _material_path(
         controller
     )
-    _element(ui, "input", label="Target case").value = "case-b"
-    _element(ui, "input", label="Parent debate run").value = "run-1"
-    run(_element(ui, "button", text="Append material").kwargs["on_click"](None))
+    _element(ui, "input", label="目标案例").value = "case-b"
+    _element(ui, "input", label="父辩论运行").value = "run-1"
+    run(_element(ui, "button", text="追加材料").kwargs["on_click"](None))
 
     (call,) = facade.calls
     assert call["target_case"] == "case-b"
@@ -511,7 +511,7 @@ def test_page_seam_appends_through_the_controller_and_shows_the_outcome(
     assert "rv-1" in status.content
     assert "run-1" in status.content
     assert "a" * 64 in status.content
-    assert "stale" in status.content
+    assert "过期" in status.content
 
 
 def test_page_seam_reports_validation_errors_without_any_append(
@@ -521,20 +521,20 @@ def test_page_seam_reports_validation_errors_without_any_append(
     controller = _controller(material_file, facade=facade)
     ui = _build_page(controller)
 
-    _element(ui, "input", label="Target case").value = "case-b"
-    run(_element(ui, "button", text="Append material").kwargs["on_click"](None))
+    _element(ui, "input", label="目标案例").value = "case-b"
+    run(_element(ui, "button", text="追加材料").kwargs["on_click"](None))
 
     assert facade.calls == []
-    assert any("append failed (ValueError)" == label.text for label in _labels(ui))
+    assert any("追加材料 failed (ValueError)" == label.text for label in _labels(ui))
 
-    _element(ui, "input", label="Path").value = _material_path(
+    _element(ui, "input", label="路径").value = _material_path(
         controller
     )
-    _element(ui, "input", label="Target case").value = " "
-    run(_element(ui, "button", text="Append material").kwargs["on_click"](None))
+    _element(ui, "input", label="目标案例").value = " "
+    run(_element(ui, "button", text="追加材料").kwargs["on_click"](None))
 
     assert facade.calls == []
-    assert any("append failed (ValueError)" == label.text for label in _labels(ui))
+    assert any("追加材料 failed (ValueError)" == label.text for label in _labels(ui))
 
 
 def test_page_seam_reports_pipeline_failures_and_never_claims_success(
@@ -547,15 +547,15 @@ def test_page_seam_reports_pipeline_failures_and_never_claims_success(
     controller = _controller(material_file, facade=facade)
     ui = _build_page(controller)
 
-    _element(ui, "input", label="Path").value = _material_path(
+    _element(ui, "input", label="路径").value = _material_path(
         controller
     )
-    _element(ui, "input", label="Target case").value = "case-b"
-    run(_element(ui, "button", text="Append material").kwargs["on_click"](None))
+    _element(ui, "input", label="目标案例").value = "case-b"
+    run(_element(ui, "button", text="追加材料").kwargs["on_click"](None))
 
     assert any("failed" in label.text for label in _labels(ui))
     status = _element(ui, "markdown")
-    assert "No material" in status.content
+    assert "尚未追加" in status.content
 
 
 # ------------------------------------------- Phase A: upload + journey seams
@@ -758,15 +758,15 @@ def test_page_seam_lists_upload_and_journey_sections(
 ):
     ui = _workbench(material_file, upload_root)
 
-    assert _element(ui, "upload", label="file") is not None
-    assert _element(ui, "select", label="Target case") is not None
-    for text in ("Load cases", "Append uploaded material",
-                 "Refresh materials", "Retry failed material"):
+    assert _element(ui, "upload", label="MD/PDF") is not None
+    assert _element(ui, "select", label="目标案例") is not None
+    for text in ("加载案例", "追加上传材料",
+                 "刷新材料", "重试失败材料"):
         assert _element(ui, "button", text=text) is not None
-    assert _element(ui, "select", label="Status filter") is not None
+    assert _element(ui, "select", label="状态筛选") is not None
     assert _element(ui, "timer") is not None
     # The legacy path intake stays registered alongside the upload flow.
-    assert _element(ui, "input", label="Path") is not None
+    assert _element(ui, "input", label="路径") is not None
 
 
 def test_page_seam_upload_event_stages_the_file(material_file, upload_root):
@@ -776,7 +776,7 @@ def test_page_seam_upload_event_stages_the_file(material_file, upload_root):
         _controller(material_file), controller, _journey_controller()
     )
 
-    upload_el = _element(ui, "upload", label="file")
+    upload_el = _element(ui, "upload", label="MD/PDF")
     run(upload_el.kwargs["on_upload"](SimpleNamespace(
         name="note.md", content=io.BytesIO(b"# body"),
     )))
@@ -793,13 +793,13 @@ def test_page_seam_upload_rejections_name_the_reason(
 ):
     ui = _workbench(material_file, upload_root)
 
-    upload_el = _element(ui, "upload", label="file")
+    upload_el = _element(ui, "upload", label="MD/PDF")
     run(upload_el.kwargs["on_upload"](SimpleNamespace(
         name="photo.png", content=io.BytesIO(b"png"),
     )))
 
     assert any(
-        "upload rejected" in text for text in _labels_text(ui)
+        "上传被拒绝" in text for text in _labels_text(ui)
     )
     assert list(upload_root.iterdir()) == []
 
@@ -815,7 +815,7 @@ def test_page_seam_oversized_uploads_are_rejected_before_staging(
         _controller(material_file), controller, _journey_controller()
     )
 
-    upload_el = _element(ui, "upload", label="file")
+    upload_el = _element(ui, "upload", label="MD/PDF")
     run(upload_el.kwargs["on_upload"](SimpleNamespace(
         name="big.md", content=io.BytesIO(b"123456789"),
     )))
@@ -825,7 +825,7 @@ def test_page_seam_oversized_uploads_are_rejected_before_staging(
     assert upload_facade.calls == []
     assert list(upload_root.rglob("source.*")) == []
     assert any(
-        "upload rejected" in text and "8" in text
+        "上传被拒绝" in text and "8" in text
         for text in _labels_text(ui)
     )
 
@@ -838,7 +838,7 @@ def test_page_seam_staging_a_new_upload_discards_the_previous_one(
         _controller(material_file), controller, _journey_controller()
     )
 
-    upload_el = _element(ui, "upload", label="file")
+    upload_el = _element(ui, "upload", label="MD/PDF")
     run(upload_el.kwargs["on_upload"](SimpleNamespace(
         name="first.md", content=io.BytesIO(b"one"),
     )))
@@ -859,21 +859,21 @@ def test_page_seam_submit_requires_a_file_and_a_case(
         material_file, upload_root, upload_facade=upload_facade
     )
 
-    _element(ui, "select", label="Target case").value = "case-b"
-    run(_element(ui, "button", text="Append uploaded material")
+    _element(ui, "select", label="目标案例").value = "case-b"
+    run(_element(ui, "button", text="追加上传材料")
         .kwargs["on_click"](None))
     assert upload_facade.calls == []
-    assert any("file" in text for text in _labels_text(ui))
+    assert any("文件" in text for text in _labels_text(ui))
 
-    upload_el = _element(ui, "upload", label="file")
+    upload_el = _element(ui, "upload", label="MD/PDF")
     run(upload_el.kwargs["on_upload"](SimpleNamespace(
         name="note.md", content=io.BytesIO(b"# body"),
     )))
-    _element(ui, "select", label="Target case").value = None
-    run(_element(ui, "button", text="Append uploaded material")
+    _element(ui, "select", label="目标案例").value = None
+    run(_element(ui, "button", text="追加上传材料")
         .kwargs["on_click"](None))
     assert upload_facade.calls == []
-    assert any("target case" in text for text in _labels_text(ui))
+    assert any("目标案例" in text for text in _labels_text(ui))
 
 
 def test_page_seam_upload_submit_appends_and_renders_the_journey(
@@ -886,12 +886,12 @@ def test_page_seam_upload_submit_appends_and_renders_the_journey(
         journey_facade=journey_facade,
     )
 
-    upload_el = _element(ui, "upload", label="file")
+    upload_el = _element(ui, "upload", label="MD/PDF")
     run(upload_el.kwargs["on_upload"](SimpleNamespace(
         name="note.md", content=io.BytesIO(b"# body"),
     )))
-    _element(ui, "select", label="Target case").value = "case-b"
-    run(_element(ui, "button", text="Append uploaded material")
+    _element(ui, "select", label="目标案例").value = "case-b"
+    run(_element(ui, "button", text="追加上传材料")
         .kwargs["on_click"](None))
 
     (call,) = upload_facade.calls
@@ -900,7 +900,7 @@ def test_page_seam_upload_submit_appends_and_renders_the_journey(
     assert call["use_llm"] is False
     assert not Path(call["source"]).exists()  # staging cleaned up
 
-    journey_md = _element(ui, "markdown", text="journey")
+    journey_md = _element(ui, "markdown", text="材料旅程")
     assert "mat-1" in journey_md.content
     assert "staged" in journey_md.content
     assert "raw/mat-1.md" in journey_md.content
@@ -918,17 +918,17 @@ def test_page_seam_upload_failure_never_claims_success(
         journey_facade=journey_facade,
     )
 
-    upload_el = _element(ui, "upload", label="file")
+    upload_el = _element(ui, "upload", label="MD/PDF")
     run(upload_el.kwargs["on_upload"](SimpleNamespace(
         name="note.md", content=io.BytesIO(b"# body"),
     )))
-    _element(ui, "select", label="Target case").value = "case-b"
-    run(_element(ui, "button", text="Append uploaded material")
+    _element(ui, "select", label="目标案例").value = "case-b"
+    run(_element(ui, "button", text="追加上传材料")
         .kwargs["on_click"](None))
 
     assert any("failed" in text for text in _labels_text(ui))
-    journey_md = _element(ui, "markdown", text="journey")
-    assert "no material journey" in journey_md.content.lower()
+    journey_md = _element(ui, "markdown", text="材料旅程")
+    assert "尚未加载材料旅程" in journey_md.content
 
 
 def test_page_seam_journey_refresh_and_row_selection(
@@ -949,16 +949,16 @@ def test_page_seam_journey_refresh_and_row_selection(
     )
     ui = _workbench(material_file, upload_root, journey_facade=journey_facade)
 
-    run(_element(ui, "button", text="Refresh materials")
+    run(_element(ui, "button", text="刷新材料")
         .kwargs["on_click"](None))
 
     table = _element(ui, "table")
     assert [row["material_id"] for row in table.rows] == ["mat-1", "mat-2"]
-    assert table.rows[1]["ui_status"] == "failure"
+    assert table.rows[1]["ui_status"] == "失败"
 
     run(table.kwargs["on_select"](SimpleNamespace(args=[table.rows[1]])))
 
-    journey_md = _element(ui, "markdown", text="journey")
+    journey_md = _element(ui, "markdown", text="材料旅程")
     assert "mat-2" in journey_md.content
 
 
@@ -981,19 +981,19 @@ def test_page_seam_retry_delegates_and_reports_failures(
     )
     ui = _workbench(material_file, upload_root, journey_facade=journey_facade)
 
-    run(_element(ui, "button", text="Refresh materials")
+    run(_element(ui, "button", text="刷新材料")
         .kwargs["on_click"](None))
     table = _element(ui, "table")
     run(table.kwargs["on_select"](SimpleNamespace(args=[table.rows[0]])))
 
-    run(_element(ui, "button", text="Retry failed material")
+    run(_element(ui, "button", text="重试失败材料")
         .kwargs["on_click"](None))
 
     assert journey_facade.retry_calls == ["mat-2"]
     assert any(
-        "retry failed" in text for text in _labels_text(ui)
+        "重试 failed" in text for text in _labels_text(ui)
     )
-    journey_md = _element(ui, "markdown", text="journey")
+    journey_md = _element(ui, "markdown", text="材料旅程")
     assert "mat-2" in journey_md.content
     assert "success" not in journey_md.content
 
@@ -1017,12 +1017,12 @@ def test_page_seam_polling_updates_the_active_journey(
     run(poll())  # no active material: a no-op, never an error
     assert journey_facade.journey_calls == []
 
-    upload_el = _element(ui, "upload", label="file")
+    upload_el = _element(ui, "upload", label="MD/PDF")
     run(upload_el.kwargs["on_upload"](SimpleNamespace(
         name="note.md", content=io.BytesIO(b"# body"),
     )))
-    _element(ui, "select", label="Target case").value = "case-b"
-    run(_element(ui, "button", text="Append uploaded material")
+    _element(ui, "select", label="目标案例").value = "case-b"
+    run(_element(ui, "button", text="追加上传材料")
         .kwargs["on_click"](None))
 
     journey_facade.journey_calls.clear()
@@ -1030,5 +1030,5 @@ def test_page_seam_polling_updates_the_active_journey(
     run(poll())
 
     assert journey_facade.journey_calls == ["mat-1"]
-    journey_md = _element(ui, "markdown", text="journey")
+    journey_md = _element(ui, "markdown", text="材料旅程")
     assert "mat-1" in journey_md.content

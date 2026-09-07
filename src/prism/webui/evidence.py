@@ -225,25 +225,26 @@ class EvidenceBrowserController:
 
 
 _HIT_COLUMNS = [
-    {"name": "source_id", "label": "Source id", "field": "source_id",
+    {"name": "source_id", "label": "来源 ID", "field": "source_id",
      "align": "left", "sortable": True},
-    {"name": "title", "label": "Title", "field": "title", "align": "left"},
-    {"name": "type", "label": "Type", "field": "type", "align": "left",
+    {"name": "title", "label": "标题", "field": "title", "align": "left"},
+    {"name": "type", "label": "类型", "field": "type", "align": "left",
      "sortable": True},
-    {"name": "source", "label": "Origin", "field": "source", "align": "left",
+    {"name": "source", "label": "出处", "field": "source", "align": "left",
      "sortable": True},
-    {"name": "published_at", "label": "Published", "field": "published_at",
+    {"name": "published_at", "label": "发布时间", "field": "published_at",
      "align": "left", "sortable": True},
-    {"name": "case_tags", "label": "Cases", "field": "case_tags",
+    {"name": "case_tags", "label": "所属案例", "field": "case_tags",
      "align": "left"},
-    {"name": "corpus_path", "label": "Corpus path", "field": "corpus_path",
+    {"name": "corpus_path", "label": "语料路径", "field": "corpus_path",
      "align": "left"},
     {"name": "url", "label": "URL", "field": "url", "align": "left"},
 ]
 
 
 def build_evidence_page(
-    controller: EvidenceBrowserController, ui: Any, *, title: str = "PRISM Evidence"
+    controller: EvidenceBrowserController, ui: Any, *,
+    title: str = "PRISM 证据库",
 ) -> Any:
     """Register the ``/evidence`` browser page on the given ``ui`` module.
 
@@ -255,23 +256,23 @@ def build_evidence_page(
     """
     @ui.page("/evidence")
     def evidence_page() -> None:
-        message = ui.label("Search the evidence library to begin.")
+        message = ui.label("搜索证据库开始。")
         current_page = [1]
 
         with ui.card().classes("w-full"):
-            ui.label("Evidence filters").classes("text-bold")
+            ui.label("证据筛选").classes("text-bold")
             with ui.row():
-                query_input = ui.input(label="Query", placeholder="full text")
-                case_input = ui.input(label="Case", placeholder="case-rates")
-                source_input = ui.input(label="Source", placeholder="example.gov")
-                type_input = ui.input(label="Type", placeholder="policy")
+                query_input = ui.input(label="检索词", placeholder="全文")
+                case_input = ui.input(label="案例", placeholder="case-rates")
+                source_input = ui.input(label="来源", placeholder="example.gov")
+                type_input = ui.input(label="类型", placeholder="policy")
             with ui.row():
                 after_input = ui.input(
-                    label="Published after (ISO 8601, timezone-aware)",
+                    label="发布时间起(ISO 8601,含时区)",
                     placeholder="2026-01-01T00:00:00+00:00",
                 )
                 before_input = ui.input(
-                    label="Published before (ISO 8601, timezone-aware)",
+                    label="发布时间止(ISO 8601,含时区)",
                     placeholder="2026-03-01T00:00:00+00:00",
                 )
 
@@ -291,14 +292,14 @@ def build_evidence_page(
                     page=number,
                 )
             except Exception as error:
-                _report(safe_error_text("evidence search", error))
+                _report(safe_error_text("证据检索", error))
                 return
             current_page[0] = view["page"]
             results_table.rows = view["results"]
             results_table.update()
             _report(
-                f"{view['count']} result(s) on page {view['page']}"
-                + (" (more available)" if view["has_more"] else "")
+                f"第 {view['page']} 页共 {view['count']} 条结果"
+                + ("(还有更多)" if view["has_more"] else "")
             )
 
         async def _search(event: Any = None) -> None:
@@ -309,16 +310,16 @@ def build_evidence_page(
 
         async def _previous(event: Any = None) -> None:
             if current_page[0] <= 1:
-                _report("already on the first page")
+                _report("已是第一页")
                 return
             await _load_page(current_page[0] - 1)
 
         with ui.card().classes("w-full"):
             results_table = ui.table(columns=_HIT_COLUMNS, rows=[])
             with ui.row():
-                ui.button("Search", on_click=_search)
-                ui.button("Previous", on_click=_previous)
-                ui.button("Next", on_click=_next)
+                ui.button("搜索", on_click=_search)
+                ui.button("上一页", on_click=_previous)
+                ui.button("下一页", on_click=_next)
 
     return evidence_page
 

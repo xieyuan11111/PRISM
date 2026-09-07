@@ -258,12 +258,12 @@ def test_load_case_materials_projects_recent_rows_with_honest_badges():
     assert by_id["mat-new"]["display_name"] == "Policy update"
     assert by_id["mat-new"]["occurred_at"] == T3.isoformat()
     # lifecycle_ui_status badges: only committed is success (H-4).
-    assert by_id["mat-new"]["ui_status"] == "success"
-    assert by_id["mat-broken"]["ui_status"] == "failure"
+    assert by_id["mat-new"]["ui_status"] == "成功"
+    assert by_id["mat-broken"]["ui_status"] == "失败"
     assert by_id["mat-broken"]["failed_stage"] == "extract"
     assert by_id["mat-broken"]["error_type"] == "RuntimeError"
-    assert by_id["mat-flight"]["ui_status"] == "loading"
-    assert by_id["mat-stale"]["ui_status"] == "unknown"
+    assert by_id["mat-flight"]["ui_status"] == "加载中"
+    assert by_id["mat-stale"]["ui_status"] == "未知"
     assert facade.journeys_calls == [{"case_id": CASE, "status": None}]
 
 
@@ -423,7 +423,7 @@ def test_journey_view_carries_the_report_deep_link():
     data = journey_view_data(linked)
     assert data["report_version_id"] == "rv-9"
     assert data["report_url"] == "/reports/rv-9"
-    assert "[open report](/reports/rv-9)" in journey_markdown(data)
+    assert "[打开报告](/reports/rv-9)" in journey_markdown(data)
     row = material_row(linked)
     assert row["report_version_id"] == "rv-9"
     assert row["report_url"] == "/reports/rv-9"
@@ -467,7 +467,7 @@ def test_report_detail_page_renders_a_case_home_link():
     ]
     back = [
         element for element in links
-        if "case home" in str(element.args[0] if element.args else "")
+        if "案例主页" in str(element.args[0] if element.args else "")
     ]
     assert back, "expected a back-to-case-home link on the detail page"
     assert "/" in back[0].args
@@ -583,15 +583,15 @@ def test_case_home_without_linkage_capabilities_keeps_the_legacy_page():
 
     label_texts = [label.text for label in _labels(ui)]
     assert not any(
-        "Selected case materials" in text for text in label_texts
+        "选中案例的材料" in text for text in label_texts
     )
     assert not any(
-        "Selected case report versions" in text for text in label_texts
+        "选中案例的报告版本" in text for text in label_texts
     )
     with pytest.raises(AssertionError):
-        _element(ui, "button", text="Refresh case materials")
+        _element(ui, "button", text="刷新案例材料")
     with pytest.raises(AssertionError):
-        _element(ui, "button", text="Refresh case reports")
+        _element(ui, "button", text="刷新案例报告")
     markdowns = [
         element for element in ui.elements if element.name == "markdown"
     ]
@@ -622,8 +622,8 @@ def test_case_home_selection_loads_materials_and_reports():
     ]
     statuses = {row["material_id"]: row["ui_status"]
                for row in materials_table.rows}
-    assert statuses["mat-new"] == "success"
-    assert statuses["mat-broken"] == "failure"
+    assert statuses["mat-new"] == "成功"
+    assert statuses["mat-broken"] == "失败"
 
     assert facade.versions_calls == [CASE]
     reports_table = _table_by_field(ui, "version_id")
@@ -638,8 +638,8 @@ def test_case_home_selection_loads_materials_and_reports():
         str(element.content) for element in ui.elements
         if element.name == "markdown"
     )
-    assert "2 recent material run(s)" in contents
-    assert "2 report version(s), newest first" in contents
+    assert "2 条近期材料运行" in contents
+    assert "2 个报告版本,最新在前" in contents
 
 
 def test_case_home_materials_status_filter_reaches_the_facade():
@@ -655,11 +655,11 @@ def test_case_home_materials_status_filter_reaches_the_facade():
 
     _select_case(ui)
     status_select = _element(
-        ui, "select", label="Material status filter"
+        ui, "select", label="材料状态筛选"
     )
     status_select.value = "failed"
     run(
-        _element(ui, "button", text="Refresh case materials").kwargs[
+        _element(ui, "button", text="刷新案例材料").kwargs[
             "on_click"
         ](None)
     )
@@ -687,10 +687,10 @@ def test_case_home_distinguishes_empty_panels_from_load_failures():
         str(element.content) for element in ui.elements
         if element.name == "markdown"
     )
-    assert "material runs could not be loaded" in contents
-    assert "report versions could not be loaded" in contents
-    assert "no material runs recorded" not in contents
-    assert "no report versions recorded" not in contents
+    assert "无法加载材料运行" in contents
+    assert "无法加载报告版本" in contents
+    assert "该案例暂无材料运行" not in contents
+    assert "该案例暂无报告版本" not in contents
 
     empty = _build_case_home(_controller(
         FakeLinkedFacade(overviews=[_overview(CASE)])
@@ -700,8 +700,8 @@ def test_case_home_distinguishes_empty_panels_from_load_failures():
         str(item.content)
         for item in empty.elements if item.name == "markdown"
     )
-    assert "no material runs recorded" in empty_contents
-    assert "no report versions recorded" in empty_contents
+    assert "该案例暂无材料运行" in empty_contents
+    assert "该案例暂无报告版本" in empty_contents
 
 
 def test_case_home_report_row_selection_opens_the_detail_route():
@@ -724,4 +724,4 @@ def test_case_home_report_row_selection_opens_the_detail_route():
     )
 
     texts = " ".join(label.text for label in _labels(ui))
-    assert "open /reports/rv-2" in texts
+    assert "打开 /reports/rv-2" in texts

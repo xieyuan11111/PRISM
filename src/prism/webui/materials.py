@@ -38,25 +38,25 @@ _JOURNEY_POLL_SECONDS = 1.5
 
 #: Columns of the material journey list table (WB-2.1).
 _JOURNEY_COLUMNS = [
-    {"name": "material_id", "label": "Material", "field": "material_id",
+    {"name": "material_id", "label": "材料", "field": "material_id",
      "align": "left", "sortable": True},
-    {"name": "display_name", "label": "Title", "field": "display_name",
+    {"name": "display_name", "label": "标题", "field": "display_name",
      "align": "left"},
-    {"name": "case_id", "label": "Case", "field": "case_id",
+    {"name": "case_id", "label": "案例", "field": "case_id",
      "align": "left"},
-    {"name": "lifecycle_status", "label": "Lifecycle",
+    {"name": "lifecycle_status", "label": "生命周期",
      "field": "lifecycle_status", "align": "left", "sortable": True},
-    {"name": "ui_status", "label": "Status", "field": "ui_status",
+    {"name": "ui_status", "label": "状态", "field": "ui_status",
      "align": "left"},
-    {"name": "mechanism_status", "label": "Mechanism",
+    {"name": "mechanism_status", "label": "机制",
      "field": "mechanism_status", "align": "left"},
-    {"name": "semantic_status", "label": "Semantic",
+    {"name": "semantic_status", "label": "语义",
      "field": "semantic_status", "align": "left"},
-    {"name": "evidence_gap_count", "label": "Gaps",
+    {"name": "evidence_gap_count", "label": "缺口",
      "field": "evidence_gap_count", "align": "right", "sortable": True},
-    {"name": "occurred_at", "label": "Last outcome", "field": "occurred_at",
+    {"name": "occurred_at", "label": "最近结果", "field": "occurred_at",
      "align": "left"},
-    {"name": "failed_stage", "label": "Failed stage", "field": "failed_stage",
+    {"name": "failed_stage", "label": "失败阶段", "field": "failed_stage",
      "align": "left"},
 ]
 
@@ -268,45 +268,45 @@ class MaterialEntryController:
 def _status_markdown(view: dict[str, Any]) -> str:
     """Render the append outcome as a compact, auditable status summary."""
     lines = [
-        f"### Appended `{view['material_id']}`",
-        f"- Pipeline: **{view['status']}** (replayed: {view['replayed']})",
-        f"- Mechanism: **{view['mechanism_status']}**",
-        f"- Semantic: **{view['semantic_status']}**",
-        f"- Evidence gaps: **{view['evidence_gap_summary']}**",
-        f"- Case: {view['case_id']}",
+        f"### 已追加 `{view['material_id']}`",
+        f"- 流水线: **{view['status']}**(重放: {view['replayed']})",
+        f"- 机制: **{view['mechanism_status']}**",
+        f"- 语义: **{view['semantic_status']}**",
+        f"- 证据缺口: **{view['evidence_gap_summary']}**",
+        f"- 案例: {view['case_id']}",
     ]
     for stage in view["pipeline"]["stages"]:
         detail = f" — {stage['detail']}" if stage["detail"] else ""
-        lines.append(f"  - stage {stage['name']}: {stage['status']}{detail}")
+        lines.append(f"  - 阶段 {stage['name']}: {stage['status']}{detail}")
     version = view["report_version"]
     if version is not None:
         lines.append(
-            f"- Report version: `{version['version_id']}` "
-            f"(trigger {version['trigger']}, as of {version['as_of']})"
+            f"- 报告版本: `{version['version_id']}` "
+            f"(触发 {version['trigger']},截止 {version['as_of']})"
         )
     else:
-        lines.append("- Report version: _none_")
+        lines.append("- 报告版本: _无_")
     link = view["debate_link"]
     if link is not None:
         lines.append(
-            f"- Debate link: parent `{link['parent_run_id']}` — "
-            f"stale: **{link['stale']}**, affected: {link['affected']}"
+            f"- 辩论链接: 父运行 `{link['parent_run_id']}` — "
+            f"过期: **{link['stale']}**,受影响: {link['affected']}"
         )
-        lines.append(f"  - prior hash: `{link['prior_evidence_bundle_hash']}`")
+        lines.append(f"  - 前证据包哈希: `{link['prior_evidence_bundle_hash']}`")
         lines.append(
-            f"  - current hash: `{link['current_evidence_bundle_hash']}`"
+            f"  - 当前证据包哈希: `{link['current_evidence_bundle_hash']}`"
         )
     if view["warnings"]:
-        lines.append("- Warnings:")
+        lines.append("- 警告:")
         lines.extend(f"  - {warning}" for warning in view["warnings"])
     else:
-        lines.append("- Warnings: _none_")
+        lines.append("- 警告: _无_")
     return "\n".join(lines)
 
 
 def build_material_entry_page(
     controller: MaterialEntryController, ui: Any, *,
-    title: str = "PRISM Material Entry",
+    title: str = "PRISM 材料录入",
     upload_controller: Any | None = None,
     journey_controller: Any | None = None,
 ) -> Any:
@@ -331,30 +331,30 @@ def build_material_entry_page(
     """
     @ui.page("/materials")
     def material_entry_page() -> None:
-        message = ui.label("Provide an explicit path and target case.")
-        status_md = ui.markdown("_No material appended in this session._")
+        message = ui.label("请提供明确的材料路径与目标案例。")
+        status_md = ui.markdown("_本会话尚未追加材料。_")
 
         with ui.card().classes("w-full"):
-            ui.label("Append one material by project-local path").classes(
+            ui.label("按项目内路径追加材料").classes(
                 "text-bold"
             )
             path_input = ui.input(
-                label="Path (MD/PDF, project-local)",
+                label="路径(MD/PDF,项目内)",
                 placeholder="materials/note.md",
             )
             case_input = ui.input(
-                label="Target case (id, never guessed)",
+                label="目标案例(必填 ID,不做猜测)",
                 placeholder="case-rates",
             )
             as_of_input = ui.input(
-                label="as of (optional, ISO 8601, timezone-aware)",
+                label="截止时间(可选,ISO 8601,含时区)",
                 placeholder="2026-09-01T00:00:00+00:00",
             )
             parent_input = ui.input(
-                label="Parent debate run (optional)",
+                label="父辩论运行(可选)",
                 placeholder="run-1",
             )
-            use_llm_switch = ui.switch("Use LLM for report", value=False)
+            use_llm_switch = ui.switch("报告使用 LLM", value=False)
 
         def _report(text: str) -> None:
             message.text = text
@@ -370,17 +370,17 @@ def build_material_entry_page(
                     parent_debate_run_id=parent_input.value or None,
                 )
             except Exception as error:
-                _report(safe_error_text("append", error))
+                _report(safe_error_text("追加材料", error))
                 return
             status_md.content = _status_markdown(view)
             status_md.update()
             _report(
-                f"appended {view['material_id']} "
-                f"({view['status']}, report {view['report_version'] and view['report_version']['version_id']})"
+                f"已追加 {view['material_id']} "
+                f"({view['status']},报告 {view['report_version'] and view['report_version']['version_id']})"
             )
 
         with ui.card().classes("w-full"):
-            ui.button("Append material", on_click=_append)
+            ui.button("追加材料", on_click=_append)
 
         # ---------------------------------------------- browser upload card
         # The tracker lets the upload card hand its freshly appended
@@ -395,10 +395,10 @@ def build_material_entry_page(
                     name, data = upload_controller.read_event(event)
                     staged = upload_controller.stage(name, data)
                 except (TypeError, ValueError) as error:
-                    _report(f"upload rejected: {error}")
+                    _report(f"上传被拒绝: {error}")
                     return
                 except Exception as error:
-                    _report(safe_error_text("receive upload", error))
+                    _report(safe_error_text("接收上传", error))
                     return
                 # One staging slot per session: staging a new file first
                 # discards the previously staged one, so an abandoned
@@ -408,40 +408,40 @@ def build_material_entry_page(
                     try:
                         upload_controller.discard(previous)
                     except Exception as error:
-                        _report(safe_error_text("discard upload", error))
+                        _report(safe_error_text("丢弃上传", error))
                 staged_state["staged"] = staged
                 staged_label.text = (
-                    f"Staged: {staged.original_name} "
-                    f"({staged.size_bytes} bytes, "
+                    f"已暂存: {staged.original_name} "
+                    f"({staged.size_bytes} 字节,"
                     f"sha256 {staged.sha256[:12]}\u2026)"
                 )
                 staged_label.update()
                 _report(
-                    f"staged {staged.original_name}; select a target case "
-                    "and submit"
+                    f"已暂存 {staged.original_name};请选择目标案例"
+                    "后提交"
                 )
 
             async def _load_cases(event: Any = None) -> None:
                 try:
                     options = await upload_controller.load_case_options()
                 except Exception as error:
-                    _report(safe_error_text("load cases", error))
+                    _report(safe_error_text("加载案例", error))
                     return
                 upload_case_select.options = options
                 upload_case_select.update()
-                _report(f"{len(options)} recorded case(s) selectable")
+                _report(f"已加载 {len(options)} 个可选择的案例")
 
             async def _submit_upload(event: Any = None) -> None:
                 staged = staged_state.get("staged")
                 if staged is None:
-                    _report("choose or upload a file first")
+                    _report("请先选择或上传文件")
                     return
                 selected_case = upload_case_select.value
                 if (
                     not isinstance(selected_case, str)
                     or not selected_case.strip()
                 ):
-                    _report("select a target case first")
+                    _report("请先选择目标案例")
                     return
                 try:
                     view = await upload_controller.submit(
@@ -454,49 +454,49 @@ def build_material_entry_page(
                         ),
                     )
                 except Exception as error:
-                    _report(safe_error_text("append upload", error))
+                    _report(safe_error_text("追加上传材料", error))
                     return
                 staged_state["staged"] = None
-                staged_label.text = "No file staged yet."
+                staged_label.text = "尚未暂存文件。"
                 staged_label.update()
                 upload_status_md.content = _status_markdown(view)
                 upload_status_md.update()
-                _report(f"uploaded {view['material_id']} ({view['status']})")
+                _report(f"已上传 {view['material_id']}({view['status']})")
                 set_active = journey_tracker.get("set_active")
                 if set_active is not None:
                     await set_active(view["material_id"])
 
             with ui.card().classes("w-full"):
-                ui.label("Upload a material (single MD/PDF)").classes(
+                ui.label("上传材料(单个 MD/PDF)").classes(
                     "text-bold"
                 )
                 ui.upload(
-                    label="Choose or drop an MD/PDF file",
+                    label="选择或拖放 MD/PDF 文件",
                     auto_upload=True,
                     on_upload=_on_upload,
                 ).classes("w-full")
-                staged_label = ui.label("No file staged yet.")
+                staged_label = ui.label("尚未暂存文件。")
                 upload_case_select = ui.select(
                     options={}, value=None,
-                    label="Target case (choose from list)",
+                    label="目标案例(从列表选择)",
                 )
                 with ui.row():
-                    ui.button("Load cases", on_click=_load_cases)
+                    ui.button("加载案例", on_click=_load_cases)
                     ui.button(
-                        "Append uploaded material", on_click=_submit_upload
+                        "追加上传材料", on_click=_submit_upload
                     )
                 upload_as_of_input = ui.input(
-                    label="Upload as of (optional, ISO 8601, timezone-aware)",
+                    label="上传截止时间(可选,ISO 8601,含时区)",
                     placeholder="2026-09-01T00:00:00+00:00",
                 )
                 upload_parent_input = ui.input(
-                    label="Upload parent debate run (optional)",
+                    label="上传父辩论运行(可选)",
                     placeholder="run-1",
                 )
                 upload_use_llm_switch = ui.switch(
-                    "Use LLM for report (upload)", value=False
+                    "报告使用 LLM(上传)", value=False
                 )
-                upload_status_md = ui.markdown("_No upload appended yet._")
+                upload_status_md = ui.markdown("_尚未追加上传材料。_")
 
         # --------------------------------------------- journey list card
         if journey_controller is not None:
@@ -516,7 +516,7 @@ def build_material_entry_page(
                 try:
                     data = await journey_controller.load_journey(material_id)
                 except Exception as error:
-                    _report(safe_error_text("load journey", error))
+                    _report(safe_error_text("加载材料旅程", error))
                     return
                 _render_journey(data)
 
@@ -531,11 +531,11 @@ def build_material_entry_page(
                         status=status_filter
                     )
                 except Exception as error:
-                    _report(safe_error_text("load materials", error))
+                    _report(safe_error_text("加载材料", error))
                     return
                 materials_table.rows = payload["materials"]
                 materials_table.update()
-                _report(f"{payload['count']} material journey(s) loaded")
+                _report(f"已加载 {payload['count']} 条材料旅程")
 
             async def _on_journey_selected(event: Any = None) -> None:
                 rows = list(getattr(event, "args", None) or ())
@@ -549,21 +549,21 @@ def build_material_entry_page(
                     return
                 journey_state["material_id"] = material_id
                 await _load_and_render_journey(material_id)
-                _report(f"journey loaded for {material_id}")
+                _report(f"已加载 {material_id} 的材料旅程")
 
             async def _retry_selected(event: Any = None) -> None:
                 material_id = journey_state.get("material_id")
                 if not material_id:
-                    _report("select a material in the table first")
+                    _report("请先在表格中选择材料")
                     return
                 try:
                     view = await journey_controller.retry(material_id)
                 except Exception as error:
-                    _report(safe_error_text("retry", error))
+                    _report(safe_error_text("重试", error))
                     return
                 await _load_and_render_journey(material_id)
                 _report(
-                    f"retry finished for {view['material_id']} "
+                    f"{view['material_id']} 重试完成"
                     f"({view['status']})"
                 )
 
@@ -574,24 +574,24 @@ def build_material_entry_page(
                 try:
                     data = await journey_controller.load_journey(material_id)
                 except Exception as error:
-                    _report(safe_error_text("refresh journey", error))
+                    _report(safe_error_text("刷新旅程", error))
                     return
                 _render_journey(data)
                 if journey_controller.is_terminal(data):
                     journey_state["material_id"] = None
 
             with ui.card().classes("w-full"):
-                ui.label("Materials and journeys").classes("text-bold")
+                ui.label("材料与旅程").classes("text-bold")
                 journey_filter_select = ui.select(
                     options={
-                        "": "all statuses",
+                        "": "全部状态",
                         "committed": "committed",
                         "failed": "failed",
                         "pending": "processing",
                         "unknown": "unknown",
                     },
                     value="",
-                    label="Status filter (lifecycle)",
+                    label="状态筛选(生命周期)",
                 )
                 materials_table = ui.table(
                     columns=_JOURNEY_COLUMNS,
@@ -600,11 +600,11 @@ def build_material_entry_page(
                     on_select=_on_journey_selected,
                 )
                 with ui.row():
-                    ui.button("Refresh materials", on_click=_refresh_materials)
+                    ui.button("刷新材料", on_click=_refresh_materials)
                     ui.button(
-                        "Retry failed material", on_click=_retry_selected
+                        "重试失败材料", on_click=_retry_selected
                     )
-                journey_md = ui.markdown("_No material journey loaded._")
+                journey_md = ui.markdown("_尚未加载材料旅程。_")
                 # Journey refresh polling (WB-2.7): the timer is a no-op
                 # until a material is active and stops at a terminal state.
                 ui.timer(_JOURNEY_POLL_SECONDS, _poll_active_journey)

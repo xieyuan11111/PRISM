@@ -178,41 +178,40 @@ class UploadStagingService:
         controlled = self._controlled().expanduser().resolve()
         if root == controlled or not root.is_relative_to(controlled):
             raise ValueError(
-                "staging root must be a subdirectory of the controlled "
-                "root (PRISM_HOME by default); refusing to stage outside it"
+                "暂存根目录必须是受控根目录(默认 PRISM_HOME)的子目录;"
+                "拒绝在其之外暂存"
             )
         return root
 
     def stage(self, filename: str, data: bytes | bytearray) -> StagedUpload:
         """Validate and spool one upload; refusals raise before any write."""
         if not isinstance(filename, str):
-            raise TypeError("filename must be a string")
+            raise TypeError("文件名必须是字符串")
         if not filename.strip():
-            raise ValueError("filename must be a non-empty string")
+            raise ValueError("文件名必须是非空字符串")
         if isinstance(data, bytearray):
             payload = bytes(data)
         elif isinstance(data, bytes):
             payload = data
         else:
-            raise TypeError("upload data must be bytes")
+            raise TypeError("上传数据必须是字节")
         # The client name is display metadata only: strip every path
         # component it may carry and never use it to build a disk path.
         original_name = Path(filename.replace("\\", "/")).name
         if not original_name.strip():
-            raise ValueError("filename must contain a file name")
+            raise ValueError("文件名必须包含文件名称")
         suffix = Path(original_name).suffix.lower()
         if suffix not in UPLOAD_SUFFIXES:
             allowed = ", ".join(UPLOAD_SUFFIXES)
             raise ValueError(
-                f"unsupported file type; only Markdown and PDF uploads are "
-                f"accepted ({allowed})"
+                f"不支持的文件类型;仅接受 Markdown 与 PDF 上传"
+                f"({allowed})"
             )
         if not payload.strip():
-            raise ValueError("uploaded file is empty")
+            raise ValueError("上传文件为空")
         if len(payload) > self._max_upload_bytes:
             raise ValueError(
-                f"uploaded file exceeds the {self._max_upload_bytes} byte "
-                "limit"
+                f"上传文件超过 {self._max_upload_bytes} 字节的限制"
             )
         upload_id = uuid4().hex
         directory = self._validated_root() / upload_id
@@ -221,7 +220,7 @@ class UploadStagingService:
         # resolved destination is still required to stay inside the upload
         # directory before anything is written.
         if not destination.resolve().is_relative_to(directory.resolve()):
-            raise ValueError("staged path escapes its upload directory")
+            raise ValueError("暂存路径越出了其上传目录")
         staging = directory / f".{destination.name}.{os.getpid()}.tmp"
         try:
             directory.mkdir(parents=True, exist_ok=True)
@@ -260,7 +259,7 @@ class UploadStagingService:
         issued = self._issued.get(staged.upload_id)
         if issued is None or issued != staged:
             raise ValueError(
-                "refusing to submit an upload this service did not stage: "
+                "拒绝提交本服务未暂存的上传: "
                 f"{staged.upload_id}"
             )
         root = self._validated_root()
@@ -270,16 +269,16 @@ class UploadStagingService:
             or not resolved.is_relative_to(root)
         ):
             raise ValueError(
-                "staged upload no longer lives inside the staging root: "
+                "暂存上传已不在暂存根目录内: "
                 f"{staged.upload_id}"
             )
         if not resolved.is_file():
             raise FileNotFoundError(
-                f"staged upload is no longer available: {staged.original_name}"
+                f"暂存上传已不可用: {staged.original_name}"
             )
         if resolved.stat().st_size != staged.size_bytes:
             raise ValueError(
-                "staged upload no longer matches its recorded size: "
+                "暂存上传与记录的大小不一致: "
                 f"{staged.upload_id}"
             )
         digest = hashlib.sha256()
@@ -290,8 +289,8 @@ class UploadStagingService:
                 digest.update(block)
         if digest.hexdigest() != staged.sha256:
             raise ValueError(
-                "staged upload content no longer matches its recorded "
-                f"digest: {staged.upload_id}"
+                "暂存上传内容与记录的摘要不一致: "
+                f"{staged.upload_id}"
             )
 
     def discard(self, staged: StagedUpload) -> None:
@@ -307,7 +306,7 @@ class UploadStagingService:
         issued = self._issued.get(staged.upload_id)
         if issued is None or issued != staged:
             raise ValueError(
-                "refusing to discard an upload this service did not stage: "
+                "拒绝丢弃本服务未暂存的上传: "
                 f"{staged.upload_id}"
             )
         staged.path.unlink(missing_ok=True)
@@ -501,26 +500,26 @@ def read_upload_event(
     if max_bytes <= 0:
         raise ValueError("max_bytes must be positive")
     if not hasattr(event, "name") or not hasattr(event, "content"):
-        raise TypeError("upload event must carry a name and readable content")
+        raise TypeError("上传事件必须包含文件名和可读内容")
     name = getattr(event, "name", None)
     content = getattr(event, "content", None)
     if not isinstance(name, str) or not name.strip():
-        raise ValueError("upload event carried no file name")
+        raise ValueError("上传事件未携带文件名")
     if not hasattr(content, "read"):
-        raise TypeError("upload event carried no readable content")
+        raise TypeError("上传事件未包含可读内容")
     blocks: list[bytes] = []
     total = 0
     while True:
         block = content.read(_READ_BLOCK_BYTES)
         if not isinstance(block, (bytes, bytearray)):
-            raise TypeError("upload event content did not yield bytes")
+            raise TypeError("上传事件内容未返回字节")
         if not block:
             break
         blocks.append(bytes(block))
         total += len(block)
         if total > max_bytes:
             raise ValueError(
-                f"uploaded file exceeds the {max_bytes} byte limit"
+                f"上传文件超过 {max_bytes} 字节的限制"
             )
     return name, b"".join(blocks)
 

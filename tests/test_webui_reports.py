@@ -252,10 +252,10 @@ def test_detail_quality_layers_default_to_unknown_never_success():
     # as unknown/not provided — never as pass or success (H-4).
     assert view["mechanism_status"] == "unknown"
     assert view["semantic_status"] == "unknown"
-    assert view["mechanism_ui"] == "unknown"
-    assert view["semantic_ui"] == "unknown"
+    assert view["mechanism_ui"] == "未知"
+    assert view["semantic_ui"] == "未知"
     assert view["evidence_gap_count"] is None
-    assert view["evidence_gap_summary"] == "not provided"
+    assert view["evidence_gap_summary"] == "未提供"
     assert view["evidence_gaps"] == []
 
 
@@ -270,13 +270,13 @@ def test_detail_quality_layers_project_real_fields_and_flag_partial():
     ))
 
     assert view["mechanism_status"] == "pass"
-    assert view["mechanism_ui"] == "success"
+    assert view["mechanism_ui"] == "成功"
     assert view["semantic_status"] == "partial"
     # partial is a warning, never a success color or word.
-    assert view["semantic_ui"] == "partial"
-    assert view["semantic_ui"] != "success"
+    assert view["semantic_ui"] == "部分完成"
+    assert view["semantic_ui"] != "成功"
     assert view["evidence_gap_count"] == 2
-    assert view["evidence_gap_summary"] == "2 evidence gap(s)"
+    assert view["evidence_gap_summary"] == "2 个证据缺口"
     assert view["evidence_gaps"] == ["missing quote on node-1"]
 
 
@@ -346,7 +346,7 @@ def test_controller_load_version_rejects_blank_or_path_like_ids():
 
     with pytest.raises(ValueError):
         run(controller.load_version(""))
-    with pytest.raises(ValueError, match="path"):
+    with pytest.raises(ValueError, match="路径"):
         run(controller.load_version("rv-1/../../etc"))
 
     assert facade.version_calls == []
@@ -389,7 +389,7 @@ def test_detail_view_flags_missing_structured_citations():
     # citation structure is incomplete instead of guessing locators.
     assert citations["structured"] is False
     assert citations["source_ids"] == ["mat-1", "mat-2"]
-    assert "incomplete" in citations["note"]
+    assert "不完整" in citations["note"]
     assert citations["query_urls"] == {
         "mat-1": "/evidence?query=mat-1",
         "mat-2": "/evidence?query=mat-2",
@@ -600,7 +600,7 @@ def test_export_unexpected_errors_never_leak_details():
     )).export_pdf("rv-1"))
 
     assert view["state"] == "failure"
-    assert view["message"] == "export PDF failed (RuntimeError)"
+    assert view["message"] == "导出 PDF failed (RuntimeError)"
     assert "ABC" not in view["message"]
     assert "C:/" not in view["message"]
     assert "keys.env" not in view["message"]
@@ -609,7 +609,7 @@ def test_export_unexpected_errors_never_leak_details():
 def test_export_rejects_path_like_version_ids_before_any_facade_call():
     facade = FakeReportsFacade(export_result=_export_result(Path(".")))
 
-    with pytest.raises(ValueError, match="path"):
+    with pytest.raises(ValueError, match="路径"):
         run(_controller(facade).export_pdf("rv-1/../../etc"))
     with pytest.raises(ValueError):
         run(_controller(facade).export_pdf(" "))
@@ -805,12 +805,12 @@ def test_list_page_lists_filters_columns_and_trigger_vocabulary():
     assert "/reports" in ui.pages
     assert "/reports/{version_id}" in ui.pages
     ui.pages["/reports"]()
-    _element(ui, "input", label="Case")
-    trigger_options = _element(ui, "select", label="Trigger").kwargs["options"]
+    _element(ui, "input", label="案例")
+    trigger_options = _element(ui, "select", label="触发").kwargs["options"]
     assert set(trigger_options) == {
         "", "initial", "material_added", "rebuild", "debate_updated",
     }
-    _element(ui, "button", text="Refresh reports")
+    _element(ui, "button", text="刷新报告")
     columns = {
         column["field"]
         for column in _element(ui, "table").kwargs["columns"]
@@ -829,7 +829,7 @@ def test_list_page_refresh_fills_rows_and_distinguishes_empty_from_failure():
     list_page = ui.pages["/reports"]
     list_page()
 
-    run(_element(ui, "button", text="Refresh reports").kwargs["on_click"](None))
+    run(_element(ui, "button", text="刷新报告").kwargs["on_click"](None))
 
     table = _element(ui, "table")
     assert [row["version_id"] for row in table.rows] == ["rv-2", "rv-1"]
@@ -838,7 +838,7 @@ def test_list_page_refresh_fills_rows_and_distinguishes_empty_from_failure():
     empty_ui = _build_pages(_controller(FakeReportsFacade()))
     empty_ui.pages["/reports"]()
     run(
-        _element(empty_ui, "button", text="Refresh reports").kwargs["on_click"](
+        _element(empty_ui, "button", text="刷新报告").kwargs["on_click"](
             None
         )
     )
@@ -847,8 +847,8 @@ def test_list_page_refresh_fills_rows_and_distinguishes_empty_from_failure():
         for element in empty_ui.elements
         if element.name == "markdown"
     ][0]
-    assert "no report versions" in status.content
-    assert "could not be loaded" not in status.content
+    assert "暂无报告版本" in status.content
+    assert "无法加载" not in status.content
 
     # ...versus a facade failure: an error state that never claims emptiness.
     failed_ui = _build_pages(
@@ -856,7 +856,7 @@ def test_list_page_refresh_fills_rows_and_distinguishes_empty_from_failure():
     )
     failed_ui.pages["/reports"]()
     run(
-        _element(failed_ui, "button", text="Refresh reports").kwargs[
+        _element(failed_ui, "button", text="刷新报告").kwargs[
             "on_click"
         ](None)
     )
@@ -865,10 +865,10 @@ def test_list_page_refresh_fills_rows_and_distinguishes_empty_from_failure():
         for element in failed_ui.elements
         if element.name == "markdown"
     ][0]
-    assert "could not be loaded" in failed_status.content
-    assert "no report versions" not in failed_status.content
+    assert "无法加载" in failed_status.content
+    assert "暂无报告版本" not in failed_status.content
     assert any(
-        "load reports failed (RuntimeError)" == label.text
+        "加载报告 failed (RuntimeError)" == label.text
         for label in _labels(failed_ui)
     )
 
@@ -891,7 +891,7 @@ def test_detail_page_renders_the_escaped_body_metadata_and_citations():
     assert "case-rates" in joined
     assert "`rv-1`" in joined
     # Citations panel: incomplete-structure note plus deep links.
-    assert "incomplete" in joined
+    assert "不完整" in joined
     targets = [
         element.args[1] if len(element.args) > 1 else element.kwargs.get(
             "target", ""
@@ -916,7 +916,7 @@ def test_detail_page_locates_evidence_for_a_cited_source():
     ui = _build_pages(controller)
     run(ui.pages["/reports/{version_id}"]("rv-1"))
 
-    locate = _element(ui, "button", text="Locate mat-1")
+    locate = _element(ui, "button", text="定位 mat-1")
     run(locate.kwargs["on_click"](None))
 
     joined = "\n".join(
@@ -925,7 +925,7 @@ def test_detail_page_locates_evidence_for_a_cited_source():
         if element.name == "markdown"
     )
     assert "corpus/2026-08/example.gov/mat-1.md" in joined
-    assert "paragraph 2" in joined
+    assert "第 2 段" in joined
     assert "The rate changed." in joined
 
 
@@ -939,7 +939,7 @@ def test_detail_page_export_button_uses_only_the_version_id():
     ui = _build_pages(controller)
     run(ui.pages["/reports/{version_id}"]("rv-1"))
 
-    run(_element(ui, "button", text="Export PDF").kwargs["on_click"](None))
+    run(_element(ui, "button", text="导出 PDF").kwargs["on_click"](None))
 
     assert facade.export_calls == [("rv-1", "reports/exports/rv-1.pdf")]
     joined = "\n".join(
@@ -947,7 +947,7 @@ def test_detail_page_export_button_uses_only_the_version_id():
         for element in ui.elements
         if element.name == "markdown"
     )
-    assert "3 page(s)" in joined
+    assert "3 页" in joined
 
 
 def test_detail_page_export_failure_shows_guidance_without_success_words():
@@ -962,7 +962,7 @@ def test_detail_page_export_failure_shows_guidance_without_success_words():
     ui = _build_pages(controller)
     run(ui.pages["/reports/{version_id}"]("rv-1"))
 
-    run(_element(ui, "button", text="Export PDF").kwargs["on_click"](None))
+    run(_element(ui, "button", text="导出 PDF").kwargs["on_click"](None))
 
     export_md = [
         element
@@ -973,7 +973,7 @@ def test_detail_page_export_failure_shows_guidance_without_success_words():
     assert "pip install" in export_md.content
     assert "success" not in export_md.content.lower()
     assert any(
-        "PDF export failed" in label.text for label in _labels(ui)
+        "PDF 导出失败" in label.text for label in _labels(ui)
     )
 
 
@@ -984,7 +984,7 @@ def test_detail_page_unknown_version_shows_a_failure_not_an_empty_page():
     run(page("rv-missing"))
 
     assert any(
-        "load report version failed (LookupError)" == label.text
+        "加载报告版本 failed (LookupError)" == label.text
         for label in _labels(ui)
     )
 
@@ -1010,13 +1010,13 @@ def test_detail_page_flags_partial_semantics_with_a_warning_badge():
     }
     # partial is the warning color and never the success color; pass is
     # positive; the gap count stays visible as text.
-    assert badges["Semantic: partial"] == "warning"
-    assert badges["Mechanism: pass"] == "positive"
+    assert badges["语义: partial"] == "warning"
+    assert badges["机制: pass"] == "positive"
     quality_text = "\n".join(
         element.content for element in ui.elements
         if element.name == "markdown"
     )
-    assert "2 evidence gap(s)" in quality_text
+    assert "2 个证据缺口" in quality_text
 
 
 def test_detail_page_keeps_deep_links_without_the_search_capability():
@@ -1037,7 +1037,7 @@ def test_detail_page_keeps_deep_links_without_the_search_capability():
     ]
     assert "/evidence?query=mat-1" in targets
     assert not any(
-        element.name == "button" and "Locate" in str(
+        element.name == "button" and "定位" in str(
             element.args[0] if element.args else ""
         )
         for element in ui.elements

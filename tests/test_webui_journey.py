@@ -151,8 +151,8 @@ def test_steps_of_a_fully_processed_material():
     assert by_step["merged"]["status"] == "completed"
     assert by_step["graph_written"]["status"] == "completed"
     assert by_step["analyzed"]["status"] == "completed"
-    assert by_step["merged"]["detail"] == "case case-1"
-    assert by_step["analyzed"]["detail"] == "report version rv-1"
+    assert by_step["merged"]["detail"] == "案例 case-1"
+    assert by_step["analyzed"]["detail"] == "报告版本 rv-1"
     assert by_step["ingested"]["detail"].startswith("raw: raw/mat-1.md")
     # Staging is a transient WebUI spool with no durable audit, so the
     # staged step stays unknown even for a fully processed material.
@@ -174,7 +174,7 @@ def test_staged_step_never_claims_a_browser_upload_without_audit():
 
     assert staged_step["status"] == "unknown"
     assert staged_step["time"] is None
-    assert "no durable audit" in staged_step["detail"]
+    assert "持久审计" in staged_step["detail"]
 
 
 def test_ingested_step_requires_both_raw_and_corpus_copies():
@@ -188,7 +188,7 @@ def test_ingested_step_requires_both_raw_and_corpus_copies():
             "ingested"
         ]
         assert step["status"] == "unknown"
-        assert "not recorded" in step["detail"]
+        assert "未记录" in step["detail"]
 
     both = {
         step["step"]: step for step in journey_steps(committed_view())
@@ -299,7 +299,7 @@ def test_post_restart_views_project_from_the_durable_audit():
     assert steps["indexed"]["status"] == "completed"
     assert steps["extracted"]["status"] == "completed"
     assert steps["graph_written"]["status"] == "completed"
-    assert steps["analyzed"]["detail"] == "report version rv-1"
+    assert steps["analyzed"]["detail"] == "报告版本 rv-1"
 
 
 def test_unrecognized_stage_statuses_never_render_as_completed():
@@ -359,7 +359,7 @@ def test_journey_view_data_is_json_safe_and_complete():
     assert json.loads(json.dumps(data)) == data
     assert data["material_id"] == "mat-1"
     assert data["lifecycle_status"] == "committed"
-    assert data["ui_status"] == "success"
+    assert data["ui_status"] == "成功"
     assert data["mechanism_status"] == "pass"
     assert data["semantic_status"] == "unknown"
     assert data["evidence_gap_count"] == 1
@@ -387,7 +387,7 @@ def test_failed_views_carry_the_failure_triple():
 
     data = journey_view_data(view)
 
-    assert data["ui_status"] == "failure"
+    assert data["ui_status"] == "失败"
     assert data["failure"]["stage"] == "graph"
     assert data["failure"]["error_type"] == "MaterialCaseConflict"
     assert data["failure"]["message"] == (
@@ -406,20 +406,20 @@ def test_material_rows_never_show_success_for_unfinished_states():
         material_id="mat-f", lifecycle_status="failed",
     ))
 
-    assert pending["ui_status"] == "loading"
-    assert unknown["ui_status"] == "unknown"
-    assert failed["ui_status"] == "failure"
-    assert material_row(committed_view())["ui_status"] == "success"
+    assert pending["ui_status"] == "加载中"
+    assert unknown["ui_status"] == "未知"
+    assert failed["ui_status"] == "失败"
+    assert material_row(committed_view())["ui_status"] == "成功"
 
 
 def test_lifecycle_ui_status_mapping():
     from prism.webui.status import lifecycle_ui_status
 
-    assert lifecycle_ui_status("committed") == "success"
-    assert lifecycle_ui_status("failed") == "failure"
-    assert lifecycle_ui_status("pending") == "loading"
-    assert lifecycle_ui_status("unknown") == "unknown"
-    assert lifecycle_ui_status(None) == "unknown"
+    assert lifecycle_ui_status("committed") == "成功"
+    assert lifecycle_ui_status("failed") == "失败"
+    assert lifecycle_ui_status("pending") == "加载中"
+    assert lifecycle_ui_status("unknown") == "未知"
+    assert lifecycle_ui_status(None) == "未知"
 
 
 def test_journey_markdown_renders_steps_and_paths():
@@ -542,7 +542,7 @@ def test_load_journeys_projects_rows_and_count():
     assert [row["material_id"] for row in payload["materials"]] == [
         "mat-1", "mat-2",
     ]
-    assert payload["materials"][1]["ui_status"] == "failure"
+    assert payload["materials"][1]["ui_status"] == "失败"
 
 
 def test_load_journeys_forwards_filters_after_validation():
