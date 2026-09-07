@@ -76,13 +76,13 @@ def short_hash(value: object, *, length: int = HASH_DISPLAY_LENGTH) -> str:
 def _validated_version_ref(value: object) -> str:
     """Require one version id that is safe to embed in a server filename."""
     if not isinstance(value, str):
-        raise TypeError("version_id must be a string")
+        raise TypeError("version_id 必须是字符串")
     normalized = value.strip()
     if not normalized:
-        raise ValueError("version_id must be a non-empty string")
+        raise ValueError("version_id 必须是非空字符串")
     if not _SAFE_VERSION_REF.fullmatch(normalized):
         raise ValueError(
-            "version_id must be a short identifier without path separators"
+            "version_id 必须是不含路径分隔符的短标识符"
         )
     return normalized
 
@@ -186,14 +186,13 @@ def _citations_view(
                 getattr(citation, "source_id", None) for citation in structured
             ) if item
         ]
-        note = "structured citations recorded on this version"
+        note = "该版本记录了结构化引用"
         locators = _structured_locators(structured)
     else:
         source_ids = list(cited_source_ids(markdown))
         note = (
-            "citation structure incomplete: this version persisted no "
-            "structured citations; the source ids below come from the "
-            "rendered Citations section and are not verified locators"
+            "引用结构不完整:该版本未持久化结构化引用;下列来源 ID 来自"
+            "渲染出的 Citations 小节,不是经过校验的定位符"
         )
         locators = {}
     return {
@@ -323,9 +322,9 @@ def report_detail_view(
         "semantic_ui": quality_ui_status(semantic_status),
         "evidence_gap_count": gap_count,
         "evidence_gap_summary": (
-            f"{gap_count} evidence gap(s)"
+            f"{gap_count} 个证据缺口"
             if gap_count is not None
-            else "not provided"
+            else "未提供"
         ),
         "evidence_gaps": list(getattr(version, "evidence_gaps", ()) or ()),
         "citations": _citations_view(version, markdown),
@@ -408,12 +407,12 @@ def export_failure_view(error: BaseException) -> dict[str, Any]:
         return {
             "state": "failure",
             "error_type": "version_not_found",
-            "message": str(error) or "report version not found",
+            "message": str(error) or "未找到报告版本",
         }
     return {
         "state": "failure",
         "error_type": type(error).__name__,
-        "message": safe_error_text("export PDF", error),
+        "message": safe_error_text("导出 PDF", error),
     }
 
 
@@ -561,39 +560,39 @@ class ReportCenterController:
 # ------------------------------------------------------------------ pages
 
 _REPORT_COLUMNS = [
-    {"name": "version_id", "label": "Version", "field": "version_id",
+    {"name": "version_id", "label": "版本", "field": "version_id",
      "align": "left", "sortable": True},
-    {"name": "case_id", "label": "Case", "field": "case_id",
+    {"name": "case_id", "label": "案例", "field": "case_id",
      "align": "left", "sortable": True},
-    {"name": "as_of", "label": "As of", "field": "as_of", "align": "left"},
-    {"name": "created_at", "label": "Created", "field": "created_at",
+    {"name": "as_of", "label": "截止时间", "field": "as_of", "align": "left"},
+    {"name": "created_at", "label": "创建时间", "field": "created_at",
      "align": "left", "sortable": True},
-    {"name": "trigger", "label": "Trigger", "field": "trigger",
+    {"name": "trigger", "label": "触发", "field": "trigger",
      "align": "left", "sortable": True},
-    {"name": "parent_version_id", "label": "Parent", "field":
+    {"name": "parent_version_id", "label": "父版本", "field":
      "parent_version_id", "align": "left"},
-    {"name": "summary_origin", "label": "Summary origin",
+    {"name": "summary_origin", "label": "摘要来源",
      "field": "summary_origin", "align": "left"},
-    {"name": "input_hash_short", "label": "Input hash",
+    {"name": "input_hash_short", "label": "输入哈希",
      "field": "input_hash_short", "align": "left"},
-    {"name": "markdown_hash_short", "label": "Markdown hash",
+    {"name": "markdown_hash_short", "label": "Markdown 哈希",
      "field": "markdown_hash_short", "align": "left"},
 ]
 
 
 def _trigger_options() -> dict[str, str]:
-    return {"": "all triggers"} | {item: item for item in REPORT_TRIGGERS}
+    return {"": "全部触发类型"} | {item: item for item in REPORT_TRIGGERS}
 
 
 #: UI status word -> badge color (``partial`` is a distinct warning color,
 #: never the success color; H-4/WB-4.5).
 _BADGE_COLORS = {
-    "success": "positive",
-    "partial": "warning",
-    "failure": "negative",
-    "unknown": "grey-6",
-    "loading": "grey-6",
-    "ready": "blue-grey-6",
+    "成功": "positive",
+    "部分完成": "warning",
+    "失败": "negative",
+    "未知": "grey-6",
+    "加载中": "grey-6",
+    "就绪": "blue-grey-6",
 }
 
 
@@ -601,53 +600,53 @@ def _metadata_markdown(view: dict[str, Any]) -> str:
     parent = view["parent_version_id"]
     lines = [
         f"### `{view['version_id']}`",
-        f"- Case: {view['case_id']}",
-        f"- As of: {view['as_of']}",
-        f"- Created at: {view['created_at']}",
-        f"- Trigger: **{view['trigger']}**",
+        f"- 案例: {view['case_id']}",
+        f"- 截止时间: {view['as_of']}",
+        f"- 创建时间: {view['created_at']}",
+        f"- 触发: **{view['trigger']}**",
         (
-            f"- Parent version: `{parent}`"
+            f"- 父版本: `{parent}`"
             if parent
-            else "- Parent version: _none (initial)_"
+            else "- 父版本: _无(初始)_"
         ),
-        f"- Summary origin: **{view['summary_origin']}**",
-        f"- Input hash: `{view['input_hash']}`",
-        f"- Markdown hash: `{view['markdown_hash']}`",
+        f"- 摘要来源: **{view['summary_origin']}**",
+        f"- 输入哈希: `{view['input_hash']}`",
+        f"- Markdown 哈希: `{view['markdown_hash']}`",
         (
-            f"- Debate input hash: `{view['debate_input_hash']}`"
+            f"- 辩论输入哈希: `{view['debate_input_hash']}`"
             if view["debate_input_hash"]
-            else "- Debate input hash: _none_"
+            else "- 辩论输入哈希: _无_"
         ),
-        "#### Version lineage (current \u2192 root)",
+        "#### 版本谱系(当前 \u2192 根)",
     ]
     for row in view["lineage"]["chain"]:
-        marker = " **(current)**" if row["current"] else ""
+        marker = " **(当前)**" if row["current"] else ""
         lines.append(
             f"- `{row['version_id']}` ({row['trigger']}, "
             f"{row['created_at']}){marker}"
         )
     if view["lineage"]["truncated"]:
         lines.append(
-            "- _lineage truncated: a parent version id is not in the ledger_"
+            "- _谱系被截断:某个父版本 ID 不在账本中_"
         )
     return "\n".join(lines)
 
 
 def _quality_markdown(view: dict[str, Any]) -> str:
     return "\n".join((
-        f"- Mechanism: **{view['mechanism_status']}**",
-        f"- Semantic: **{view['semantic_status']}**",
-        f"- Summary origin: **{view['summary_origin']}**",
-        f"- Evidence gaps: **{view['evidence_gap_summary']}**",
+        f"- 机制: **{view['mechanism_status']}**",
+        f"- 语义: **{view['semantic_status']}**",
+        f"- 摘要来源: **{view['summary_origin']}**",
+        f"- 证据缺口: **{view['evidence_gap_summary']}**",
     ))
 
 
 def _locator_label(row: dict[str, Any]) -> str:
     where = []
     if row.get("paragraph") is not None:
-        where.append(f"paragraph {row['paragraph']}")
+        where.append(f"第 {row['paragraph']} 段")
     if row.get("page") is not None:
-        where.append(f"page {row['page']}")
+        where.append(f"第 {row['page']} 页")
     at = f" ({'; '.join(where)})" if where else ""
     return f"{row['corpus_path']}{at}"
 
@@ -656,7 +655,7 @@ def _citations_markdown(view: dict[str, Any]) -> str:
     citations = view["citations"]
     lines = [f"_{citations['note']}_"]
     if not citations["source_ids"]:
-        lines.append("- no source-id citations found in this version")
+        lines.append("- 该版本未发现来源 ID 引用")
     for source_id in citations["source_ids"]:
         if citations["structured"]:
             for locator in citations["locators"].get(source_id, ()):
@@ -668,7 +667,7 @@ def _citations_markdown(view: dict[str, Any]) -> str:
                 )
         else:
             lines.append(
-                f"- `{source_id}` — search evidence: "
+                f"- `{source_id}` — 检索证据: "
                 f"{citations['query_urls'][source_id]}"
             )
     return "\n".join(lines)
@@ -676,42 +675,42 @@ def _citations_markdown(view: dict[str, Any]) -> str:
 
 def _locators_markdown(found: dict[str, Any]) -> str:
     lines = [
-        f"Evidence locators for `{found['source_id']}`: "
-        f"{found['count']} found"
+        f"`{found['source_id']}` 的证据定位符: "
+        f"找到 {found['count']} 个"
     ]
     for row in found["locators"]:
         lines.append(f"- `{row['source_id']}` — {_locator_label(row)}")
         if row.get("quote"):
-            lines.append(f'  - quote: "{row["quote"]}"')
+            lines.append(f'  - 引文: "{row["quote"]}"')
     if not found["locators"]:
         lines.append(
-            "- no locator matched this source id in the evidence library; "
-            "open the /evidence deep link to search manually"
+            "- 证据库中没有与该来源 ID 匹配的定位符;"
+            "请打开 /evidence 深链手动检索"
         )
     return "\n".join(lines)
 
 
 def _export_success_markdown(view: dict[str, Any]) -> str:
     return "\n".join((
-        "**exported** (derived PDF; the saved version is unchanged)",
-        f"- Pages: {view['page_count']} page(s)",
-        f"- Output: `{view['display_path']}`",
-        f"- Version: `{view['version_id']}`",
-        f"- Markdown hash: `{view['markdown_hash']}`",
-        f"- PDF hash: `{view['pdf_hash']}`",
+        "**已导出**(派生 PDF;已保存版本不变)",
+        f"- 页数: {view['page_count']} 页",
+        f"- 输出: `{view['display_path']}`",
+        f"- 版本: `{view['version_id']}`",
+        f"- Markdown 哈希: `{view['markdown_hash']}`",
+        f"- PDF 哈希: `{view['pdf_hash']}`",
     ))
 
 
 def _export_failure_markdown(view: dict[str, Any]) -> str:
     return "\n".join((
-        f"**failed** — {view['error_type']}",
+        f"**失败** — {view['error_type']}",
         view["message"],
     ))
 
 
 def build_report_pages(
     controller: ReportCenterController, ui: Any, *,
-    title: str = "PRISM Reports",
+    title: str = "PRISM 报告中心",
 ) -> tuple[Any, Any]:
     """Register the ``/reports`` list and detail pages on ``ui``.
 
@@ -726,8 +725,8 @@ def build_report_pages(
 
     @ui.page("/reports")
     def reports_page() -> None:
-        message = ui.label("Load report versions to begin.")
-        status_md = ui.markdown("_no report versions loaded yet_")
+        message = ui.label("加载报告版本开始。")
+        status_md = ui.markdown("_尚未加载报告版本_")
 
         def _report(text: str) -> None:
             message.text = text
@@ -741,21 +740,21 @@ def build_report_pages(
                     case_id=case or None, trigger=trigger or None
                 )
             except Exception as error:
-                _report(safe_error_text("load reports", error))
+                _report(safe_error_text("加载报告", error))
                 status_md.content = (
-                    "**failed** — report versions could not be loaded"
+                    "**失败** — 无法加载报告版本"
                 )
                 status_md.update()
                 return
             reports_table.rows = payload["versions"]
             reports_table.update()
             status_md.content = (
-                "_no report versions recorded_"
+                "_暂无报告版本_"
                 if payload["empty"]
-                else f"_{payload['count']} report version(s), newest first_"
+                else f"_{payload['count']} 个报告版本,最新在前_"
             )
             status_md.update()
-            _report(f"{payload['count']} report version(s) loaded")
+            _report(f"已加载 {payload['count']} 个报告版本")
 
         async def _open_selected(event: Any = None) -> None:
             rows = list(getattr(event, "args", None) or ())
@@ -773,20 +772,20 @@ def build_report_pages(
             if callable(opener):
                 opener(route)
             else:
-                _report(f"selected {version_id}; open {route}")
+                _report(f"已选择 {version_id};打开 {route}")
 
         with ui.card().classes("w-full"):
-            ui.label("Report filters").classes("text-bold")
+            ui.label("报告筛选").classes("text-bold")
             with ui.row():
                 case_input = ui.input(
-                    label="Case (exact id, optional)",
+                    label="案例(精确 ID,可选)",
                     placeholder="case-rates",
                 )
                 trigger_select = ui.select(
-                    options=_trigger_options(), value="", label="Trigger"
+                    options=_trigger_options(), value="", label="触发类型"
                 )
             with ui.row():
-                ui.button("Refresh reports", on_click=_refresh)
+                ui.button("刷新报告", on_click=_refresh)
 
         with ui.card().classes("w-full"):
             reports_table = ui.table(
@@ -798,8 +797,8 @@ def build_report_pages(
 
     @ui.page("/reports/{version_id}")
     async def report_detail_page(version_id: str) -> None:
-        message = ui.label(f"Loading report version {version_id} \u2026")
-        status_md = ui.markdown("_loading\u2026_")
+        message = ui.label(f"正在加载报告版本 {version_id} \u2026")
+        status_md = ui.markdown("_加载中\u2026_")
 
         def _report(text: str) -> None:
             message.text = text
@@ -809,32 +808,32 @@ def build_report_pages(
             try:
                 result = await controller.export_pdf(version_id)
             except (TypeError, ValueError) as error:
-                _report(f"export rejected: {error}")
+                _report(f"导出被拒绝: {error}")
                 return
             except Exception as error:
-                _report(safe_error_text("export PDF", error))
+                _report(safe_error_text("导出 PDF", error))
                 return
             if result["state"] == "exported":
                 export_md.content = _export_success_markdown(result)
                 export_md.update()
                 _report(
-                    f"PDF exported: {result['filename']} "
-                    f"({result['page_count']} page(s))"
+                    f"PDF 已导出: {result['filename']} "
+                    f"({result['page_count']} 页)"
                 )
             else:
                 export_md.content = _export_failure_markdown(result)
                 export_md.update()
-                _report(f"PDF export failed: {result['error_type']}")
+                _report(f"PDF 导出失败: {result['error_type']}")
 
         async def _locate(source_id: str) -> None:
             try:
                 found = await controller.locate_source(source_id)
             except Exception as error:
-                _report(safe_error_text("locate evidence", error))
+                _report(safe_error_text("定位证据", error))
                 return
             locators_md.content = _locators_markdown(found)
             locators_md.update()
-            _report(f"{found['count']} locator(s) for {found['source_id']}")
+            _report(f"{found['source_id']} 的 {found['count']} 个定位符")
 
         def _make_locate_handler(source_id: str) -> Any:
             async def _handler(event: Any = None) -> None:
@@ -844,54 +843,54 @@ def build_report_pages(
 
         metadata_card = ui.card().classes("w-full")
         with metadata_card:
-            ui.label("Version metadata and lineage").classes("text-bold")
-            metadata_md = ui.markdown("_not loaded_")
+            ui.label("版本元数据与谱系").classes("text-bold")
+            metadata_md = ui.markdown("_未加载_")
             with ui.row() as quality_row:
-                quality_md = ui.markdown("_not loaded_")
+                quality_md = ui.markdown("_未加载_")
 
         with ui.card().classes("w-full"):
             ui.label(
-                "Report body (read-only; versions are immutable)"
+                "报告正文(只读;版本不可变)"
             ).classes("text-bold")
-            body_md = ui.markdown("_not loaded_")
-            with ui.expansion("Original Markdown (read-only)"):
-                raw_md = ui.markdown("_not loaded_")
+            body_md = ui.markdown("_未加载_")
+            with ui.expansion("原始 Markdown(只读)"):
+                raw_md = ui.markdown("_未加载_")
 
         with ui.card().classes("w-full"):
-            ui.label("Evidence backtracking").classes("text-bold")
-            citations_md = ui.markdown("_not loaded_")
+            ui.label("证据回溯").classes("text-bold")
+            citations_md = ui.markdown("_未加载_")
             with ui.row() as citations_row:
                 pass
             locators_md = ui.markdown(
-                "_no evidence lookup run in this session_"
+                "_本会话尚未进行证据查询_"
             )
 
         with ui.card().classes("w-full"):
             ui.label(
-                "Export PDF (derived artifact; the version never changes)"
+                "导出 PDF(派生产物;版本本身不变)"
             ).classes("text-bold")
-            ui.button("Export PDF", on_click=_export)
-            export_md = ui.markdown("_no export attempted in this session_")
+            ui.button("导出 PDF", on_click=_export)
+            export_md = ui.markdown("_本会话尚未尝试导出_")
 
         try:
             view = await controller.load_version(version_id)
         except Exception as error:
             status_md.content = (
-                "**failed** — the report version could not be loaded"
+                "**失败** — 无法加载该报告版本"
             )
             status_md.update()
-            _report(safe_error_text("load report version", error))
+            _report(safe_error_text("加载报告版本", error))
             return
 
         status_md.content = (
-            f"**ready** — report version `{view['version_id']}` "
-            "(immutable)"
+            f"**就绪** — 报告版本 `{view['version_id']}` "
+            "(不可变)"
         )
         # Phase C linkage: the case this version belongs to is explored on
         # the case home, so the detail page links back there.
         with metadata_card:
             ui.link(
-                f"Back to case home ({view['case_id']})",
+                f"返回案例主页({view['case_id']})",
                 view["case_home_url"],
             )
         metadata_md.content = _metadata_markdown(view)
@@ -901,9 +900,9 @@ def build_report_pages(
         raw_md.content = view["raw_markdown_block"]
         with quality_row:
             for label_text, value, ui_status in (
-                ("Mechanism", view["mechanism_status"],
+                ("机制", view["mechanism_status"],
                  view["mechanism_ui"]),
-                ("Semantic", view["semantic_status"], view["semantic_ui"]),
+                ("语义", view["semantic_status"], view["semantic_ui"]),
             ):
                 ui.badge(
                     f"{label_text}: {value}",
@@ -914,7 +913,7 @@ def build_report_pages(
                 for source_id in view["citations"]["source_ids"]:
                     if view["evidence_lookup_available"]:
                         ui.button(
-                            f"Locate {source_id}",
+                            f"定位 {source_id}",
                             on_click=_make_locate_handler(source_id),
                         )
                     ui.link(
@@ -926,7 +925,7 @@ def build_report_pages(
             raw_md,
         ):
             element.update()
-        _report(f"report version {view['version_id']} loaded")
+        _report(f"报告版本 {view['version_id']} 已加载")
 
     return reports_page, report_detail_page
 

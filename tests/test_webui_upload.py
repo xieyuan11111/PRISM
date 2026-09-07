@@ -167,11 +167,11 @@ def test_stage_rejects_forbidden_suffixes_and_empty_payload(staging_root):
         staging.stage("note.txt", b"plain text")
     with pytest.raises(ValueError, match="\\.md|markdown|pdf"):
         staging.stage("archive.pdf.exe", b"binary")
-    with pytest.raises(ValueError, match="unsupported"):
+    with pytest.raises(ValueError, match="不支持"):
         staging.stage("no-extension", b"content")
-    with pytest.raises(ValueError, match="empty"):
+    with pytest.raises(ValueError, match="为空"):
         staging.stage("note.md", b"")
-    with pytest.raises(ValueError, match="empty"):
+    with pytest.raises(ValueError, match="为空"):
         staging.stage("note.md", b"   ")
     assert list(staging_root.rglob("source.*")) == []
 
@@ -276,7 +276,7 @@ def test_stage_rejects_a_staging_root_outside_the_controlled_root(
         controlled_root=staging_root / "elsewhere",
     )
 
-    with pytest.raises(ValueError, match="controlled root"):
+    with pytest.raises(ValueError, match="受控根目录"):
         staging.stage("note.md", b"body")
 
     # The refusal happened before anything was created on disk.
@@ -293,7 +293,7 @@ def test_stage_rejects_the_controlled_root_itself_as_the_staging_root(
         staging_root, controlled_root=staging_root
     )
 
-    with pytest.raises(ValueError, match="controlled root"):
+    with pytest.raises(ValueError, match="受控根目录"):
         staging.stage("note.md", b"body")
 
 
@@ -310,7 +310,7 @@ def test_the_controlled_root_defaults_to_prism_home(
     assert staged.path.is_file()
 
     outside = UploadStagingService(staging_root / "outside")
-    with pytest.raises(ValueError, match="controlled root"):
+    with pytest.raises(ValueError, match="受控根目录"):
         outside.stage("note.md", b"body")
     assert not (staging_root / "outside").exists()
 
@@ -348,7 +348,7 @@ def test_discard_refuses_files_this_service_did_not_stage(staging_root):
     victim.parent.mkdir(parents=True)
     victim.write_bytes(b"keep me")
 
-    with pytest.raises(ValueError, match="did not stage"):
+    with pytest.raises(ValueError, match="未暂存"):
         staging.discard(_forged_upload(victim))
 
     assert victim.read_bytes() == b"keep me"
@@ -363,7 +363,7 @@ def test_discard_refuses_a_tampered_path_for_an_issued_upload(
     decoy = staging_root / "evil.md"
     decoy.write_bytes(b"keep")
 
-    with pytest.raises(ValueError, match="did not stage"):
+    with pytest.raises(ValueError, match="未暂存"):
         staging.discard(_forged_upload(decoy, upload_id=staged.upload_id))
 
     assert decoy.read_bytes() == b"keep"
@@ -395,7 +395,7 @@ def test_submit_refuses_a_forged_staged_upload(staging_root):
     victim.parent.mkdir(parents=True)
     victim.write_bytes(b"keep me")
 
-    with pytest.raises(ValueError, match="did not stage"):
+    with pytest.raises(ValueError, match="未暂存"):
         run(controller.submit(_forged_upload(victim), "case-b"))
 
     assert facade.calls == []
@@ -408,7 +408,7 @@ def test_submit_refuses_tampered_staged_content(staging_root):
     staged = controller.stage("note.md", b"body")
     staged.path.write_bytes(b"evil")  # same size, different bytes
 
-    with pytest.raises(ValueError, match="content"):
+    with pytest.raises(ValueError, match="内容"):
         run(controller.submit(staged, "case-b"))
 
     assert facade.calls == []
@@ -420,7 +420,7 @@ def test_submit_refuses_tampered_staged_size(staging_root):
     staged = controller.stage("note.md", b"body")
     staged.path.write_bytes(b"bo")  # shorter than the recorded size
 
-    with pytest.raises(ValueError, match="size"):
+    with pytest.raises(ValueError, match="大小"):
         run(controller.submit(staged, "case-b"))
 
     assert facade.calls == []
@@ -441,7 +441,7 @@ def test_submit_refuses_forged_metadata_for_an_issued_upload(staging_root):
         sha256=staged.sha256,
     )
 
-    with pytest.raises(ValueError, match="did not stage"):
+    with pytest.raises(ValueError, match="未暂存"):
         run(controller.submit(forged, "case-b"))
 
     assert facade.calls == []
@@ -466,7 +466,7 @@ def test_submit_refuses_uploads_outside_the_current_staging_root(
         holder["root"] = elsewhere / "uploads"
         (elsewhere / "uploads").mkdir()
 
-        with pytest.raises(ValueError, match="staging root"):
+        with pytest.raises(ValueError, match="暂存根"):
             run(controller.submit(staged, "case-b"))
     finally:
         shutil.rmtree(elsewhere, ignore_errors=True)
@@ -658,9 +658,9 @@ def test_the_upload_event_adapter_reads_name_and_bytes(staging_root):
 
     assert read_upload_event(event) == ("note.md", b"body")
 
-    with pytest.raises(ValueError, match="upload event"):
+    with pytest.raises(ValueError, match="上传事件"):
         read_upload_event(SimpleNamespace(name="", content=io.BytesIO(b"x")))
-    with pytest.raises(TypeError, match="upload event"):
+    with pytest.raises(TypeError, match="上传事件"):
         read_upload_event(object())
 
 
@@ -694,7 +694,7 @@ def test_read_upload_event_is_bounded_by_max_bytes():
     stream = _HugeStream(10 * 1024 * 1024)
     event = SimpleNamespace(name="big.md", content=stream)
 
-    with pytest.raises(ValueError, match="1000 byte limit"):
+    with pytest.raises(ValueError, match="1000 字节的限制"):
         read_upload_event(event, max_bytes=1000)
 
     # The reader never issued an unbounded read and stopped within one
@@ -729,7 +729,7 @@ def test_read_upload_event_rejects_non_byte_content():
 
     event = SimpleNamespace(name="note.md", content=TextStream())
 
-    with pytest.raises(TypeError, match="bytes"):
+    with pytest.raises(TypeError, match="字节"):
         read_upload_event(event)
 
 

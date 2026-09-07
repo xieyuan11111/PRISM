@@ -22,17 +22,17 @@ from prism.analyzer import ENTRY_KINDS, STAGES
 from .controller import CaseHomeController, PrismFacade
 from .status import safe_error_text, safe_identifier
 
-DEFAULT_TITLE = "PRISM Case Home"
+DEFAULT_TITLE = "PRISM 案例主页"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 
 NICEGUI_MISSING_MESSAGE = (
-    "the PRISM WebUI requires the optional nicegui dependency; install it "
-    'with: pip install ".[webui]"'
+    "PRISM WebUI 需要可选依赖 nicegui;请使用以下命令安装:"
+    'pip install ".[webui]"'
 )
 PLOTLY_MISSING_MESSAGE = (
-    "timeline rendering requires the optional plotly dependency; install it "
-    'with: pip install ".[webui]"'
+    "时间线渲染需要可选依赖 plotly;请使用以下命令安装:"
+    'pip install ".[webui]"'
 )
 
 
@@ -59,27 +59,27 @@ def _plotly_graph_objects() -> Any:
 
 
 _CASE_COLUMNS = [
-    {"name": "case_id", "label": "Case", "field": "case_id",
+    {"name": "case_id", "label": "案例", "field": "case_id",
      "align": "left", "sortable": True},
-    {"name": "name", "label": "Name", "field": "name", "align": "left"},
-    {"name": "case_type", "label": "Type", "field": "case_type",
+    {"name": "name", "label": "名称", "field": "name", "align": "left"},
+    {"name": "case_type", "label": "类型", "field": "case_type",
      "align": "left", "sortable": True},
-    {"name": "status", "label": "Status", "field": "status",
+    {"name": "status", "label": "状态", "field": "status",
      "align": "left", "sortable": True},
-    {"name": "material_count", "label": "Materials", "field": "material_count",
+    {"name": "material_count", "label": "材料数", "field": "material_count",
      "align": "right", "sortable": True},
-    {"name": "latest_observed_at", "label": "Latest observed",
+    {"name": "latest_observed_at", "label": "最近观测",
      "field": "latest_observed_at", "align": "left"},
-    {"name": "unresolved", "label": "Unresolved", "field": "unresolved",
+    {"name": "unresolved", "label": "未解决", "field": "unresolved",
      "align": "left"},
 ]
 
 _TIMELINE_SECTIONS = (
-    ("Nodes", "nodes"),
-    ("Effective facts", "facts"),
-    ("Invalidated facts", "invalidated_facts"),
-    ("Interpretations", "interpretations"),
-    ("Relations", "relations"),
+    ("节点", "nodes"),
+    ("有效事实", "facts"),
+    ("已失效事实", "invalidated_facts"),
+    ("解释", "interpretations"),
+    ("关系", "relations"),
 )
 
 _EVIDENCE_BUCKETS = (
@@ -94,27 +94,27 @@ _EVIDENCE_BUCKETS = (
 #: projection is the shared journey ``material_row`` with its
 #: ``lifecycle_ui_status`` badge).
 _CASE_MATERIAL_COLUMNS = [
-    {"name": "material_id", "label": "Material", "field": "material_id",
+    {"name": "material_id", "label": "材料", "field": "material_id",
      "align": "left", "sortable": True},
-    {"name": "display_name", "label": "Title", "field": "display_name",
+    {"name": "display_name", "label": "标题", "field": "display_name",
      "align": "left"},
-    {"name": "lifecycle_status", "label": "Lifecycle",
+    {"name": "lifecycle_status", "label": "生命周期",
      "field": "lifecycle_status", "align": "left", "sortable": True},
-    {"name": "ui_status", "label": "Status", "field": "ui_status",
+    {"name": "ui_status", "label": "状态", "field": "ui_status",
      "align": "left"},
-    {"name": "occurred_at", "label": "Last outcome", "field": "occurred_at",
+    {"name": "occurred_at", "label": "最近结果", "field": "occurred_at",
      "align": "left"},
-    {"name": "failed_stage", "label": "Failed stage", "field": "failed_stage",
+    {"name": "failed_stage", "label": "失败阶段", "field": "failed_stage",
      "align": "left"},
 ]
 
 #: Columns of the selected case's report versions (Phase C).
 _CASE_REPORT_COLUMNS = [
-    {"name": "version_id", "label": "Version", "field": "version_id",
+    {"name": "version_id", "label": "版本", "field": "version_id",
      "align": "left", "sortable": True},
-    {"name": "trigger", "label": "Trigger", "field": "trigger",
+    {"name": "trigger", "label": "触发", "field": "trigger",
      "align": "left", "sortable": True},
-    {"name": "created_at", "label": "Created", "field": "created_at",
+    {"name": "created_at", "label": "创建时间", "field": "created_at",
      "align": "left", "sortable": True},
 ]
 
@@ -123,7 +123,7 @@ def _stage_line(entry: dict[str, Any]) -> str:
     window = entry["valid_at"] + (
         f" \u2192 {entry['invalid_at']}" if entry["invalid_at"] else ""
     )
-    sources = ", ".join(entry["source_ids"]) or "_no sources_"
+    sources = ", ".join(entry["source_ids"]) or "_无来源_"
     marker = entry.get("node_type") or entry.get("stance") or entry["kind"]
     return (
         f"- `{entry['episode_key']}` [{marker}] {entry['summary']} "
@@ -133,23 +133,23 @@ def _stage_line(entry: dict[str, Any]) -> str:
 
 def _state_markdown(snapshot: dict[str, Any]) -> str:
     lines = [
-        f"**Case** {snapshot['case_id']} \u2014 type "
-        f"{snapshot.get('case_type') or '?'}, status "
+        f"**案例** {snapshot['case_id']} \u2014 类型 "
+        f"{snapshot.get('case_type') or '?'},状态 "
         f"{snapshot.get('status') or '?'}",
-        f"**As of** {snapshot['cutoff_at']}",
+        f"**截止时间** {snapshot['cutoff_at']}",
     ]
-    for label, key in _TIMELINE_SECTIONS + (("Evidence gaps", "evidence_gaps"),):
+    for label, key in _TIMELINE_SECTIONS + (("证据缺口", "evidence_gaps"),):
         lines.append(f"- {label}: {len(snapshot.get(key) or ())}")
     return "\n".join(lines)
 
 
 def _timeline_markdown(snapshot: dict[str, Any]) -> str:
     lines: list[str] = []
-    for heading, key in _TIMELINE_SECTIONS + (("Evidence gaps", "evidence_gaps"),):
+    for heading, key in _TIMELINE_SECTIONS + (("证据缺口", "evidence_gaps"),):
         entries = snapshot.get(key) or ()
         lines.append(f"### {heading} ({len(entries)})")
         if not entries:
-            lines.append("_none_")
+            lines.append("_无_")
         for entry in entries:
             if key == "evidence_gaps":
                 lines.append(
@@ -168,9 +168,9 @@ def _evidence_markdown(snapshot: dict[str, Any]) -> str:
             for locator in entry.get("evidence") or ():
                 where = []
                 if locator.get("paragraph") is not None:
-                    where.append(f"paragraph {locator['paragraph']}")
+                    where.append(f"第 {locator['paragraph']} 段")
                 if locator.get("page") is not None:
-                    where.append(f"page {locator['page']}")
+                    where.append(f"第 {locator['page']} 页")
                 at = f" ({'; '.join(where)})" if where else ""
                 quote = f': "{locator["quote"]}"' if locator.get("quote") else ""
                 lines.append(
@@ -178,7 +178,7 @@ def _evidence_markdown(snapshot: dict[str, Any]) -> str:
                     f"\u2014 {locator['corpus_path']}{at}{quote}"
                 )
     if not lines:
-        lines.append("_no evidence locators in this snapshot_")
+        lines.append("_该快照中没有证据定位符_")
     return "\n".join(lines)
 
 
@@ -210,19 +210,19 @@ def build_timeline_figure(timeline_rows: list[dict[str, Any]]) -> Any:
     legend_seen: set[str] = set()
     for row in sorted(timeline_rows, key=_timeline_sort_key):
         invalidated = bool(row.get("invalidated"))
-        status = "invalidated" if invalidated else "effective"
+        status = "已失效" if invalidated else "有效"
         layer = str(row.get("layer") or "unknown")
         kind = str(row.get("kind") or "unknown")
         legend_group = f"{layer}:{status}"
         sources = ", ".join(str(item) for item in row.get("source_ids") or ())
         hover = "<br>".join((
-            f"Episode: {escape(str(row.get('episode_key') or ''))}",
-            f"Kind/layer: {escape(kind)} / {escape(layer)}",
-            f"Status: {status}",
-            f"Summary: {escape(str(row.get('summary') or ''))}",
-            f"Valid at: {escape(str(row.get('valid_at') or ''))}",
-            f"Invalid at: {escape(str(row.get('invalid_at') or '-'))}",
-            f"Source ids: {escape(sources or '-')}",
+            f"事件: {escape(str(row.get('episode_key') or ''))}",
+            f"类型/层级: {escape(kind)} / {escape(layer)}",
+            f"状态: {status}",
+            f"摘要: {escape(str(row.get('summary') or ''))}",
+            f"生效时间: {escape(str(row.get('valid_at') or ''))}",
+            f"失效时间: {escape(str(row.get('invalid_at') or '-'))}",
+            f"来源 ID: {escape(sources or '-')}",
         ))
         figure.add_trace(go.Scatter(
             x=[row.get("valid_at")],
@@ -243,11 +243,11 @@ def build_timeline_figure(timeline_rows: list[dict[str, Any]]) -> Any:
         ))
         legend_seen.add(legend_group)
     figure.update_layout(
-        title="Historical snapshot timeline",
-        xaxis_title="Valid at",
-        yaxis_title="Layer / kind",
+        title="历史快照时间线",
+        xaxis_title="生效时间",
+        yaxis_title="层级 / 类型",
         hovermode="closest",
-        legend_title_text="Layer and status",
+        legend_title_text="层级与状态",
         margin={"l": 80, "r": 30, "t": 60, "b": 60},
     )
     return figure
@@ -255,15 +255,15 @@ def build_timeline_figure(timeline_rows: list[dict[str, Any]]) -> Any:
 
 def _detail_markdown(entry: dict[str, Any]) -> str:
     """Render full point metadata and portable evidence locators."""
-    status = "INVALIDATED" if entry.get("invalidated") else "EFFECTIVE"
-    sources = ", ".join(entry.get("source_ids") or ()) or "_none_"
+    status = "已失效" if entry.get("invalidated") else "有效"
+    sources = ", ".join(entry.get("source_ids") or ()) or "_无_"
     lines = [
         f"### `{entry['episode_key']}` — {status}",
-        f"- Kind/layer: `{entry['kind']}` / `{entry['layer']}`",
-        f"- Summary: {entry['summary']}",
-        f"- Valid at: {entry['valid_at']}",
-        f"- Invalid at: {entry.get('invalid_at') or '_not invalidated_'}",
-        f"- Source ids: {sources}",
+        f"- 类型/层级: `{entry['kind']}` / `{entry['layer']}`",
+        f"- 摘要: {entry['summary']}",
+        f"- 生效时间: {entry['valid_at']}",
+        f"- 失效时间: {entry.get('invalid_at') or '_未失效_'}",
+        f"- 来源 ID: {sources}",
     ]
     core_fields = {
         "episode_key", "kind", "layer", "summary", "valid_at", "invalid_at",
@@ -273,21 +273,21 @@ def _detail_markdown(entry: dict[str, Any]) -> str:
         value = entry[name]
         if value is not None:
             lines.append(f"- {name}: {value}")
-    lines.append("#### Evidence locators")
+    lines.append("#### 证据定位符")
     evidence = entry.get("evidence") or ()
     if not evidence:
-        lines.append("_no evidence locators on this entry_")
+        lines.append("_该条目没有证据定位符_")
     for locator in evidence:
         where = []
         if locator.get("paragraph") is not None:
-            where.append(f"paragraph {locator['paragraph']}")
+            where.append(f"第 {locator['paragraph']} 段")
         if locator.get("page") is not None:
-            where.append(f"page {locator['page']}")
+            where.append(f"第 {locator['page']} 页")
         location = f" ({'; '.join(where)})" if where else ""
         lines.append(
             f"- `{locator['source_id']}` — {locator['corpus_path']}{location}"
         )
-        lines.append(f"  - Quote: {locator.get('quote') or '_none_'}")
+        lines.append(f"  - 引文: {locator.get('quote') or '_无_'}")
     return "\n".join(lines)
 
 
@@ -307,13 +307,13 @@ def _clicked_episode_key(event: Any) -> str:
 
 
 def _stage_options() -> dict[str, str]:
-    return {"": "all stages"} | {stage: stage for stage in sorted(STAGES)}
+    return {"": "全部阶段"} | {stage: stage for stage in sorted(STAGES)}
 
 
 def _material_status_options() -> dict[str, str]:
     """The lifecycle filter vocabulary, shared with the journey list page."""
     return {
-        "": "all statuses",
+        "": "全部状态",
         "committed": "committed",
         "failed": "failed",
         "pending": "processing",
@@ -322,7 +322,7 @@ def _material_status_options() -> dict[str, str]:
 
 
 def _kind_options() -> dict[str, str]:
-    return {"": "all kinds"} | {kind: kind for kind in sorted(ENTRY_KINDS)}
+    return {"": "全部类型"} | {kind: kind for kind in sorted(ENTRY_KINDS)}
 
 
 def _facade_supports(api: object, *operations: str) -> bool:
@@ -350,25 +350,25 @@ def build_case_home_page(
     @ui.page("/")
     def case_home() -> None:
         timeline_plot: Any | None = None
-        message = ui.label("Load cases to begin.")
+        message = ui.label("加载案例开始。")
 
         with ui.card().classes("w-full"):
-            ui.label("Case filters").classes("text-bold")
+            ui.label("案例筛选").classes("text-bold")
             with ui.row():
-                search = ui.input(label="Search", placeholder="case id or name")
-                type_input = ui.input(label="Type (exact)", placeholder="policy")
-                status_input = ui.input(label="Status (exact)", placeholder="active")
-                unresolved = ui.switch("Unresolved only", value=False)
+                search = ui.input(label="搜索", placeholder="案例 ID 或名称")
+                type_input = ui.input(label="类型(精确)", placeholder="policy")
+                status_input = ui.input(label="状态(精确)", placeholder="active")
+                unresolved = ui.switch("仅看未解决", value=False)
             with ui.row():
                 as_of_input = ui.input(
-                    label="as of (ISO 8601, timezone-aware)",
+                    label="截止时间(ISO 8601,含时区)",
                     placeholder="2026-02-02T00:00:00+00:00",
                 )
                 stage_select = ui.select(
-                    options=_stage_options(), value="", label="Stage"
+                    options=_stage_options(), value="", label="阶段"
                 )
                 kind_select = ui.select(
-                    options=_kind_options(), value="", label="Kind"
+                    options=_kind_options(), value="", label="类型"
                 )
 
         def _report(text: str) -> None:
@@ -384,11 +384,11 @@ def build_case_home_page(
                     unresolved_only=bool(unresolved.value),
                 )
             except Exception as error:
-                _report(safe_error_text("load cases", error))
+                _report(safe_error_text("加载案例", error))
                 return
             cases_table.rows = view["cases"]
             cases_table.update()
-            _report(f"{view['count']} case(s) loaded")
+            _report(f"已加载 {view['count']} 个案例")
 
         async def _on_row_selected(event: Any = None) -> None:
             rows = list(getattr(event, "args", None) or ())
@@ -401,10 +401,10 @@ def build_case_home_page(
             try:
                 view = await controller.select_case(case_id)
             except Exception as error:
-                _report(safe_error_text("select case", error))
+                _report(safe_error_text("选择案例", error))
                 return
             _report(
-                f"selected {view['case_id']} \u2014 {view['name']} "
+                f"已选择 {view['case_id']} \u2014 {view['name']} "
                 f"({view['status']})"
             )
             # Phase C linkage: selecting a case also loads its recent
@@ -419,7 +419,7 @@ def build_case_home_page(
         async def _load_snapshot(event: Any = None) -> None:
             nonlocal timeline_plot
             if controller.selected_case_id is None:
-                _report("select a case in the table first")
+                _report("请先在表格中选择案例")
                 return
             try:
                 view = await controller.load_snapshot(
@@ -429,13 +429,13 @@ def build_case_home_page(
                     kinds=(kind_select.value,) if kind_select.value else None,
                 )
             except Exception as error:
-                _report(safe_error_text("load snapshot", error))
+                _report(safe_error_text("加载快照", error))
                 return
             snapshot = view["snapshot"]
             try:
                 figure = build_timeline_figure(view["timeline"])
             except Exception as error:
-                _report(safe_error_text("render timeline", error))
+                _report(safe_error_text("渲染时间线", error))
                 return
             if timeline_plot is None:
                 with timeline_plot_container:
@@ -449,10 +449,10 @@ def build_case_home_page(
             for element in (state_md, timeline_md, evidence_md):
                 element.update()
             _report(
-                f"snapshot at {snapshot['cutoff_at']}: "
-                f"{len(snapshot['nodes'])} node(s), "
-                f"{len(snapshot['facts'])} effective fact(s), "
-                f"{len(snapshot['invalidated_facts'])} invalidated fact(s)"
+                f"{snapshot['cutoff_at']} 的快照:"
+                f"{len(snapshot['nodes'])} 个节点、"
+                f"{len(snapshot['facts'])} 条有效事实、"
+                f"{len(snapshot['invalidated_facts'])} 条已失效事实"
             )
 
         async def _on_timeline_click(event: Any) -> None:
@@ -463,14 +463,14 @@ def build_case_home_page(
             except Exception as error:
                 safe_key = safe_identifier(episode_key)
                 _report(
-                    f"unknown timeline point: {safe_key}"
+                    f"未知时间线点: {safe_key}"
                     if safe_key is not None
-                    else safe_error_text("select timeline point", error)
+                    else safe_error_text("选择时间线点", error)
                 )
                 return
             timeline_detail_md.content = _detail_markdown(detail)
             timeline_detail_md.update()
-            _report(f"selected timeline point {episode_key}")
+            _report(f"已选择时间线点 {episode_key}")
 
         # --------------------------------------- Phase C linkage panels
         # Both handlers and cards exist only when the controller detected
@@ -478,7 +478,7 @@ def build_case_home_page(
         # facade keeps the exact legacy page.
         async def _refresh_case_materials(event: Any = None) -> None:
             if controller.selected_case_id is None:
-                _report("select a case in the table first")
+                _report("请先在表格中选择案例")
                 return
             status_filter = case_material_status.value or None
             try:
@@ -486,54 +486,54 @@ def build_case_home_page(
                     controller.selected_case_id, status=status_filter
                 )
             except Exception as error:
-                _report(safe_error_text("load case materials", error))
+                _report(safe_error_text("加载案例材料", error))
                 case_materials_md.content = (
-                    "**failed** \u2014 material runs could not be loaded"
+                    "**失败** \u2014 无法加载材料运行"
                 )
                 case_materials_md.update()
                 return
             case_materials_table.rows = payload["materials"]
             case_materials_table.update()
             case_materials_md.content = (
-                "_no material runs recorded for this case_"
+                "_该案例暂无材料运行_"
                 if payload["count"] == 0
                 else (
-                    f"_{payload['count']} recent material run(s) "
-                    "(cross-session outcome ledger), newest first_"
+                    f"_{payload['count']} 条近期材料运行 "
+                    "(跨会话结果账本),最新在前_"
                 )
             )
             case_materials_md.update()
             _report(
-                f"{payload['count']} material run(s) loaded for "
-                f"{payload['case_id']}"
+                f"已为 {payload['case_id']} 加载 "
+                f"{payload['count']} 条材料运行"
             )
 
         async def _refresh_case_reports(event: Any = None) -> None:
             if controller.selected_case_id is None:
-                _report("select a case in the table first")
+                _report("请先在表格中选择案例")
                 return
             try:
                 payload = await controller.load_case_reports(
                     controller.selected_case_id
                 )
             except Exception as error:
-                _report(safe_error_text("load case reports", error))
+                _report(safe_error_text("加载案例报告", error))
                 case_reports_md.content = (
-                    "**failed** \u2014 report versions could not be loaded"
+                    "**失败** \u2014 无法加载报告版本"
                 )
                 case_reports_md.update()
                 return
             case_reports_table.rows = payload["reports"]
             case_reports_table.update()
             case_reports_md.content = (
-                "_no report versions recorded for this case_"
+                "_该案例暂无报告版本_"
                 if payload["count"] == 0
-                else f"_{payload['count']} report version(s), newest first_"
+                else f"_{payload['count']} 个报告版本,最新在前_"
             )
             case_reports_md.update()
             _report(
-                f"{payload['count']} report version(s) loaded for "
-                f"{payload['case_id']}"
+                f"已为 {payload['case_id']} 加载 "
+                f"{payload['count']} 个报告版本"
             )
 
         async def _open_case_report(event: Any = None) -> None:
@@ -550,7 +550,7 @@ def build_case_home_page(
                 opener(route)
             else:
                 _report(
-                    f"selected report {row.get('version_id')}; open {route}"
+                    f"已选择报告 {row.get('version_id')};打开 {route}"
                 )
 
         with ui.card().classes("w-full"):
@@ -561,18 +561,18 @@ def build_case_home_page(
                 on_select=_on_row_selected,
             )
             with ui.row():
-                ui.button("Refresh cases", on_click=_refresh_cases)
-                ui.button("Load snapshot", on_click=_load_snapshot)
+                ui.button("刷新案例", on_click=_refresh_cases)
+                ui.button("加载快照", on_click=_load_snapshot)
 
         with ui.card().classes("w-full"):
-            with ui.expansion("Case state"):
-                state_md = ui.markdown("_no snapshot loaded_")
-            with ui.expansion("Timeline"):
+            with ui.expansion("案例状态"):
+                state_md = ui.markdown("_尚未加载快照_")
+            with ui.expansion("时间线"):
                 timeline_plot_container = ui.column().classes("w-full")
-                timeline_md = ui.markdown("_no snapshot loaded_")
-                timeline_detail_md = ui.markdown("_Select a timeline point for details._")
-            with ui.expansion("Evidence"):
-                evidence_md = ui.markdown("_no snapshot loaded_")
+                timeline_md = ui.markdown("_尚未加载快照_")
+                timeline_detail_md = ui.markdown("_点击时间线节点查看详情。_")
+            with ui.expansion("证据"):
+                evidence_md = ui.markdown("_尚未加载快照_")
 
         # Phase C linkage panels come after the snapshot card so the legacy
         # page (and its element order) is preserved when the capabilities
@@ -580,16 +580,16 @@ def build_case_home_page(
         if controller.materials_available:
             with ui.card().classes("w-full"):
                 ui.label(
-                    "Selected case materials (recent runs, cross-session)"
+                    "选中案例的材料(近期运行,跨会话)"
                 ).classes("text-bold")
                 case_material_status = ui.select(
                     options=_material_status_options(),
                     value="",
-                    label="Material status filter (lifecycle)",
+                    label="材料状态筛选(生命周期)",
                 )
                 with ui.row():
                     ui.button(
-                        "Refresh case materials",
+                        "刷新案例材料",
                         on_click=_refresh_case_materials,
                     )
                 case_materials_table = ui.table(
@@ -597,15 +597,15 @@ def build_case_home_page(
                     rows=[],
                 )
                 case_materials_md = ui.markdown(
-                    "_select a case to load its recent material runs_"
+                    "_选择案例以加载其近期材料运行_"
                 )
 
         if controller.reports_available:
             with ui.card().classes("w-full"):
-                ui.label("Selected case report versions").classes("text-bold")
+                ui.label("选中案例的报告版本").classes("text-bold")
                 with ui.row():
                     ui.button(
-                        "Refresh case reports", on_click=_refresh_case_reports
+                        "刷新案例报告", on_click=_refresh_case_reports
                     )
                 case_reports_table = ui.table(
                     columns=_CASE_REPORT_COLUMNS,
@@ -614,7 +614,7 @@ def build_case_home_page(
                     on_select=_open_case_report,
                 )
                 case_reports_md = ui.markdown(
-                    "_select a case to load its report versions_"
+                    "_选择案例以加载其报告版本_"
                 )
 
     return case_home

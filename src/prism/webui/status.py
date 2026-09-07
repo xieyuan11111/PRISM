@@ -25,11 +25,11 @@ def safe_identifier(value: object) -> str | None:
 def pipeline_ui_status(value: object) -> str:
     """Map a pipeline status to a user-facing lifecycle status."""
     return {
-        "pending": "loading",
-        "running": "loading",
-        "completed": "success",
-        "failed": "failure",
-    }.get(value, "ready")
+        "pending": "加载中",
+        "running": "加载中",
+        "completed": "成功",
+        "failed": "失败",
+    }.get(value, "就绪")
 
 
 def lifecycle_ui_status(value: object) -> str:
@@ -41,10 +41,10 @@ def lifecycle_ui_status(value: object) -> str:
     unknown, never a success (WB-3.4/WB-3.6).
     """
     return {
-        "committed": "success",
-        "failed": "failure",
-        "pending": "loading",
-    }.get(value, "unknown")
+        "committed": "成功",
+        "failed": "失败",
+        "pending": "加载中",
+    }.get(value, "未知")
 
 
 def quality_ui_status(value: object) -> str:
@@ -56,10 +56,10 @@ def quality_ui_status(value: object) -> str:
     ``unknown``, never a success (H-4/WB-4.5).
     """
     return {
-        "pass": "success",
-        "fail": "failure",
-        "partial": "partial",
-    }.get(value, "unknown")
+        "pass": "成功",
+        "fail": "失败",
+        "partial": "部分完成",
+    }.get(value, "未知")
 
 
 def outcome_status(result: object) -> dict[str, Any]:
@@ -77,9 +77,9 @@ def outcome_status(result: object) -> dict[str, Any]:
     if isinstance(gap_count, bool) or not isinstance(gap_count, int):
         gap_count = None
     gap_summary = (
-        f"{gap_count} evidence gap(s)"
+        f"{gap_count} 个证据缺口"
         if gap_count is not None
-        else "not provided"
+        else "未提供"
     )
     return {
         "ui_status": pipeline_ui_status(pipeline_status),

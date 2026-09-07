@@ -39,26 +39,26 @@ class DebateTheaterController:
 def build_debate_theater_page(controller: DebateTheaterController, ui: Any, *, route: str = "/debate") -> Any:
     @ui.page(route)
     def debate_page() -> None:
-        status = ui.label("Ready")
-        case_id = ui.input(label="Case ID"); as_of = ui.input(label="As of (timezone-aware ISO 8601)")
-        question = ui.input(label="Question"); perspectives = ui.input(label="Perspectives (comma-separated)")
-        parent = ui.input(label="Parent run ID"); follow_question = ui.input(label="Follow-up question"); follow_perspective = ui.input(label="Follow-up perspective")
+        status = ui.label("就绪")
+        case_id = ui.input(label="案例 ID"); as_of = ui.input(label="截止时间(ISO 8601,含时区)")
+        question = ui.input(label="问题"); perspectives = ui.input(label="视角(逗号分隔)")
+        parent = ui.input(label="父运行 ID"); follow_question = ui.input(label="追问问题"); follow_perspective = ui.input(label="追问视角")
         output = ui.json({}) if hasattr(ui, "json") else ui.label("{}")
         async def run_handler(event: Any = None) -> None:
             try:
                 view = await controller.run_debate(case_id.value or "", question.value or "", as_of.value or "", tuple(x.strip() for x in (perspectives.value or "").split(",") if x.strip()))
                 if hasattr(output, "value"): output.value = view
-                status.text = f"debate: {view.get('status', 'completed')}"
-            except Exception as error: status.text = safe_error_text("debate", error)
+                status.text = f"辩论: {view.get('status', 'completed')}"
+            except Exception as error: status.text = safe_error_text("辩论", error)
             status.update()
         async def follow_handler(event: Any = None) -> None:
             try:
                 view = await controller.run_follow_up(parent.value or "", follow_question.value or "", follow_perspective.value or "")
                 if hasattr(output, "value"): output.value = view
-                status.text = f"follow-up: {view.get('status', 'completed')}"
-            except Exception as error: status.text = safe_error_text("follow-up", error)
+                status.text = f"追问: {view.get('status', 'completed')}"
+            except Exception as error: status.text = safe_error_text("追问", error)
             status.update()
-        ui.button("Run debate", on_click=run_handler); ui.button("Ask follow-up", on_click=follow_handler)
+        ui.button("运行辩论", on_click=run_handler); ui.button("发起追问", on_click=follow_handler)
     return debate_page
 
 __all__ = ["DebateTheaterController", "DebateFacade", "build_debate_theater_page"]

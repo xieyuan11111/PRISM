@@ -127,8 +127,8 @@ def test_plotly_figure_has_one_deterministic_clickable_point_per_row(monkeypatch
     old = next(t for t in figure.data if t.kwargs["customdata"] == ["fact-1"])
     current = next(t for t in figure.data if t.kwargs["customdata"] == ["fact-2"])
     assert old.kwargs["marker"]["symbol"] != current.kwargs["marker"]["symbol"]
-    assert "invalidated" in old.kwargs["text"][0].lower()
-    assert "effective" in current.kwargs["text"][0].lower()
+    assert "已失效" in old.kwargs["text"][0]
+    assert "有效" in current.kwargs["text"][0]
 
 
 def test_plotly_missing_is_clear_only_when_figure_rendering_is_requested(monkeypatch):
@@ -179,22 +179,22 @@ def test_page_click_renders_same_snapshot_detail_and_unknown_id_is_explicit(
     run(case_home._element(ui, "table").kwargs["on_select"](
         SimpleNamespace(args=[{"case_id": case_home.CASE}])
     ))
-    case_home._element(ui, "input", label="as of").value = (
+    case_home._element(ui, "input", label="截止时间").value = (
         "2026-02-02T00:00:00+00:00"
     )
-    run(case_home._element(ui, "button", text="Load snapshot").kwargs["on_click"]())
+    run(case_home._element(ui, "button", text="加载快照").kwargs["on_click"]())
 
     plot = case_home._element(ui, "plotly")
     calls = (list(facade.case_calls), list(facade.snapshot_calls))
     run(plot.events["plotly_click"](SimpleNamespace(
         args={"points": [{"customdata": "node-pub"}]}
     )))
-    detail = case_home._element(ui, "markdown", text="Select a timeline point")
+    detail = case_home._element(ui, "markdown", text="点击时间线节点")
     assert "node-pub" in detail.content
     assert "Policy published." in detail.content
     assert case_home.EVIDENCE_PATH in detail.content
-    assert "paragraph 1" in detail.content
-    assert "page 3" in detail.content
+    assert "第 1 段" in detail.content
+    assert "第 3 页" in detail.content
     assert "The policy was published." in detail.content
 
     run(plot.events["plotly_click"](SimpleNamespace(

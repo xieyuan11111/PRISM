@@ -44,13 +44,13 @@ JOURNEY_STEPS = (
 )
 
 _STEP_LABELS = {
-    "staged": "Upload (staged)",
-    "ingested": "Raw retention + Markdown normalization",
-    "indexed": "Evidence index",
-    "extracted": "Structured extraction",
-    "merged": "Case accumulation merge",
-    "graph_written": "Graph write",
-    "analyzed": "Analysis / report version",
+    "staged": "上传(暂存)",
+    "ingested": "原始留存 + Markdown 规范化",
+    "indexed": "证据索引",
+    "extracted": "结构化抽取",
+    "merged": "案例累积合并",
+    "graph_written": "图谱写入",
+    "analyzed": "分析 / 报告版本",
 }
 
 #: Journey step statuses: a recorded completion, a recorded skip with its
@@ -144,9 +144,8 @@ def journey_steps(view: MaterialJourneyView) -> list[dict[str, Any]]:
             # the index entry's fetched_at as fabricated proof (H-6).
             "status": STEP_UNKNOWN,
             "detail": (
-                "staging is a transient WebUI spool and no durable audit "
-                "records it for this material; the raw/corpus copies below "
-                "are the authoritative retention"
+                "暂存是临时的 WebUI 缓冲区,没有为该材料留下持久审计;"
+                "下方的 raw/corpus 副本才是权威留存"
             ),
             "time": None,
         },
@@ -161,8 +160,8 @@ def journey_steps(view: MaterialJourneyView) -> list[dict[str, Any]]:
                 else STEP_UNKNOWN
             ),
             "detail": (
-                f"raw: {view.raw_path or 'not recorded'}; "
-                f"corpus: {view.corpus_path or 'not recorded'}"
+                f"raw: {view.raw_path or '未记录'}; "
+                f"corpus: {view.corpus_path or '未记录'}"
             ),
             # No normalization-completion timestamp is recorded anywhere;
             # fetched_at is the source's crawl time, not this step's time.
@@ -176,17 +175,17 @@ def journey_steps(view: MaterialJourneyView) -> list[dict[str, Any]]:
     ):
         record = stages.get(stage_name)
         if record is None:
-            status, detail = STEP_UNKNOWN, "no recorded audit for this stage"
+            status, detail = STEP_UNKNOWN, "该阶段没有已记录的审计"
         elif record["status"] == "skipped":
             status = STEP_SKIPPED
-            detail = record["detail"] or "skipped"
+            detail = record["detail"] or "已跳过"
         elif record["status"] in _COMPLETED_STAGE_STATUSES:
             status, detail = STEP_COMPLETED, record["detail"]
         else:
             status = STEP_UNKNOWN
             detail = (
-                f"recorded stage status {record['status']!r} is not a "
-                "recognized completion"
+                f"已记录的阶段状态 {record['status']!r} 不是已识别的"
+                "完成状态"
             )
         steps.append({
             "step": step_name,
@@ -200,13 +199,13 @@ def journey_steps(view: MaterialJourneyView) -> list[dict[str, Any]]:
     graph_record = stages.get("graph")
     if view.case_id:
         merged_status, merged_detail = (
-            STEP_COMPLETED, f"case {view.case_id}"
+            STEP_COMPLETED, f"案例 {view.case_id}"
         )
     elif graph_record is not None and graph_record["status"] == "skipped":
         merged_status = STEP_SKIPPED
-        merged_detail = graph_record["detail"] or "no accumulated case"
+        merged_detail = graph_record["detail"] or "无累积案例"
     else:
-        merged_status, merged_detail = STEP_UNKNOWN, "no recorded case binding"
+        merged_status, merged_detail = STEP_UNKNOWN, "没有已记录的案例绑定"
     # Insert merged before graph_written per the fixed step order.
     steps.insert(-1, {
         "step": "merged",
@@ -222,9 +221,9 @@ def journey_steps(view: MaterialJourneyView) -> list[dict[str, Any]]:
             STEP_COMPLETED if view.report_version_id else STEP_UNKNOWN
         ),
         "detail": (
-            f"report version {view.report_version_id}"
+            f"报告版本 {view.report_version_id}"
             if view.report_version_id
-            else "no report version linked to this material's append"
+            else "该材料的追加未关联报告版本"
         ),
         "time": None,
     })
@@ -234,9 +233,9 @@ def journey_steps(view: MaterialJourneyView) -> list[dict[str, Any]]:
             if step["step"] == failed_step:
                 step["status"] = STEP_FAILED
                 step["detail"] = (
-                    f"failed: {error_type}"
+                    f"失败: {error_type}"
                     if error_type
-                    else "failed at this stage"
+                    else "在该阶段失败"
                 )
                 # The one per-step timestamp that IS recorded: the
                 # ledger's failure time.
@@ -344,10 +343,10 @@ def material_row(view: MaterialJourneyView) -> dict[str, Any]:
 
 
 _STEP_BADGES = {
-    STEP_COMPLETED: "[completed]",
-    STEP_SKIPPED: "[skipped]",
-    STEP_FAILED: "[failed]",
-    STEP_UNKNOWN: "[unknown]",
+    STEP_COMPLETED: "[已完成]",
+    STEP_SKIPPED: "[已跳过]",
+    STEP_FAILED: "[失败]",
+    STEP_UNKNOWN: "[未知]",
 }
 
 
@@ -361,45 +360,45 @@ def journey_markdown(data: dict[str, Any]) -> str:
     success color or word.
     """
     lines = [
-        f"### Material `{data['material_id']}` — "
-        f"{data.get('display_name') or '(no title recorded)'}",
-        f"- Lifecycle: **{data['lifecycle_status']}**",
-        f"- Mechanism: **{data['mechanism_status']}**",
-        f"- Semantic: **{data['semantic_status']}**",
-        f"- Evidence gaps: **{data['evidence_gap_count']}**",
-        f"- Case: {data.get('case_id') or '_none recorded_'}",
-        f"- Raw copy: `{data.get('raw_path') or 'not recorded'}`",
-        f"- Corpus copy: `{data.get('corpus_path') or 'not recorded'}`",
+        f"### 材料 `{data['material_id']}` — "
+        f"{data.get('display_name') or '(未记录标题)'}",
+        f"- 生命周期: **{data['lifecycle_status']}**",
+        f"- 机制: **{data['mechanism_status']}**",
+        f"- 语义: **{data['semantic_status']}**",
+        f"- 证据缺口: **{data['evidence_gap_count']}**",
+        f"- 案例: {data.get('case_id') or '_未记录_'}",
+        f"- 原始副本: `{data.get('raw_path') or '未记录'}`",
+        f"- 语料副本: `{data.get('corpus_path') or '未记录'}`",
     ]
     if data.get("report_version_id"):
         link = (
-            f" — [open report]({data['report_url']})"
+            f" — [打开报告]({data['report_url']})"
             if data.get("report_url")
             else ""
         )
         lines.append(
-            f"- Report version: `{data['report_version_id']}`{link}"
+            f"- 报告版本: `{data['report_version_id']}`{link}"
         )
     failure = data.get("failure")
     if failure:
-        failed_in = failure.get("stage") or "before any stage"
+        failed_in = failure.get("stage") or "进入任何阶段之前"
         lines.append(
-            f"- Failure: stage **{failed_in}**, type "
-            f"`{failure.get('error_type')}`, message: "
+            f"- 失败: 阶段 **{failed_in}**,类型 "
+            f"`{failure.get('error_type')}`,消息: "
             f"{failure.get('message')}"
         )
-    lines.append("#### Journey steps")
+    lines.append("#### 旅程步骤")
     for step in data["steps"]:
-        badge = _STEP_BADGES.get(step["status"], "[unknown]")
+        badge = _STEP_BADGES.get(step["status"], "[未知]")
         detail = f" — {step['detail']}" if step["detail"] else ""
         when = f" ({step['time']})" if step["time"] else ""
         lines.append(f"- {badge} **{step['step']}**{when}{detail}")
     gaps = data.get("evidence_gaps") or ()
     conflicts = data.get("unresolved_conflicts") or ()
     if gaps or conflicts:
-        lines.append("#### Quality details")
-        lines.extend(f"- Evidence gap: {gap}" for gap in gaps)
-        lines.extend(f"- Conflict: {conflict}" for conflict in conflicts)
+        lines.append("#### 质量详情")
+        lines.extend(f"- 证据缺口: {gap}" for gap in gaps)
+        lines.extend(f"- 冲突: {conflict}" for conflict in conflicts)
     return "\n".join(lines)
 
 

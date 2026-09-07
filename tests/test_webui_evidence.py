@@ -406,12 +406,12 @@ def _build_page(controller):
 def test_page_seam_lists_filter_controls_and_the_results_table():
     ui = _build_page(_controller([_hit()]))
 
-    for label in ("Query", "Case", "Source", "Type",
-                  "Published after", "Published before"):
+    for label in ("检索词", "案例", "来源", "类型",
+                  "发布时间起", "发布时间止"):
         assert _element(ui, "input", label=label) is not None
-    _element(ui, "button", text="Search")
-    _element(ui, "button", text="Previous")
-    _element(ui, "button", text="Next")
+    _element(ui, "button", text="搜索")
+    _element(ui, "button", text="上一页")
+    _element(ui, "button", text="下一页")
     table = _element(ui, "table")
     assert table.rows == []
     assert {column["field"] for column in table.kwargs["columns"]} >= {
@@ -424,16 +424,16 @@ def test_page_seam_search_fills_the_table_through_the_controller():
     controller = _controller(hits)
     ui = _build_page(controller)
 
-    _element(ui, "input", label="Query").value = "housing"
-    _element(ui, "input", label="Case").value = "case-rates"
-    run(_element(ui, "button", text="Search").kwargs["on_click"](None))
+    _element(ui, "input", label="检索词").value = "housing"
+    _element(ui, "input", label="案例").value = "case-rates"
+    run(_element(ui, "button", text="搜索").kwargs["on_click"](None))
 
     table = _element(ui, "table")
     assert [row["source_id"] for row in table.rows] == [
         "material-0", "material-1", "material-2"
     ]
     assert table.rows[0]["corpus_path"] == CORPUS_PATH
-    assert any("3 result" in label.text for label in _labels(ui))
+    assert any("3 条结果" in label.text for label in _labels(ui))
     call = controller._api.calls[0]
     assert call["query"] == "housing"
     assert call["case_tag"] == "case-rates"
@@ -444,15 +444,15 @@ def test_page_seam_next_and_previous_move_the_pagination_window():
     controller = _controller(hits)
     ui = _build_page(controller)
 
-    run(_element(ui, "button", text="Search").kwargs["on_click"](None))
+    run(_element(ui, "button", text="搜索").kwargs["on_click"](None))
     assert controller._api.calls[-1]["limit"] == 26
     assert controller._api.calls[-1]["offset"] == 0
 
-    run(_element(ui, "button", text="Next").kwargs["on_click"](None))
+    run(_element(ui, "button", text="下一页").kwargs["on_click"](None))
     assert controller._api.calls[-1]["offset"] == 25
-    assert any("page 2" in label.text for label in _labels(ui))
+    assert any("第 2 页" in label.text for label in _labels(ui))
 
-    run(_element(ui, "button", text="Previous").kwargs["on_click"](None))
+    run(_element(ui, "button", text="上一页").kwargs["on_click"](None))
     assert controller._api.calls[-1]["offset"] == 0
 
 
@@ -460,20 +460,20 @@ def test_page_seam_previous_is_refused_on_the_first_page():
     controller = _controller([_hit()])
     ui = _build_page(controller)
 
-    run(_element(ui, "button", text="Search").kwargs["on_click"](None))
+    run(_element(ui, "button", text="搜索").kwargs["on_click"](None))
     del controller._api.calls[:]
-    run(_element(ui, "button", text="Previous").kwargs["on_click"](None))
+    run(_element(ui, "button", text="上一页").kwargs["on_click"](None))
 
     assert controller._api.calls == []
-    assert any("first page" in label.text for label in _labels(ui))
+    assert any("第一页" in label.text for label in _labels(ui))
 
 
 def test_page_seam_reports_explicit_validation_errors_without_a_facade_call():
     controller = _controller([_hit()])
     ui = _build_page(controller)
 
-    _element(ui, "input", label="Published after").value = "2026-01-01"
-    run(_element(ui, "button", text="Search").kwargs["on_click"](None))
+    _element(ui, "input", label="发布时间起").value = "2026-01-01"
+    run(_element(ui, "button", text="搜索").kwargs["on_click"](None))
 
     assert controller._api.calls == []
-    assert any("evidence search failed (ValueError)" == label.text for label in _labels(ui))
+    assert any("证据检索 failed (ValueError)" == label.text for label in _labels(ui))

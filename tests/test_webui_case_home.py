@@ -608,21 +608,21 @@ def _build_page(controller):
 def test_page_seam_lists_controls_and_stage_kind_vocabularies():
     ui = _build_page(_controller([_overview(CASE)]))
 
-    for label in ("Search", "Type", "Status", "as of"):
+    for label in ("搜索", "类型", "状态", "截止时间"):
         assert _element(ui, "input", label=label) is not None
-    assert _element(ui, "switch", text="Unresolved") is not None
-    stage_options = _element(ui, "select", label="Stage").kwargs["options"]
+    assert _element(ui, "switch", text="未解决") is not None
+    stage_options = _element(ui, "select", label="阶段").kwargs["options"]
     assert set(stage_options) == {""} | set(STAGES)
-    kind_options = _element(ui, "select", label="Kind").kwargs["options"]
+    kind_options = _element(ui, "select", label="类型").kwargs["options"]
     assert set(kind_options) == {""} | set(ENTRY_KINDS)
-    _element(ui, "button", text="Refresh cases")
-    _element(ui, "button", text="Load snapshot")
+    _element(ui, "button", text="刷新案例")
+    _element(ui, "button", text="加载快照")
     table = _element(ui, "table")
     assert table.rows == []
     assert {column["field"] for column in table.kwargs["columns"]} >= {
         "case_id", "case_type", "status", "material_count"
     }
-    for title in ("Case state", "Timeline", "Evidence"):
+    for title in ("案例状态", "时间线", "证据"):
         _element(ui, "expansion", text=title)
 
 
@@ -644,14 +644,14 @@ def test_page_seam_refresh_select_and_load_snapshot_through_the_controller(
 
     # Refresh: the table is filled from the controller's JSON-safe view (the
     # facade returns its stable case_id order).
-    run(_element(ui, "button", text="Refresh cases").kwargs["on_click"](None))
+    run(_element(ui, "button", text="刷新案例").kwargs["on_click"](None))
     table = _element(ui, "table")
     assert [row["case_id"] for row in table.rows] == [OTHER, CASE]
 
     # Search narrows the rows client-side.
-    search = _element(ui, "input", label="Search")
+    search = _element(ui, "input", label="搜索")
     search.value = "housing"
-    run(_element(ui, "button", text="Refresh cases").kwargs["on_click"](None))
+    run(_element(ui, "button", text="刷新案例").kwargs["on_click"](None))
     assert [row["case_id"] for row in table.rows] == [OTHER]
     search.value = ""
 
@@ -660,12 +660,12 @@ def test_page_seam_refresh_select_and_load_snapshot_through_the_controller(
         SimpleNamespace(args=[{"case_id": CASE}])
     ))
     assert controller.selected_case_id == CASE
-    assert any("selected" in label.text for label in _labels(ui))
+    assert any("已选择" in label.text for label in _labels(ui))
 
     # Loading a snapshot fills the state/timeline/evidence panels.
-    _element(ui, "input", label="as of").value = "2026-02-02T00:00:00+00:00"
-    _element(ui, "select", label="Stage").value = "publication"
-    run(_element(ui, "button", text="Load snapshot").kwargs["on_click"](None))
+    _element(ui, "input", label="截止时间").value = "2026-02-02T00:00:00+00:00"
+    _element(ui, "select", label="阶段").value = "publication"
+    run(_element(ui, "button", text="加载快照").kwargs["on_click"](None))
 
     assert facade.snapshot_calls == [(CASE, T_SNAP, "publication", None)]
     markdowns = [element for element in ui.elements if element.name == "markdown"]
@@ -683,15 +683,15 @@ def test_page_seam_reports_explicit_errors_and_calls_nothing_wrong():
     ui = _build_page(controller)
 
     # No case selected yet: an explicit message, no facade call.
-    run(_element(ui, "button", text="Load snapshot").kwargs["on_click"](None))
+    run(_element(ui, "button", text="加载快照").kwargs["on_click"](None))
     assert facade.snapshot_calls == []
-    assert any("select a case" in label.text for label in _labels(ui))
+    assert any("选择案例" in label.text for label in _labels(ui))
 
     # A naive as_of surfaces the controller's explicit error.
     run(_element(ui, "table").kwargs["on_select"](
         SimpleNamespace(args=[{"case_id": CASE}])
     ))
-    _element(ui, "input", label="as of").value = "2026-02-02T00:00:00"
-    run(_element(ui, "button", text="Load snapshot").kwargs["on_click"](None))
+    _element(ui, "input", label="截止时间").value = "2026-02-02T00:00:00"
+    run(_element(ui, "button", text="加载快照").kwargs["on_click"](None))
     assert facade.snapshot_calls == []
-    assert any("load snapshot failed (ValueError)" == label.text for label in _labels(ui))
+    assert any("加载快照 failed (ValueError)" == label.text for label in _labels(ui))
