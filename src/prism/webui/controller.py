@@ -14,7 +14,7 @@ different API method) and a remembered case selection.
 from __future__ import annotations
 
 from collections.abc import Iterable
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Protocol
 
 from prism.analyzer import (
@@ -22,6 +22,9 @@ from prism.analyzer import (
     HistoricalCaseState,
     require_stage,
 )
+
+from .journey import material_row
+from .reports import report_detail_url, report_row
 
 
 class PrismFacade(Protocol):
@@ -156,6 +159,27 @@ def _timeline_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
     )
 
 
+#: The lifecycle filters the journey query accepts (Phase C linkage); the
+#: same vocabulary the facade and the journey list page use.
+_LIFECYCLE_STATUSES = frozenset(
+    {"pending", "failed", "committed", "unknown"}
+)
+
+#: How many rows the case home's "recent" panels request by default; a
+#: presentation cap only — the facade still decides membership and order.
+CASE_LINK_LIMIT = 5
+
+_MIN_INSTANT = datetime.min.replace(tzinfo=timezone.utc)
+
+
+def _validated_limit(limit: Any) -> int | None:
+    if limit is None:
+        return None
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+        raise ValueError("limit must be a positive integer or None")
+    return limit
+
+
 class CaseHomeController:
     """View-model adapter over the shared PrismAPI facade.
 
@@ -177,11 +201,31 @@ class CaseHomeController:
         self._api = api
         self._selected_case_id: str | None = None
         self._loaded_timeline: list[dict[str, Any]] = []
+        # Phase C linkage capabilities, detected the same way the page
+        # factory gates richer pages: an older case-only facade keeps
+        # building this controller and the linkage stays explicitly
+        # unavailable instead of crashing or faking empty panels.
+        journeys = getattr(api, "material_journeys", None)
+        self._material_journeys = journeys if callable(journeys) else None
+        report_versions = getattr(api, "report_versions", None)
+        self._report_versions = (
+            report_versions if callable(report_versions) else None
+        )
 
     @property
     def selected_case_id(self) -> str | None:
         """The case id remembered by the last successful :meth:`select_case`."""
         return self._selected_case_id
+
+    @property
+    def materials_available(self) -> bool:
+        """Whether the facade provides the read-only material-run listing."""
+        return self._material_journeys is not None
+
+    @property
+    def reports_available(self) -> bool:
+        """Whether the facade provides the read-only report-version listing."""
+        return self._report_versions is not None
 
     async def load_cases(
         self,
@@ -280,6 +324,96 @@ class CaseHomeController:
             if row.get("episode_key") == key:
                 return _json_safe(row)
         raise LookupError(f"timeline point {key!r} is not in the loaded snapshot")
+
+    async def load_case_materials(
+        self,
+        case_id: str,
+        *,
+        status: str | None = None,
+        limit: int | None = CASE_LINK_LIMIT,
+    ) -> dict[str, Any]:
+        """Load the selected case's recent material runs (Phase C).
+
+        A pure projection of ``PrismAPI.material_journeys`` — the durable
+        outcome ledger hydrated across sessions, including failures — so no
+        new fact view is assembled here (H-6).  Inputs are validated before
+        any read; a facade without the operation raises ``RuntimeError``
+        instead of answering a fabricated empty list; an unknown case
+        surfaces as ``LookupError`` through ``case_overview``; and a facade
+        failure propagates unchanged — an unreadable ledger is never
+        rewritten into "no materials".
+        """
+        if not isinstance(case_id, str) or not case_id.strip():
+            raise ValueError("case_id must be a non-empty string")
+        case_id = case_id.strip()
+        if status is not None:
+            if not isinstance(status, str):
+                raise TypeError("status must be a string or None")
+            if status not in _LIFECYCLE_STATUSES:
+                allowed = ", ".join(sorted(_LIFECYCLE_STATUSES))
+                raise ValueError(
+                    f"status must be one of: {allowed}"
+                )
+        row_limit = _validated_limit(limit)
+        if self._material_journeys is None:
+            raise RuntimeError(
+                "the injected facade does not provide material_journeys() "
+                "for the case-materials linkage"
+            )
+        await self._api.case_overview(case_id)
+        views = await self._material_journeys(
+            case_id=case_id, status=status
+        )
+        # The facade already orders most recent outcome first; the limit is
+        # a presentation cap over that order and never re-sorts.
+        rows = [material_row(view) for view in tuple(views)]
+        if row_limit is not None:
+            rows = rows[:row_limit]
+        return {"case_id": case_id, "materials": rows, "count": len(rows)}
+
+    async def load_case_reports(
+        self,
+        case_id: str,
+        *,
+        limit: int | None = CASE_LINK_LIMIT,
+    ) -> dict[str, Any]:
+        """Load the selected case's report versions, newest first (Phase C).
+
+        Reads only ``PrismAPI.report_versions`` for the case (creation-order
+        ledger) and reverses it by ``created_at`` — a presentation-layer
+        sort over immutable saved versions.  Every row carries the deep link
+        to its ``/reports/{version_id}`` detail page.  Validation and the
+        empty-vs-failure distinction follow :meth:`load_case_materials`.
+        """
+        if not isinstance(case_id, str) or not case_id.strip():
+            raise ValueError("case_id must be a non-empty string")
+        case_id = case_id.strip()
+        row_limit = _validated_limit(limit)
+        if self._report_versions is None:
+            raise RuntimeError(
+                "the injected facade does not provide report_versions() "
+                "for the case-reports linkage"
+            )
+        await self._api.case_overview(case_id)
+        versions = tuple(await self._report_versions(case_id=case_id))
+
+        def _created(index: int) -> datetime:
+            value = getattr(versions[index], "created_at", None)
+            return value if value is not None else _MIN_INSTANT
+
+        order = sorted(
+            range(len(versions)),
+            key=lambda index: (_created(index), index),
+            reverse=True,
+        )
+        rows = []
+        for index in order:
+            row = report_row(versions[index])
+            row["detail_url"] = report_detail_url(row["version_id"])
+            rows.append(row)
+        if row_limit is not None:
+            rows = rows[:row_limit]
+        return {"case_id": case_id, "reports": rows, "count": len(rows)}
 
     @staticmethod
     def _normalize_kinds(
