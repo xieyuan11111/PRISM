@@ -521,6 +521,12 @@ def create_app(
                 else None
             ),
         )
+    from .reports import ReportCenterController, build_report_pages
+
+    if _facade_supports(
+        api, "report_versions", "report_version", "export_report_pdf"
+    ):
+        build_report_pages(ReportCenterController(api), ui)
     from nicegui import app as nicegui_app
 
     return nicegui_app

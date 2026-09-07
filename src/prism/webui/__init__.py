@@ -22,12 +22,14 @@ from .server import build_arg_parser, run
 from .debate import DebateTheaterController, build_debate_theater_page
 from .evidence import EvidenceBrowserController, build_evidence_page
 from .materials import MaterialEntryController, build_material_entry_page
+from .reports import ReportCenterController, build_report_pages
 
 __all__ = [
     "CaseHomeController",
     "DebateTheaterController",
     "EvidenceBrowserController",
     "MaterialEntryController",
+    "ReportCenterController",
     "DEFAULT_HOST",
     "DEFAULT_PORT",
     "DEFAULT_TITLE",
@@ -40,6 +42,7 @@ __all__ = [
     "build_debate_theater_page",
     "build_evidence_page",
     "build_material_entry_page",
+    "build_report_pages",
     "parse_as_of",
     "run",
     "snapshot_view",

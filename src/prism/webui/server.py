@@ -111,6 +111,19 @@ class _LazyAPI:
             case_id=case_id, status=status
         )
 
+    async def report_versions(
+        self, case_id: object = None, *, as_of: object = None
+    ) -> object:
+        return await self._api().report_versions(case_id, as_of=as_of)
+
+    async def report_version(self, version_id: str) -> object:
+        return await self._api().report_version(version_id)
+
+    async def export_report_pdf(
+        self, version_id: str, output_path: object
+    ) -> object:
+        return await self._api().export_report_pdf(version_id, output_path)
+
 
 def _upload_staging_root() -> Any:
     """Resolve the upload staging root inside ``PRISM_HOME`` (fixed path).
