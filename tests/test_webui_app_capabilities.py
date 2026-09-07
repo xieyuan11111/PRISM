@@ -86,6 +86,12 @@ class FullWorkbenchFacade(LegacyMaterialsFacade):
 
     async def material_journeys(self, *, case_id=None, status=None): ...
 
+    async def report_versions(self, case_id=None, *, as_of=None): ...
+
+    async def report_version(self, version_id): ...
+
+    async def export_report_pdf(self, version_id, output_path): ...
+
 
 def test_create_app_with_a_case_only_facade_registers_only_the_case_home(
     app_seam,
@@ -119,6 +125,32 @@ def test_create_app_registers_every_page_for_a_full_workbench_facade(
     assert "/debate" in ui.routes
     assert "/evidence" in ui.routes
     assert "/materials" in ui.routes
+    assert "/reports" in ui.routes
+    assert "/reports/{version_id}" in ui.routes
+
+
+def test_create_app_skips_the_report_pages_without_report_operations(
+    app_seam,
+):
+    app, ui, _ = app_seam
+
+    class JourneyOnlyFacade(LegacyMaterialsFacade):
+        async def search(self, query=None, **filters): ...
+
+        async def process_material(
+            self, source, metadata=None, *, target_case=None
+        ): ...
+
+        async def material_journey(self, material_id): ...
+
+        async def material_journeys(self, *, case_id=None, status=None): ...
+
+    # A facade with every workbench operation except the report trio keeps
+    # building the app without the report routes.
+    app.create_app(JourneyOnlyFacade())
+
+    assert "/reports" not in ui.routes
+    assert "/reports/{version_id}" not in ui.routes
 
 
 # ------------------------------------------------- staging root anchoring

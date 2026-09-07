@@ -47,6 +47,21 @@ def lifecycle_ui_status(value: object) -> str:
     }.get(value, "unknown")
 
 
+def quality_ui_status(value: object) -> str:
+    """Map a mechanism/semantic quality verdict to a user-facing status.
+
+    Only an explicit ``pass`` maps to success and an explicit ``fail`` to
+    failure; ``partial`` stays a distinct warning status and anything
+    else — a missing field, ``None``, an unrecognized value — stays
+    ``unknown``, never a success (H-4/WB-4.5).
+    """
+    return {
+        "pass": "success",
+        "fail": "failure",
+        "partial": "partial",
+    }.get(value, "unknown")
+
+
 def outcome_status(result: object) -> dict[str, Any]:
     """Project available quality layers without inventing semantic verdicts."""
     pipeline = getattr(result, "pipeline", None)
