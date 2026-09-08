@@ -48,6 +48,11 @@ HASH_DISPLAY_LENGTH = 12
 #: only from the server-validated version id.
 EXPORT_SUBDIR = "reports/exports"
 
+#: The case home's route since the unified dashboard took over ``/``: the
+#: dashboard's navigation card, the page registration and this center's
+#: back-link all resolve through this one constant.
+CASE_HOME_ROUTE = "/cases"
+
 #: One rendered citation line of the report's ``## Citations`` section.
 _CITATION_LINE = re.compile(r"^- `([^`]+)` — cited by episodes:")
 
@@ -315,7 +320,7 @@ def report_detail_view(
         "raw_markdown_block": _raw_markdown_block(markdown),
         # The Phase C linkage back to the case home (constant route; the
         # case itself is identified by the view's case_id metadata).
-        "case_home_url": "/",
+        "case_home_url": CASE_HOME_ROUTE,
         "mechanism_status": mechanism_status,
         "semantic_status": semantic_status,
         "mechanism_ui": quality_ui_status(mechanism_status),

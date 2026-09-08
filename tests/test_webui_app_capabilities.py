@@ -93,7 +93,7 @@ class FullWorkbenchFacade(LegacyMaterialsFacade):
     async def export_report_pdf(self, version_id, output_path): ...
 
 
-def test_create_app_with_a_case_only_facade_registers_only_the_case_home(
+def test_create_app_with_a_case_only_facade_registers_the_core_pages(
     app_seam,
 ):
     app, ui, nicegui_app = app_seam
@@ -101,7 +101,8 @@ def test_create_app_with_a_case_only_facade_registers_only_the_case_home(
     result = app.create_app(CaseOnlyFacade())
 
     assert result is nicegui_app
-    assert ui.routes == ["/"]
+    # The unified dashboard owns ``/``; the case home moved to ``/cases``.
+    assert ui.routes == ["/cases", "/"]
 
 
 def test_create_app_keeps_the_legacy_materials_page_without_journey_ops(
@@ -111,7 +112,7 @@ def test_create_app_keeps_the_legacy_materials_page_without_journey_ops(
 
     app.create_app(LegacyMaterialsFacade())
 
-    assert ui.routes == ["/", "/materials"]
+    assert ui.routes == ["/cases", "/", "/materials"]
 
 
 def test_create_app_registers_every_page_for_a_full_workbench_facade(
