@@ -23,6 +23,7 @@ import shutil
 import sys
 from tempfile import mkdtemp
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -730,6 +731,7 @@ class _FakeElement:
         self.text = args[0] if args and isinstance(args[0], str) else ""
         self.content = args[0] if args and isinstance(args[0], str) else ""
         self.children = []
+        self.handlers: dict[str, Any] = {}
 
     def __enter__(self):
         self._ui._stack.append(self)
@@ -745,6 +747,18 @@ class _FakeElement:
     def classes(self, *args, **kwargs):
         return self
 
+    def on(self, name: str, handler: Any) -> "Any":
+        self.handlers[name] = handler
+        return self
+
+
+class _FakeNavigate:
+    def __init__(self):
+        self.calls: list[str] = []
+
+    def to(self, route: str) -> None:
+        self.calls.append(route)
+
 
 class _FakeUI:
     def __init__(self):
@@ -752,6 +766,7 @@ class _FakeUI:
         self.pages = {}
         self.updates = []
         self._stack = []
+        self.navigate = _FakeNavigate()
 
     def __getattr__(self, name):
         def factory(*args, **kwargs):
@@ -797,6 +812,36 @@ def _build_pages(controller):
     ui = _FakeUI()
     build_report_pages(controller, ui)
     return ui
+
+
+def test_list_page_row_click_navigates_to_the_detail_route():
+    v1 = _version("rv-1", created_at=CREATED_1)
+    ui = _build_pages(_controller(FakeReportsFacade(versions=(v1,))))
+    ui.pages["/reports"]()
+    run(_element(ui, "button", text="刷新报告").kwargs["on_click"](None))
+
+    table = _element(ui, "table")
+    row_click = table.handlers.get("rowClick")
+    assert row_click is not None, "report rows must open the detail page"
+
+    run(row_click(SimpleNamespace(args={"row": {"version_id": "rv-1"}})))
+    assert ui.navigate.calls == ["/reports/rv-1"]
+
+
+def test_list_page_row_click_without_a_version_id_is_reported():
+    v1 = _version("rv-1", created_at=CREATED_1)
+    ui = _build_pages(_controller(FakeReportsFacade(versions=(v1,))))
+    ui.pages["/reports"]()
+    run(_element(ui, "button", text="刷新报告").kwargs["on_click"](None))
+
+    table = _element(ui, "table")
+    run(table.handlers["rowClick"](SimpleNamespace(args={"row": {}})))
+    assert ui.navigate.calls == []
+    assert any(
+        element.name == "label"
+        and "无法打开报告" in str(element.text)
+        for element in ui.elements
+    )
 
 
 def test_list_page_lists_filters_columns_and_trigger_vocabulary():

@@ -713,6 +713,38 @@ def _export_failure_markdown(view: dict[str, Any]) -> str:
     ))
 
 
+def _version_id_from_row_click(event: Any) -> str:
+    """Extract the version id from a Quasar ``rowClick`` table event.
+
+    ``rowClick`` carries ``args={"row": {...}, "index": n}``; the selection
+    event's shape (a list of rows) is deliberately NOT accepted here, so a
+    bare row click and a checkbox selection are two distinct interactions.
+    """
+    args = getattr(event, "args", None)
+    row = args.get("row") if isinstance(args, dict) else None
+    if not isinstance(row, dict):
+        raise ValueError("rowClick event did not carry a row")
+    version_id = row.get("version_id", "")
+    if not isinstance(version_id, str) or not version_id.strip():
+        raise ValueError("rowClick row has no usable version_id")
+    return version_id.strip()
+
+
+def _open_report_route(ui: Any, version_id: str, fallback: Any) -> None:
+    """Navigate to one immutable report version's detail page.
+
+    ``ui.navigate.to`` is used when the ui module provides it; otherwise the
+    fallback reporter is called so the click is never silently swallowed.
+    """
+    route = f"/reports/{version_id}"
+    navigate = getattr(ui, "navigate", None)
+    opener = getattr(navigate, "to", None)
+    if callable(opener):
+        opener(route)
+    else:
+        fallback(f"已选择 {version_id};打开 {route}")
+
+
 def build_report_pages(
     controller: ReportCenterController, ui: Any, *,
     title: str = "PRISM 报告中心",
@@ -761,23 +793,13 @@ def build_report_pages(
             status_md.update()
             _report(f"已加载 {payload['count']} 个报告版本")
 
-        async def _open_selected(event: Any = None) -> None:
-            rows = list(getattr(event, "args", None) or ())
-            if not rows:
+        async def _open_row(event: Any = None) -> None:
+            try:
+                version_id = _version_id_from_row_click(event)
+            except ValueError as error:
+                _report(f"无法打开报告: {error}")
                 return
-            row = rows[0]
-            version_id = (
-                row.get("version_id", "") if isinstance(row, dict) else ""
-            )
-            if not version_id:
-                return
-            route = f"/reports/{version_id}"
-            navigate = getattr(ui, "navigate", None)
-            opener = getattr(navigate, "to", None)
-            if callable(opener):
-                opener(route)
-            else:
-                _report(f"已选择 {version_id};打开 {route}")
+            _open_report_route(ui, version_id, _report)
 
         with ui.card().classes("w-full"):
             ui.label("报告筛选").classes("text-bold")
@@ -796,9 +818,12 @@ def build_report_pages(
             reports_table = ui.table(
                 columns=_REPORT_COLUMNS,
                 rows=[],
-                selection="single",
-                on_select=_open_selected,
             )
+            # A row click navigates to the immutable detail page.  The
+            # table's ``selection`` event is NOT used for navigation: it only
+            # fires on checkbox selection changes, so a bare row click would
+            # be silently swallowed (regression fixed here).
+            reports_table.on("rowClick", _open_row)
 
     @ui.page("/reports/{version_id}")
     async def report_detail_page(version_id: str) -> None:
