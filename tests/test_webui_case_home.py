@@ -600,7 +600,7 @@ def _build_page(controller):
 
     ui = _FakeUI()
     build_case_home_page(controller, ui)
-    page = ui.pages["/"]
+    page = ui.pages["/cases"]
     page()
     return ui
 

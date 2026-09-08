@@ -439,7 +439,7 @@ def test_report_detail_view_links_back_to_the_case_home():
 
     view = report_detail_view(_version("rv-1"))
 
-    assert view["case_home_url"] == "/"
+    assert view["case_home_url"] == "/cases"
 
 
 def test_report_detail_page_renders_a_case_home_link():
@@ -470,7 +470,7 @@ def test_report_detail_page_renders_a_case_home_link():
         if "案例主页" in str(element.args[0] if element.args else "")
     ]
     assert back, "expected a back-to-case-home link on the detail page"
-    assert "/" in back[0].args
+    assert back[0].args[-1] == "/cases"
 
 
 # ------------------------------------------------- fake-ui page seam
@@ -563,7 +563,7 @@ def _build_case_home(controller):
 
     ui = _FakeUI()
     build_case_home_page(controller, ui)
-    ui.pages["/"]()
+    ui.pages["/cases"]()
     return ui
 
 

@@ -1,4 +1,5 @@
-"""Optional NiceGUI shell: the PRISM case home and historical timeline view.
+"""Optional NiceGUI shell: the unified dashboard home, the PRISM case home
+and the workbench pages behind it.
 
 Importing this module never imports NiceGUI: :func:`create_app` resolves the
 optional dependency lazily and raises the typed
@@ -20,6 +21,8 @@ from typing import Any
 from prism.analyzer import ENTRY_KINDS, STAGES
 
 from .controller import CaseHomeController, PrismFacade
+from .dashboard import DashboardController, build_dashboard_page
+from .reports import CASE_HOME_ROUTE
 from .status import safe_error_text, safe_identifier
 
 DEFAULT_TITLE = "PRISM 案例主页"
@@ -338,16 +341,22 @@ def _default_upload_staging_root() -> Path:
 
 
 def build_case_home_page(
-    controller: CaseHomeController, ui: Any, *, title: str = DEFAULT_TITLE
+    controller: CaseHomeController,
+    ui: Any,
+    *,
+    title: str = DEFAULT_TITLE,
+    route: str = CASE_HOME_ROUTE,
 ) -> Any:
-    """Register the ``/`` case-home page on the given ``ui`` module.
+    """Register the case-home page on the given ``ui`` module.
 
+    The case home lives at ``/cases`` since the unified dashboard took over
+    ``/``; the route stays a parameter so embedders can place it elsewhere.
     The ``ui`` module is injected so the page construction — the controls,
     panels and their handlers — is a seam testable without NiceGUI installed;
     every handler delegates to the controller and reports explicit errors in
     the message label instead of swallowing them.
     """
-    @ui.page("/")
+    @ui.page(route)
     def case_home() -> None:
         timeline_plot: Any | None = None
         message = ui.label("加载案例开始。")
@@ -655,7 +664,11 @@ def create_app(
     # partial installation fails explicitly before any page is registered.
     _plotly_graph_objects()
     controller = CaseHomeController(api)
-    build_case_home_page(controller, ui, title=title)
+    build_case_home_page(controller, ui, title=title, route=CASE_HOME_ROUTE)
+    # The unified dashboard always owns ``/`` (it needs only the case
+    # overview read; its richer sections degrade to explicit unavailable
+    # states on narrower facades).
+    build_dashboard_page(DashboardController(api), ui)
     from .debate import DebateTheaterController, build_debate_theater_page
     from .evidence import EvidenceBrowserController, build_evidence_page
     from .journey import MaterialJourneyController
@@ -710,6 +723,7 @@ __all__ = [
     "NICEGUI_MISSING_MESSAGE",
     "PLOTLY_MISSING_MESSAGE",
     "CaseHomeController",
+    "DashboardController",
     "WebUIUnavailableError",
     "build_case_home_page",
     "build_timeline_figure",

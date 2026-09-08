@@ -13,12 +13,14 @@ from .app import (
     NICEGUI_MISSING_MESSAGE,
     PLOTLY_MISSING_MESSAGE,
     CaseHomeController,
+    DashboardController,
     WebUIUnavailableError,
     build_timeline_figure,
     create_app,
 )
 from .controller import parse_as_of, snapshot_view
 from .server import build_arg_parser, run
+from .dashboard import build_dashboard_page
 from .debate import DebateTheaterController, build_debate_theater_page
 from .evidence import EvidenceBrowserController, build_evidence_page
 from .materials import MaterialEntryController, build_material_entry_page
@@ -26,6 +28,7 @@ from .reports import ReportCenterController, build_report_pages
 
 __all__ = [
     "CaseHomeController",
+    "DashboardController",
     "DebateTheaterController",
     "EvidenceBrowserController",
     "MaterialEntryController",
@@ -39,6 +42,7 @@ __all__ = [
     "build_arg_parser",
     "build_timeline_figure",
     "create_app",
+    "build_dashboard_page",
     "build_debate_theater_page",
     "build_evidence_page",
     "build_material_entry_page",
