@@ -98,6 +98,7 @@ _HINT_CACHE: dict[type, dict[str, Any]] = {}
 _BACKWARD_DEFAULT_FIELDS = frozenset(
     {
         ("ExtractionResult", "relations"),
+        ("ExtractionResult", "evidence_matches"),
         ("ExtractionResult", "material_role"),
         ("ExtractionResult", "accumulation_status"),
         ("EvolutionNode", "evidence_role"),

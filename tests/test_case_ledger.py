@@ -189,6 +189,29 @@ def test_old_extraction_json_without_evidence_roles_stays_compatible():
     assert decoded.nodes[0].evidence_role is None
 
 
+def test_legacy_extraction_json_without_new_ledger_fields_stays_compatible():
+    """A ledger row written before relations/evidence_matches/material_role
+    existed must still decode instead of raising ``... is missing``."""
+    encoded = json.loads(extraction_to_json(make_extraction()))
+    for field in (
+        "relations",
+        "evidence_matches",
+        "material_role",
+        "accumulation_status",
+    ):
+        encoded.pop(field, None)
+
+    decoded = extraction_from_json(json.dumps(encoded))
+
+    assert decoded == make_extraction()
+    assert decoded.evidence_matches == ()
+    assert decoded.relations == ()
+    assert decoded.material_role is None
+    # The status is derived from the recorded case when the old row did not
+    # persist it, exactly as the current model requires.
+    assert decoded.accumulation_status == "case_bound"
+
+
 def test_extraction_json_roundtrip_preserves_a_caseless_result():
     extraction = ExtractionResult(
         nodes=(replace(NODE, evidence_role="cited_prior_research"),),
