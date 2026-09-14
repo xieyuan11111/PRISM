@@ -1,10 +1,12 @@
 """Composition-root tests for the opt-in Graphiti/Neo4j runtime path.
 
 The default runtime must stay fully offline: no graphiti-core/neo4j import,
-no client, no registry, no environment lookup.  Only ``graphiti.enabled=true``
-with an explicit factory/backend injection (or the optional dependencies
-installed) may attempt the real path, and missing credentials/dependencies
-must fail with clear errors before any service is touched.
+no client, no environment lookup — its persistence is PRISM's own SQLite
+registry scoped to the dedicated "offline" database/group.  Only
+``graphiti.enabled=true`` with an explicit factory/backend injection (or the
+optional dependencies installed) may attempt the real path, and missing
+credentials/dependencies must fail with clear errors before any service is
+touched.
 """
 
 from __future__ import annotations
@@ -19,8 +21,13 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from prism.config import GraphitiConfig, PrismConfig
-from prism.graph import GraphEpisode, GraphitiBackend, SQLiteEpisodeRegistry
-from prism.runtime import OfflineGraphBackend, create_runtime
+from prism.graph import (
+    GraphEpisode,
+    GraphitiBackend,
+    SQLiteEpisodeRegistry,
+    SQLiteOfflineGraphBackend,
+)
+from prism.runtime import create_runtime
 
 from graphiti_fakes import FakeGraphStore, FakeGraphitiClient, NestedResultClient
 
@@ -110,7 +117,9 @@ def test_default_offline_runtime_never_imports_graphiti_or_neo4j(tmp_path, monke
     async def exercise():
         runtime = await create_runtime()
         try:
-            assert isinstance(runtime.graph_backend, OfflineGraphBackend)
+            # The offline default persists episodes via SQLite; it never
+            # becomes (or imports) a Graphiti backend.
+            assert isinstance(runtime.graph_backend, SQLiteOfflineGraphBackend)
             assert runtime.graphiti_backend is None
         finally:
             await runtime.close()
@@ -301,7 +310,7 @@ def test_disabled_config_never_probes_dependencies_or_env(tmp_path, monkeypatch)
     async def exercise():
         runtime = await create_runtime(config_path)
         try:
-            assert isinstance(runtime.graph_backend, OfflineGraphBackend)
+            assert isinstance(runtime.graph_backend, SQLiteOfflineGraphBackend)
             assert runtime.graphiti_backend is None
         finally:
             await runtime.close()
@@ -406,7 +415,7 @@ def test_enabled_runtime_restart_timeline_stays_stable_with_registry(
     run(exercise())
 
 
-def test_offline_default_creates_no_registry_and_no_registry_table(
+def test_offline_default_owns_a_persistent_offline_scoped_registry(
     tmp_path, monkeypatch
 ):
     monkeypatch.setenv("PRISM_HOME", str(tmp_path / "home"))
@@ -414,14 +423,24 @@ def test_offline_default_creates_no_registry_and_no_registry_table(
     async def exercise():
         runtime = await create_runtime()
         try:
-            assert runtime.graph_episode_registry is None
+            registry = runtime.graph_episode_registry
+            assert isinstance(registry, SQLiteEpisodeRegistry)
+            # The offline default shares the EvidenceStore SQLite file but
+            # records only its own "offline" database label.
+            assert registry.database == "offline"
+            assert registry.db_path == (
+                tmp_path / "home" / "data" / "index.db"
+            ).resolve()
+            # The connection (and table) opens lazily on first use.
+            assert await runtime.graph_backend.add_episode(episode()) is True
         finally:
             await runtime.close()
+        assert registry.closed is True
 
     run(exercise())
 
-    # The EvidenceStore database exists offline, but the registry table must
-    # not: the default path never creates a registry or touches its schema.
+    # The registry table now exists (created additively inside the store
+    # database) so episodes survive CLI process restarts.
     db = tmp_path / "home" / "data" / "index.db"
     assert db.is_file()
     with sqlite3.connect(db) as conn:
@@ -432,7 +451,7 @@ def test_offline_default_creates_no_registry_and_no_registry_table(
             )
         }
     assert "documents" in tables
-    assert "graphiti_episode_registry" not in tables
+    assert "graphiti_episode_registry" in tables
 
 
 def test_enabled_with_injected_backend_override_creates_no_registry(

@@ -104,8 +104,14 @@ class GraphEpisodeRegistry(Protocol):
     implementation the composition root injects on the enabled path.
     """
 
-    def get(self, episode_key: str) -> GraphEpisode | None:
-        """Return the stored episode for ``episode_key``, or None."""
+    def get(self, episode_key: str, *, group_id: str = "") -> GraphEpisode | None:
+        """Return the stored episode for ``episode_key``, or None.
+
+        Group-scoped when ``group_id`` is given: only knowledge recorded
+        under that group may be returned, so a foreign group's row with the
+        same deterministic key can never suppress this group's write or be
+        attributed as this group's own.
+        """
         ...
 
     def put(
@@ -399,7 +405,7 @@ class GraphitiBackend:
         if cached is not None:
             return cached
         if self._registry is not None:
-            return self._registry.get(episode_key)
+            return self._registry.get(episode_key, group_id=self._group_id)
         return None
 
     def _result_group_mismatch(self, result: Any) -> bool:
@@ -435,10 +441,15 @@ class GraphitiBackend:
         if episode.episode_key in self._episodes:
             return False
         if self._registry is not None:
-            known = self._registry.get(episode.episode_key)
+            # Write-before existence lookup, scoped to THIS backend's group:
+            # a durable registry makes this idempotent even after this
+            # process restarted, and a foreign group's row (e.g. the offline
+            # group sharing the same SQLite file) can never suppress the
+            # write under this group.
+            known = self._registry.get(
+                episode.episode_key, group_id=self._group_id
+            )
             if known is not None:
-                # Write-before existence lookup: a durable registry makes this
-                # idempotent even after this process restarted.
                 self._episodes[episode.episode_key] = known
                 return False
         arguments: dict[str, Any] = {

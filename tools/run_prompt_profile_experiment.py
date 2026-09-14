@@ -2,9 +2,9 @@
 """Offline-first prompt-profile experiment runner for the extraction service.
 
 The tool evaluates prompt profiles for ``ExtractionService`` ONLY, on the
-normal PRISM composition root with the offline graph backend
-(:class:`~prism.runtime.OfflineGraphBackend`); Graphiti/Neo4j is never
-started and never imported.  LLM traffic flows through exactly one path —
+normal PRISM composition root with the persistent offline graph backend
+(:class:`~prism.graph.offline.SQLiteOfflineGraphBackend`); Graphiti/Neo4j is
+never started and never imported.  LLM traffic flows through exactly one path —
 the official-SDK :class:`~prism.llm.OpenAISDKTransport` wired into the
 runtime's :class:`~prism.llm.LLMRouter` — never a bespoke protocol.
 
@@ -60,7 +60,7 @@ from prism.config import LLMConfig, LLMProviderConfig, PrismConfig
 from prism.domain import EvolutionCase
 from prism.llm import OpenAISDKTransport
 from prism.extraction import SplitExtractionService
-from prism.runtime import OfflineGraphBackend, create_runtime
+from prism.runtime import SQLiteOfflineGraphBackend, create_runtime
 
 SCHEMA_VERSION = 1
 TOOL_NAME = "prism-prompt-profile-experiment"
@@ -165,8 +165,8 @@ def _build_config(options: ExperimentOptions) -> PrismConfig:
 
     Only the ``extract`` task role is routed: the experiment evaluates
     ``ExtractionService`` and never involves debate, report or adjudication
-    LLM roles.  Graphiti stays disabled (the runtime composes
-    ``OfflineGraphBackend``).
+    LLM roles.  Graphiti stays disabled (the runtime composes the
+    ``SQLiteOfflineGraphBackend`` offline default).
     """
 
     return PrismConfig(
@@ -359,7 +359,7 @@ async def run_experiment(
             prompt_profile=options.prompt_profile,
         )
         try:
-            if not isinstance(runtime.graph_backend, OfflineGraphBackend):
+            if not isinstance(runtime.graph_backend, SQLiteOfflineGraphBackend):
                 raise ExperimentError(
                     "the prompt experiment requires the offline graph backend; "
                     "Graphiti must stay disabled"

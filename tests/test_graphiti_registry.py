@@ -16,7 +16,10 @@ What the tests pin down:
   to the group the row was recorded under (group/database boundary);
 * an add whose client result carried no uuid records the episode WITHOUT a
   fabricated uuid: PRISM-key readback keeps working, reverse lookup does not;
-* put is an upsert keyed by episode_key (second writes never duplicate rows);
+* put is an upsert keyed by (episode_key, group_id): second writes to the
+  same group never duplicate rows, while the same key recorded under
+  another group coexists independently and group-scoped get only returns
+  the asked-for group's row;
 * an old EvidenceStore database (``documents``/``document_fts`` only, with
   rows) migrates additively: its schema and rows survive, and the registry
   table appears on first use;
@@ -26,6 +29,7 @@ What the tests pin down:
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -37,6 +41,7 @@ from prism.domain import EvidenceLocator
 from prism.graph import GraphEpisode, GraphEpisodeRegistry, SQLiteEpisodeRegistry
 from prism.graph.models import EPISODE_SCHEMA, canonical_json
 from prism.store import EvidenceStore
+from prism.store.service import DB_FILENAME
 
 NOW = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
 
@@ -303,6 +308,143 @@ def test_put_is_an_upsert_keyed_by_episode_key(tmp_path):
         assert rows[0][0] == "uuid-two"
         assert registry.get_by_graphiti_uuid("uuid-two", group_id="neo4j") == episode
         assert registry.get_by_graphiti_uuid("uuid-one", group_id="neo4j") is None
+    finally:
+        registry.close()
+
+
+def test_get_is_group_scoped_and_same_key_coexists_across_groups(tmp_path):
+    # The table is keyed by (episode_key, group_id): the same deterministic
+    # PRISM key can exist under two groups (e.g. "offline" and a live
+    # Graphiti group sharing one database file), and a group-scoped get only
+    # ever returns the row of the group it asks for.
+    paths = make_paths(tmp_path)
+    ours = make_episode(case_id="case-a")
+    theirs = make_episode(case_id="case-other")
+
+    registry = SQLiteEpisodeRegistry(paths, database="neo4j")
+    try:
+        registry.put(ours, group_id="neo4j", graphiti_uuid="uuid-neo4j")
+        registry.put(theirs, group_id="offline")
+
+        assert registry.get(ours.episode_key, group_id="neo4j") == ours
+        assert registry.get(ours.episode_key, group_id="offline") == theirs
+        assert registry.get(ours.episode_key, group_id="tenant-x") is None
+
+        with sqlite3.connect(registry.db_path) as conn:
+            rows = conn.execute(
+                "SELECT group_id FROM graphiti_episode_registry"
+                " WHERE episode_key = ? ORDER BY group_id",
+                (ours.episode_key,),
+            ).fetchall()
+        assert [row[0] for row in rows] == ["neo4j", "offline"]
+    finally:
+        registry.close()
+
+
+LEGACY_REGISTRY_DDL = """
+CREATE TABLE graphiti_episode_registry (
+    episode_key TEXT PRIMARY KEY,
+    graphiti_uuid TEXT,
+    group_id TEXT NOT NULL,
+    database TEXT NOT NULL,
+    name TEXT NOT NULL,
+    case_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    episode_body TEXT NOT NULL,
+    reference_time TEXT NOT NULL,
+    valid_at TEXT NOT NULL,
+    invalid_at TEXT,
+    source_ids TEXT NOT NULL,
+    confidence REAL,
+    provenance_type TEXT,
+    evidence TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX graphiti_episode_registry_uuid_group_idx
+    ON graphiti_episode_registry (graphiti_uuid, group_id);
+"""
+
+
+def test_legacy_single_key_table_rebuilds_to_group_scoped_key(tmp_path):
+    # Databases written before the offline and Graphiti groups shared the
+    # table keyed episode_key alone (a put silently overwrote the other
+    # group's row with the same key).  Opening the registry rebuilds that
+    # table in place: rows survive unchanged and the composite key lets the
+    # same key exist under two groups from then on.
+    paths = make_paths(tmp_path)
+    db_path = paths.resolve().data_dir / DB_FILENAME
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    legacy_episode = make_episode()
+    legacy_created_at = "2026-08-01T00:00:00+00:00"
+
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(LEGACY_REGISTRY_DDL)
+        conn.execute(
+            "INSERT INTO graphiti_episode_registry ("
+            " episode_key, graphiti_uuid, group_id, database, name, case_id,"
+            " kind, episode_body, reference_time, valid_at, invalid_at,"
+            " source_ids, confidence, provenance_type, evidence,"
+            " created_at, updated_at)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                legacy_episode.episode_key,
+                "legacy-uuid",
+                "neo4j",
+                "neo4j",
+                legacy_episode.name,
+                legacy_episode.case_id,
+                legacy_episode.kind,
+                legacy_episode.episode_body,
+                legacy_episode.reference_time.isoformat(),
+                legacy_episode.valid_at.isoformat(),
+                None,
+                json.dumps(list(legacy_episode.source_ids)),
+                legacy_episode.confidence,
+                legacy_episode.provenance_type,
+                json.dumps([]),
+                legacy_created_at,
+                legacy_created_at,
+            ),
+        )
+
+    registry = SQLiteEpisodeRegistry(paths, database="neo4j")
+    try:
+        # The legacy row survived the rebuild unchanged, audit stamps included.
+        rebuilt = registry.get(legacy_episode.episode_key, group_id="neo4j")
+        assert rebuilt == legacy_episode
+        with sqlite3.connect(db_path) as conn:
+            info = conn.execute(
+                "PRAGMA table_info(graphiti_episode_registry)"
+            ).fetchall()
+            stamps = conn.execute(
+                "SELECT created_at, updated_at FROM graphiti_episode_registry"
+                " WHERE episode_key = ? AND group_id = ?",
+                (legacy_episode.episode_key, "neo4j"),
+            ).fetchone()
+        assert stamps == (legacy_created_at, legacy_created_at)
+        pk_columns = tuple(
+            row[1]
+            for row in sorted(
+                (row for row in info if row[5]), key=lambda row: row[5]
+            )
+        )
+        assert pk_columns == ("episode_key", "group_id")
+        assert "graphiti_episode_registry__migrated" not in table_names(db_path)
+
+        # From now on the same key can be recorded under another group
+        # without overwriting the Graphiti row.
+        registry.put(
+            make_episode(case_id="case-offline"), group_id="offline"
+        )
+        assert (
+            registry.get(legacy_episode.episode_key, group_id="offline")
+            is not None
+        )
+        assert (
+            registry.get(legacy_episode.episode_key, group_id="neo4j")
+            == legacy_episode
+        )
     finally:
         registry.close()
 

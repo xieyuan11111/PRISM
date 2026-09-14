@@ -7,11 +7,13 @@ from .composition import (
     create_runtime,
     load_config,
 )
+from prism.graph import SQLiteOfflineGraphBackend
 
 __all__ = [
     "OfflineExtractor",
     "OfflineGraphBackend",
     "PrismRuntime",
+    "SQLiteOfflineGraphBackend",
     "create_runtime",
     "load_config",
 ]
