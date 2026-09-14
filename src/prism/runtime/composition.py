@@ -32,7 +32,9 @@ from prism.graph import (
     GraphEpisode,
     GraphitiBackend,
     GraphService,
+    OFFLINE_DATABASE,
     SQLiteEpisodeRegistry,
+    SQLiteOfflineGraphBackend,
 )
 from prism.graph.graphiti_client import build_graphiti_client, resolve_episode_type_json
 from prism.ingestion import IngestionService
@@ -71,7 +73,14 @@ from prism.store import EvidenceStore
 
 
 class OfflineGraphBackend:
-    """Process-local graph storage used when no external backend is injected."""
+    """Process-local graph storage for unit tests and explicit injection.
+
+    Episodes live only in this Python process's memory.  It is deliberately
+    NOT the default runtime backend anymore: the default offline composition
+    persists episodes across CLI processes through the SQLite-backed
+    :class:`~prism.graph.offline.SQLiteOfflineGraphBackend`.  Inject this
+    class only when in-process isolation is exactly what a caller wants.
+    """
 
     def __init__(self) -> None:
         self._episodes: dict[str, GraphEpisode] = {}
@@ -164,20 +173,26 @@ def _compose_graphiti_backend(
     """Compose the graph backend for the configured Graphiti opt-in.
 
     Returns ``(backend, owned_graphiti_backend, owned_registry)``.
-    ``owned_graphiti_backend``/``owned_registry`` are not None only when THIS
-    call created a real :class:`GraphitiBackend` (and its project-owned
-    persistent registry) from a client factory; the runtime must then close
-    both on shutdown.  Injected ``graph_backend`` instances belong to the
-    caller and are never closed by the runtime, and no registry is created
-    next to them.
+    ``owned_graphiti_backend`` is not None only when THIS call created a real
+    :class:`GraphitiBackend` from a client factory; ``owned_registry`` is not
+    None when THIS call created a persistent :class:`SQLiteEpisodeRegistry`
+    (the real-Graphiti path, or the offline default).  The runtime closes the
+    owned backend and registry on shutdown; injected ``graph_backend``
+    instances belong to the caller and are never closed by the runtime, and
+    no registry is created next to them.
 
-    The default (``graphiti.enabled=false``) path never imports
-    graphiti-core/neo4j, never builds a client, never probes dependencies,
-    never reads credential env vars and never creates a registry.  The
-    enabled path only attempts the real client when a factory is injected or
-    the optional dependencies are installed; anything missing fails with an
-    explicit error before any service is touched.  When the real backend IS
-    created, PRISM's own SQLite-backed episode registry
+    The default (``graphiti.enabled == false``) path never imports
+    graphiti-core/neo4j, never builds a client, never probes dependencies and
+    never reads credential env vars.  It persists :class:`GraphEpisode`
+    objects across CLI processes through PRISM's own SQLite episode registry
+    (``database="offline"``) wrapped in a
+    :class:`~prism.graph.offline.SQLiteOfflineGraphBackend` writing/reading
+    only the dedicated ``offline`` group — so a restarted process reads back
+    exactly what an earlier process wrote, without touching Graphiti rows.
+    The enabled path only attempts the real client when a factory is injected
+    or the optional dependencies are installed; anything missing fails with
+    an explicit error before any service is touched.  When the real backend
+    IS created, PRISM's own SQLite-backed episode registry
     (:class:`SQLiteEpisodeRegistry`) is created and injected too: it shares
     the EvidenceStore SQLite file under the data dir and persists the
     episode_key -> real Graphiti uuid mapping, so writes stay idempotent and
@@ -186,11 +201,15 @@ def _compose_graphiti_backend(
     if not config.graphiti.enabled:
         if graphiti_client_factory is not None:
             raise ValueError("graphiti_client_factory requires graphiti.enabled=true")
-        return (
-            graph_backend if graph_backend is not None else OfflineGraphBackend(),
-            None,
-            None,
-        )
+        if graph_backend is not None:
+            # Explicit backend injection is a full override: no client is
+            # built, no dependency probe, no credential lookup and no
+            # registry; the caller owns (and closes) the backend.
+            return graph_backend, None, None
+        # Offline default: durable SQLite persistence under the dedicated
+        # "offline" database/group.  No Graphiti import, client or probe.
+        registry = SQLiteEpisodeRegistry(paths, database=OFFLINE_DATABASE)
+        return SQLiteOfflineGraphBackend(registry), None, registry
     if graph_backend is not None and graphiti_client_factory is not None:
         raise ValueError(
             "graphiti_client_factory cannot be combined with graph_backend"
@@ -304,10 +323,11 @@ class PrismRuntime:
     # Owned Graphiti backend created by the composition root (never the
     # caller-injected ``graph_backend``); closed by :meth:`close`.
     graphiti_backend: GraphitiBackend | None = None
-    # Owned persistent episode registry (PRISM key -> real Graphiti uuid)
-    # created by the composition root next to ``graphiti_backend``; closed
-    # by :meth:`close`.  None on the offline default and when a caller
-    # injected ``graph_backend`` (full override).
+    # Owned persistent episode registry created by the composition root: on
+    # the real-Graphiti path it maps PRISM keys to real Graphiti uuids; on
+    # the offline default it durably stores offline episodes (database
+    # "offline").  Closed by :meth:`close`; only None when a caller injected
+    # ``graph_backend`` (full override).
     graph_episode_registry: SQLiteEpisodeRegistry | None = None
     # Automatic evolution pipeline: the accumulated-case service, its durable
     # ledger, and the event subscription that feeds material.ingested events
@@ -452,6 +472,16 @@ async def create_runtime(
     process restarts; :meth:`PrismRuntime.close` closes both.  A
     ``graph_backend`` injection is a full override that stays fully offline
     and creates no registry.
+
+    The default (``graphiti.enabled == false``, no injected ``graph_backend``)
+    persists graph episodes across CLI processes too: composition creates the
+    SQLite episode registry with ``database="offline"`` wrapped in a
+    :class:`~prism.graph.offline.SQLiteOfflineGraphBackend` scoped to the
+    dedicated ``offline`` group, so a restarted process serves
+    ``timeline``/``state``/``snapshot``/``compare``/``report`` from what an
+    earlier process wrote — without importing Graphiti or touching any live
+    Graphiti group.  The process-local :class:`OfflineGraphBackend` remains
+    available for unit tests and explicit injection only.
 
     The automatic evolution pipeline is wired unconditionally from local
     resources only: the store-backed material resolver, the durable

@@ -337,8 +337,9 @@ def test_execute_keeps_the_run_offline_with_the_local_graph_backend(
         experiment.main(base_args(source_root, output_dir) + ["--execute"]) == 0
     )
     # The run home lives under the output dir; the tool's own config keeps
-    # Graphiti disabled (the runtime composes OfflineGraphBackend and the
-    # tool fails closed on anything else) and restores PRISM_HOME.
+    # Graphiti disabled (the runtime composes the SQLiteOfflineGraphBackend
+    # offline default and the tool fails closed on anything else) and
+    # restores PRISM_HOME.
     assert (output_dir / "prism-home" / "data" / "index.db").is_file()
     config = json.loads(
         (output_dir / "prism-home" / "config.json").read_text(encoding="utf-8")

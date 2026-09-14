@@ -544,7 +544,9 @@ def test_search_maps_registry_episodes_whose_references_are_prism_keys():
     registry = FakeRegistry()
     backend = make_backend(client, registry=registry)
     episode = make_episode()
-    registry.put(episode)
+    # Recorded under the backend's own group: attribution is group-scoped,
+    # so a foreign group's row can never be claimed by this backend.
+    registry.put(episode, group_id="neo4j")
     # Models a store whose episode references ARE deterministic PRISM keys
     # (PRISM's own 0.29.3 writes carry server-assigned Graphiti uuids
     # instead); the registry still attributes such a result positively, by

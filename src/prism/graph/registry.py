@@ -20,10 +20,19 @@ Design notes
   first use.
 * The registry is per PRISM environment (one data dir), and a PRISM runtime
   writes to exactly one group/database (live Community configs require
-  ``group_id == database == "neo4j"``).  Rows still record both labels and
-  the reverse (uuid -> episode) lookup is group-scoped, so a backend can
-  never attribute a uuid recorded under another group - the same defensive
-  group-boundary contract as the adapter's search filtering.
+  ``group_id == database == "neo4j"``).  Rows still record both labels, the
+  table is keyed by ``(episode_key, group_id)`` and every readback
+  (key lookup, reverse uuid lookup, listing) is group-scoped, so a backend
+  can never see, skip on, or attribute a row recorded under another group -
+  the same defensive group-boundary contract as the adapter's search
+  filtering.  The composite key is what lets the same deterministic PRISM
+  ``episode_key`` exist independently under the offline group and a live
+  Graphiti group sharing one database file.
+* Databases written before the offline/graphiti groups shared the table
+  keyed ``episode_key`` alone (single-column primary key); such tables are
+  rebuilt in place on first open - every row is copied unchanged, and the
+  composite key then prevents one group's ``put`` from overwriting another
+  group's row with the same key.
 * ``graphiti_uuid`` is NULLable on purpose: the adapter never fabricates a
   uuid, so an add whose client result carried no usable uuid records the
   episode knowledge without one.  PRISM-key readback and write idempotency
@@ -36,13 +45,16 @@ Design notes
   keys, the server-assigned uuid, group/database labels, episode content
   and audit timestamps.
 * Importing this module never imports graphiti-core or neo4j and touches no
-  network; the offline default runtime never constructs a registry at all.
+  network; both the live Graphiti path and the default offline path (via the
+  persistent :class:`~prism.graph.offline.SQLiteOfflineGraphBackend`) use it
+  under their own database/group labels.
 """
 
 from __future__ import annotations
 
 import json
 import sqlite3
+import warnings
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -55,9 +67,12 @@ from prism.store.service import DB_FILENAME
 #: Table holding the durable PRISM episode_key -> Graphiti uuid mapping.
 TABLE = "graphiti_episode_registry"
 
-_DDL = f"""
-CREATE TABLE IF NOT EXISTS {TABLE} (
-    episode_key TEXT PRIMARY KEY,
+#: Composite primary key: one PRISM key per group, so the offline group and
+#: a live Graphiti group can hold the same ``episode_key`` independently.
+PRIMARY_KEY = ("episode_key", "group_id")
+
+_TABLE_COLUMNS = """
+    episode_key TEXT NOT NULL,
     graphiti_uuid TEXT,
     group_id TEXT NOT NULL,
     database TEXT NOT NULL,
@@ -73,8 +88,12 @@ CREATE TABLE IF NOT EXISTS {TABLE} (
     provenance_type TEXT,
     evidence TEXT NOT NULL,
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-);
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (episode_key, group_id)
+"""
+
+_DDL = f"""
+CREATE TABLE IF NOT EXISTS {TABLE} ({_TABLE_COLUMNS});
 CREATE INDEX IF NOT EXISTS {TABLE}_uuid_group_idx
     ON {TABLE} (graphiti_uuid, group_id);
 """
@@ -85,9 +104,8 @@ INSERT INTO {TABLE} (
     episode_body, reference_time, valid_at, invalid_at, source_ids,
     confidence, provenance_type, evidence, created_at, updated_at
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT(episode_key) DO UPDATE SET
+ON CONFLICT(episode_key, group_id) DO UPDATE SET
     graphiti_uuid = excluded.graphiti_uuid,
-    group_id = excluded.group_id,
     database = excluded.database,
     name = excluded.name,
     case_id = excluded.case_id,
@@ -108,6 +126,8 @@ _SELECT_COLUMNS = (
     " episode_body, reference_time, valid_at, invalid_at, source_ids,"
     " confidence, provenance_type, evidence"
 )
+
+_ALL_COLUMNS = f"{_SELECT_COLUMNS}, created_at, updated_at"
 
 
 def _iso(value: datetime) -> str:
@@ -134,14 +154,16 @@ def _now_iso() -> str:
 
 
 class SQLiteEpisodeRegistry:
-    """Durable, SQLite-backed PRISM episode knowledge for one graph group.
+    """Durable, SQLite-backed PRISM episode knowledge keyed by group.
 
     The registry is bound to one PRISM environment (one ``PathConfig`` /
     data dir) and records the group/database every episode was written
-    under.  Connections open lazily on first use and the registry must be
-    closed explicitly (the composition root closes it on runtime shutdown);
-    operations after :meth:`close` fail loudly instead of silently
-    resurrecting state.
+    under; rows are keyed by ``(episode_key, group_id)``, so the same
+    deterministic key can exist under the offline group and a live Graphiti
+    group independently and every readback is group-scoped.  Connections
+    open lazily on first use and the registry must be closed explicitly
+    (the composition root closes it on runtime shutdown); operations after
+    :meth:`close` fail loudly instead of silently resurrecting state.
     """
 
     def __init__(self, paths: PathConfig, *, database: str = "") -> None:
@@ -149,6 +171,9 @@ class SQLiteEpisodeRegistry:
         self._database = database
         self._connection: sqlite3.Connection | None = None
         self._closed = False
+        # Auditable record of rows skipped fail-closed by read paths such as
+        # :meth:`list_episodes` (also announced through ``warnings.warn``).
+        self._decode_warnings: list[str] = []
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -179,6 +204,7 @@ class SQLiteEpisodeRegistry:
         # Additive migration: databases created by older PRISM versions gain
         # the registry table without any change to their existing rows.
         connection.executescript(_DDL)
+        self._migrate_legacy_single_key_table(connection)
         self._connection = connection
 
     def close(self) -> None:
@@ -194,17 +220,96 @@ class SQLiteEpisodeRegistry:
     def __exit__(self, *exc_info: object) -> None:
         self.close()
 
+    @staticmethod
+    def _migrate_legacy_single_key_table(connection: sqlite3.Connection) -> None:
+        """Rebuild a pre-group-scoped table in place (single-key primary key).
+
+        Tables written before the offline and Graphiti groups shared the file
+        keyed ``episode_key`` alone, so a ``put`` silently overwrote the other
+        group's row carrying the same key.  The rebuild copies every row
+        unchanged (a single-key table can never hold composite duplicates,
+        including the created_at/updated_at audit timestamps) into the
+        composite-keyed shape inside one transaction; SQLite DDL is
+        transactional, so a crash leaves either the old or the new table.
+        Static SQL only: the table name is a fixed identifier, every value
+        travels through bound parameters elsewhere, and ``SELECT *`` is safe
+        here because the legacy column order matches this module's DDL (both
+        are pinned by the schema tests).
+        """
+        info = connection.execute(
+            "PRAGMA table_info(graphiti_episode_registry)"
+        ).fetchall()
+        if not info:
+            return
+        primary_key = tuple(
+            row["name"]
+            for row in sorted(
+                (row for row in info if row["pk"]),
+                key=lambda row: row["pk"],
+            )
+        )
+        if primary_key == PRIMARY_KEY:
+            return
+        connection.executescript(
+            "BEGIN;"
+            " CREATE TABLE graphiti_episode_registry__migrated ("
+            " episode_key TEXT NOT NULL,"
+            " graphiti_uuid TEXT,"
+            " group_id TEXT NOT NULL,"
+            " database TEXT NOT NULL,"
+            " name TEXT NOT NULL,"
+            " case_id TEXT NOT NULL,"
+            " kind TEXT NOT NULL,"
+            " episode_body TEXT NOT NULL,"
+            " reference_time TEXT NOT NULL,"
+            " valid_at TEXT NOT NULL,"
+            " invalid_at TEXT,"
+            " source_ids TEXT NOT NULL,"
+            " confidence REAL,"
+            " provenance_type TEXT,"
+            " evidence TEXT NOT NULL,"
+            " created_at TEXT NOT NULL,"
+            " updated_at TEXT NOT NULL,"
+            " PRIMARY KEY (episode_key, group_id));"
+            " INSERT INTO graphiti_episode_registry__migrated"
+            " SELECT * FROM graphiti_episode_registry;"
+            " DROP TABLE graphiti_episode_registry;"
+            " ALTER TABLE graphiti_episode_registry__migrated"
+            " RENAME TO graphiti_episode_registry;"
+            " CREATE INDEX IF NOT EXISTS"
+            " graphiti_episode_registry_uuid_group_idx"
+            " ON graphiti_episode_registry (graphiti_uuid, group_id);"
+            " COMMIT;"
+        )
+
     # -- storage -----------------------------------------------------------
 
-    def get(self, episode_key: str) -> GraphEpisode | None:
-        """Return the stored episode for ``episode_key``, or None."""
+    def get(self, episode_key: str, *, group_id: str = "") -> GraphEpisode | None:
+        """Return the stored episode for ``episode_key``, or None.
+
+        Group-scoped when ``group_id`` is given: the query filters on
+        ``episode_key AND group_id``, so only a row recorded under that
+        group can be returned and a foreign group's row can never make a
+        caller skip its own write (the offline group and a live Graphiti
+        group may legitimately hold the same deterministic key).  The empty
+        default keeps the legacy unscoped lookup for existing callers; once
+        a key exists under more than one group that lookup is ambiguous, so
+        group-aware callers must always pass ``group_id``.
+        """
         if not isinstance(episode_key, str) or not episode_key:
             return None
         self._ensure_open()
-        row = self._connection.execute(
-            f"SELECT {_SELECT_COLUMNS} FROM {TABLE} WHERE episode_key = ?",
-            (episode_key,),
-        ).fetchone()
+        if group_id:
+            row = self._connection.execute(
+                f"SELECT {_SELECT_COLUMNS} FROM {TABLE}"
+                " WHERE episode_key = ? AND group_id = ?",
+                (episode_key, group_id),
+            ).fetchone()
+        else:
+            row = self._connection.execute(
+                f"SELECT {_SELECT_COLUMNS} FROM {TABLE} WHERE episode_key = ?",
+                (episode_key,),
+            ).fetchone()
         return self._episode_from_row(row) if row is not None else None
 
     def put(
@@ -266,6 +371,48 @@ class SQLiteEpisodeRegistry:
             (graphiti_uuid, group_id),
         ).fetchone()
         return self._episode_from_row(row) if row is not None else None
+
+    @property
+    def decode_warnings(self) -> tuple[str, ...]:
+        """Human-readable record of rows skipped fail-closed by read paths."""
+        return tuple(self._decode_warnings)
+
+    def list_episodes(self, group_id: str = "") -> tuple[GraphEpisode, ...]:
+        """Read-only listing of every episode recorded under ``group_id``.
+
+        Stably ordered by ``(case_id, valid_at, episode_key)`` so a restarted
+        process rebuilds timelines in a deterministic order.  Group-scoped:
+        rows recorded under any other group (e.g. a live Graphiti group in
+        the same database file) are never returned.  Unusable rows
+        (tampered or truncated) fail closed: they are skipped — never
+        guessed back into results — and each skip is announced through
+        ``warnings.warn`` and kept in :attr:`decode_warnings` for audit.
+        """
+        if not isinstance(group_id, str) or not group_id:
+            raise ValueError("group_id is required")
+        self._ensure_open()
+        rows = self._connection.execute(
+            f"SELECT {_SELECT_COLUMNS} FROM {TABLE} WHERE group_id = ?"
+            " ORDER BY case_id, valid_at, episode_key",
+            (group_id,),
+        ).fetchall()
+        episodes: list[GraphEpisode] = []
+        for row in rows:
+            episode = self._episode_from_row(row)
+            if episode is None:
+                self._record_decode_warning(row["episode_key"], group_id)
+                continue
+            episodes.append(episode)
+        return tuple(episodes)
+
+    def _record_decode_warning(self, episode_key: object, group_id: str) -> None:
+        message = (
+            f"graphiti_episode_registry row {episode_key!r} in group"
+            f" {group_id!r} is unreadable and was skipped (fail-closed);"
+            " no episode was reconstructed from it"
+        )
+        self._decode_warnings.append(message)
+        warnings.warn(message, RuntimeWarning, stacklevel=3)
 
     def _ensure_open(self) -> None:
         if self._closed:

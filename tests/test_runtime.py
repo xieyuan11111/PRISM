@@ -15,7 +15,12 @@ from prism.research import FirecrawlSearchProvider, ResearchExecutor
 from prism.sources import HttpResponse, ScholarlyMetadataClient
 from prism.events import Event
 from prism.graph import GraphEpisode
-from prism.runtime import OfflineGraphBackend, PrismRuntime, create_runtime
+from prism.runtime import (
+    OfflineGraphBackend,
+    PrismRuntime,
+    SQLiteOfflineGraphBackend,
+    create_runtime,
+)
 
 
 class FakeFirecrawlClient:
@@ -327,7 +332,9 @@ def test_absent_config_uses_secret_free_offline_defaults_and_creates_directories
             assert runtime.config == PrismConfig()
             assert runtime.config.llm.providers == {}
             assert runtime.config.sources.whitelist == ()
-            assert isinstance(runtime.graph_backend, OfflineGraphBackend)
+            # The offline default persists episodes across processes via the
+            # SQLite-backed backend; the in-memory backend is opt-in only.
+            assert isinstance(runtime.graph_backend, SQLiteOfflineGraphBackend)
             assert runtime.evidence_store.db_path.is_file()
             for directory in (
                 runtime.paths.data_dir,

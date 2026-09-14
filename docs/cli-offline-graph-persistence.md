@@ -54,13 +54,14 @@ prism process
 class SQLiteOfflineGraphBackend:
     def __init__(self, registry: SQLiteEpisodeRegistry): ...
     async def add_episode(self, episode: GraphEpisode) -> bool:
-        # registry.get(key) → 已存在则 False
+        # registry.get(key, group_id="offline") → offline 组内已存在则 False
+        #   （group-scoped：foreign Graphiti 组的同 key 行不拦截 offline 写入，反之亦然）
         # registry.put(episode, group_id="offline") → True
     async def search(self, query: str) -> tuple[GraphEpisode, ...]:
         # registry.list_episodes(group_id="offline")
 ```
 
-`SQLiteEpisodeRegistry` 增加只读 `list_episodes(group_id: str)`，按 `case_id/valid_at/episode_key` 稳定排序。隔离标识：
+`SQLiteEpisodeRegistry` 增加只读 `list_episodes(group_id: str)`，按 `case_id/valid_at/episode_key` 稳定排序。表主键为 `(episode_key, group_id)`：同一确定性 `episode_key` 可在 offline 组与 Graphiti 组各自独立存在，`get(episode_key, group_id=...)` 按 `episode_key AND group_id` 过滤。隔离标识：
 
 ```text
 database = "offline"

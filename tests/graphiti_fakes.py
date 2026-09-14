@@ -221,20 +221,26 @@ class RaisingSecretiveClient(SecretiveReprClient):
 class FakeRegistry:
     """Durable PRISM-side episode knowledge (persistent across backend instances).
 
-    Models the extended Phase B protocol: rows are keyed by PRISM
-    ``episode_key``, may carry the real Graphiti-assigned uuid captured from
-    an add result (plus the group it was recorded under), and support a
-    group-scoped reverse lookup by that uuid - exactly the surface the
-    SQLite-backed registry provides for real restarts.
+    Models the extended Phase B protocol: rows are keyed by
+    ``(PRISM episode_key, group_id)`` - the same composite key as the
+    SQLite-backed registry, so the same deterministic key can exist under
+    two groups independently - may carry the real Graphiti-assigned uuid
+    captured from an add result, and support a group-scoped reverse lookup
+    by that uuid.  ``get`` without a group keeps the legacy unscoped
+    fallback for direct test assertions.
     """
 
     def __init__(self) -> None:
-        self.data: dict[str, GraphEpisode] = {}
-        self._group_of: dict[str, str] = {}
-        self._uuid_of: dict[str, str] = {}
+        self.data: dict[tuple[str, str], GraphEpisode] = {}
+        self._uuid_of: dict[tuple[str, str], str] = {}
 
-    def get(self, episode_key: str) -> GraphEpisode | None:
-        return self.data.get(episode_key)
+    def get(self, episode_key: str, *, group_id: str = "") -> GraphEpisode | None:
+        if group_id:
+            return self.data.get((episode_key, group_id))
+        for (key, _group), episode in self.data.items():
+            if key == episode_key:
+                return episode
+        return None
 
     def put(
         self,
@@ -243,17 +249,17 @@ class FakeRegistry:
         group_id: str = "",
         graphiti_uuid: str | None = None,
     ) -> None:
-        self.data[episode.episode_key] = episode
-        self._group_of[episode.episode_key] = group_id
+        row = (episode.episode_key, group_id)
+        self.data[row] = episode
         if graphiti_uuid is None:
-            self._uuid_of.pop(episode.episode_key, None)
+            self._uuid_of.pop(row, None)
         else:
-            self._uuid_of[episode.episode_key] = graphiti_uuid
+            self._uuid_of[row] = graphiti_uuid
 
     def get_by_graphiti_uuid(
         self, graphiti_uuid: str, *, group_id: str = ""
     ) -> GraphEpisode | None:
-        for episode_key, uuid in self._uuid_of.items():
-            if uuid == graphiti_uuid and self._group_of.get(episode_key, "") == group_id:
-                return self.data.get(episode_key)
+        for row, uuid in self._uuid_of.items():
+            if uuid == graphiti_uuid and row[1] == group_id:
+                return self.data.get(row)
         return None

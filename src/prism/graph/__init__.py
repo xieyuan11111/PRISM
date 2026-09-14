@@ -8,6 +8,7 @@ from .models import (
     GraphWriteResult,
     TimelineEntry,
 )
+from .offline import OFFLINE_DATABASE, OFFLINE_GROUP_ID, SQLiteOfflineGraphBackend
 from .registry import SQLiteEpisodeRegistry
 from .service import GraphService
 
@@ -20,6 +21,9 @@ __all__ = [
     "GraphTimeline",
     "GraphWriteResult",
     "GraphitiBackend",
+    "OFFLINE_DATABASE",
+    "OFFLINE_GROUP_ID",
     "SQLiteEpisodeRegistry",
+    "SQLiteOfflineGraphBackend",
     "TimelineEntry",
 ]
