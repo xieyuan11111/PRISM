@@ -62,6 +62,8 @@ PRISM 要求 Python `>=3.11`。核心安装的默认 `dependencies` 为空：基
 | 真实 LLM | `pip install -e ".[openai-sdk]"` | 官方 OpenAI Python SDK；凭据只从环境读取 |
 | Graphiti/Neo4j | `pip install -e ".[graphiti]"` | 可选且固定为 live spike 已验证的版本 |
 
+第一次使用请从 [`docs/user-guide.md`](docs/user-guide.md) 开始（安装、快速上手、常用命令、完整例子）。CLI 命令完整参考见 [`docs/cli-ai-callable.md`](docs/cli-ai-callable.md)。
+
 从零启动本机 WebUI 的完整说明见 [`docs/webui-getting-started.md`](docs/webui-getting-started.md)。WebUI 默认只绑定 `127.0.0.1`，不自动打开浏览器；LLM、PDF 和 Graphiti 依赖均按需安装。
 
 运行离线测试套件：
