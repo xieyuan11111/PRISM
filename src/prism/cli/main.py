@@ -16,6 +16,14 @@ from typing import Any, Protocol, TextIO
 
 from prism.analyzer import ENTRY_KINDS, STAGES
 from prism.domain import EvolutionCase
+# The material-journey commands reuse the WebUI's JSON-safe projections
+# (docs/cli-ai-callable-design.md §3.2: reuse the projection, never rewrite
+# the state machine).  The prism.webui import chain is stdlib-only — the
+# package never imports NiceGUI/plotly at module scope — so the default
+# dependency-free runtime is unaffected.  Phase 1 keeps this direct reuse;
+# promoting the projections to a neutral prism.api.views module would also
+# have to move their webui.materials/status/reports helpers to stay clean.
+from prism.webui.journey import journey_view_data, material_row
 
 
 DEFAULT_SEARCH_LIMIT = 50
@@ -133,6 +141,12 @@ class PrismAPIProtocol(Protocol):
     async def plan_research_by_id(self, source_id: str) -> object: ...
 
     async def execute_research(self, plan: object, *, process: bool = True) -> object: ...
+
+    async def material_journey(self, material_id: str) -> object: ...
+
+    async def material_journeys(
+        self, *, case_id: str | None = None, status: str | None = None
+    ) -> object: ...
 
     def adjudication_history(self, material_id: str | None = None) -> object: ...
 
@@ -705,6 +719,36 @@ def build_parser() -> argparse.ArgumentParser:
         help="Stop after authoritative ingestion and skip extraction/graph processing.",
     )
     research.set_defaults(handler=handle_research)
+
+    material_journeys = commands.add_parser(
+        "material-journeys",
+        help="List recorded material runs, newest first.",
+    )
+    material_journeys.add_argument(
+        "--case-id",
+        type=_nonempty,
+        metavar="CASE_ID",
+        help="List only materials durably bound to this accumulated case.",
+    )
+    material_journeys.add_argument(
+        "--status",
+        choices=("committed", "failed", "pending"),
+        metavar="STATUS",
+        help="Filter by lifecycle outcome: committed, failed or pending.",
+    )
+    material_journeys.set_defaults(handler=handle_material_journeys)
+
+    material_journey = commands.add_parser(
+        "material-journey",
+        help=(
+            "Show one material's recorded seven-step journey: steps, run "
+            "audit, failure detail and quality layers."
+        ),
+    )
+    material_journey.add_argument(
+        "material_id", type=_nonempty, metavar="MATERIAL_ID"
+    )
+    material_journey.set_defaults(handler=handle_material_journey)
     return parser
 
 
@@ -974,6 +1018,32 @@ async def handle_discover(args: argparse.Namespace, api: PrismAPIProtocol) -> ob
     return await _await_api_call(api.plan_research_by_id(args.source_id))
 
 
+async def handle_material_journeys(
+    args: argparse.Namespace, api: PrismAPIProtocol
+) -> object:
+    """List recorded material runs as JSON-safe rows, newest first.
+
+    The facade's ordering is kept verbatim (no re-sorting); an empty
+    ledger is the honest empty list, never an error.
+    """
+    views = await _await_api_call(
+        api.material_journeys(case_id=args.case_id, status=args.status)
+    )
+    return [material_row(view) for view in tuple(views)]
+
+
+async def handle_material_journey(
+    args: argparse.Namespace, api: PrismAPIProtocol
+) -> object:
+    """Return one material's seven-step journey projection.
+
+    The projection is the same JSON-safe view the WebUI renders: recorded
+    audit facts only, an unknown material surfaces as LookupError.
+    """
+    view = await _await_api_call(api.material_journey(args.material_id))
+    return journey_view_data(view)
+
+
 _SENSITIVE_KEY = re.compile(
     r"(?:api[_-]?key|authorization|credential|password|passwd|secret|token)",
     re.IGNORECASE,
@@ -1172,5 +1242,7 @@ __all__ = [
     "handle_compare",
     "handle_state",
     "handle_timeline",
+    "handle_material_journey",
+    "handle_material_journeys",
     "main",
 ]
