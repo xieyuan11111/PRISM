@@ -56,6 +56,11 @@ graphiti = [
     "httpx==0.28.1",
 ]
 
+# The AI-callable CLI entry (docs/cli-ai-callable-requirements.md C-1):
+# byte-for-byte equivalent to ``python -m prism.cli``.
+[project.scripts]
+prism = "prism.cli:main_entry"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 
