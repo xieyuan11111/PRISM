@@ -30,11 +30,32 @@ if TYPE_CHECKING:
 
 _PDF_RENDERER_ENV = "PRISM_PDF_RENDERER"
 _MARKDOWN_EXTENSIONS = ("tables", "fenced_code", "sane_lists")
-_REQUIRED_SECTIONS = ("Executive Summary", "Timeline Stages", "Citations")
+# Per-language read-back gates: title, the as-of label, the required section
+# headings and the debate heading as rendered by the ReportService template
+# of the same language.  A document is only exportable when its own language
+# gate passes — the English gate never validates a Chinese report again.
+_PDF_LANGUAGES: dict[str, dict[str, object]] = {
+    "en": {
+        "html_lang": "en",
+        "title": "Evolution Report: {case_id}",
+        "as_of_label": "As of",
+        "sections": ("Executive Summary", "Timeline Stages", "Citations"),
+        "debate": "Debate Interpretation",
+    },
+    "zh-CN": {
+        "html_lang": "zh-CN",
+        "title": "演变报告：{case_id}",
+        "as_of_label": "截至时间",
+        "sections": ("执行摘要", "时间线阶段", "引用与证据定位"),
+        "debate": "辩论解读",
+    },
+}
 # BMP Han ranges only: enough to prove Chinese report text printed as real
 # glyphs instead of tofu, and cheap to scan over the Markdown source.
 _CJK_RUN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]+")
-_AS_OF_LINE = re.compile(r"^[-*]\s+As of:\s*(\S+)\s*$", re.MULTILINE)
+_AS_OF_LINE = re.compile(
+    r"^[-*]\s+(?:As of|截至时间):\s*(\S+)\s*$", re.MULTILINE
+)
 _PDF_INSTALL_HINT = "install with 'pip install -e \".[pdf]\"'"
 _PDF_CSS = """\
 :root { color-scheme: light; }
@@ -116,6 +137,7 @@ class _SourceDetails:
     as_of: datetime
     markdown: str
     markdown_hash: str
+    language: str = "en"
 
 
 def find_chromium_executable() -> Path | None:
@@ -274,13 +296,18 @@ def _pypdf_classes() -> tuple[type[Any], type[Any]]:
     return PdfReader, PdfWriter
 
 
-def render_report_html(markdown: str, case_id: str) -> str:
+def render_report_html(
+    markdown: str, case_id: str, language: str = "en"
+) -> str:
     """Render report Markdown to self-contained, path-free HTML."""
 
     if not isinstance(markdown, str) or not markdown.strip():
         raise ValueError("markdown must be a non-empty string")
     if not isinstance(case_id, str) or not case_id.strip():
         raise ValueError("case_id must be a non-empty string")
+    labels = _PDF_LANGUAGES.get(language)
+    if labels is None:
+        raise ValueError(f"unsupported report language: {language!r}")
     render = _markdown_renderer()
     escaped_markdown = html.escape(markdown, quote=False)
     body = render(
@@ -288,10 +315,12 @@ def render_report_html(markdown: str, case_id: str) -> str:
         extensions=list(_MARKDOWN_EXTENSIONS),
         output_format="html5",
     )
-    title = html.escape(f"Evolution Report: {case_id}", quote=True)
+    title = html.escape(
+        labels["title"].format(case_id=case_id), quote=True
+    )
     return (
         "<!doctype html>\n"
-        '<html lang="zh-CN">\n'
+        f'<html lang="{labels["html_lang"]}">\n'
         "<head>\n"
         '<meta charset="utf-8">\n'
         # Report Markdown is untrusted input: forbid every subresource fetch
@@ -402,19 +431,25 @@ def _as_of_alternatives(markdown: str, as_of: datetime) -> tuple[str, ...]:
 
 
 def _required_pdf_groups(
-    markdown: str, case_id: str, as_of: datetime
+    markdown: str,
+    case_id: str,
+    as_of: datetime,
+    language: str = "en",
 ) -> tuple[tuple[str, ...], ...]:
     """Required PDF strings, each as a group of acceptable spellings."""
 
+    labels = _PDF_LANGUAGES.get(language)
+    if labels is None:
+        raise ValueError(f"unsupported report language: {language!r}")
     groups: list[tuple[str, ...]] = [
-        (f"Evolution Report: {case_id}",),
+        (labels["title"].format(case_id=case_id),),
         (case_id,),
-        ("As of:",),
+        (f"{labels['as_of_label']}:",),
         _as_of_alternatives(markdown, as_of),
     ]
-    groups.extend((section,) for section in _REQUIRED_SECTIONS)
-    if "## Debate Interpretation" in markdown:
-        groups.append(("Debate Interpretation",))
+    groups.extend((section,) for section in labels["sections"])
+    if f"## {labels['debate']}" in markdown:
+        groups.append((labels["debate"],))
     cjk = _cjk_probe(markdown)
     if cjk is not None:
         groups.append((cjk,))
@@ -426,10 +461,13 @@ def _validate_pdf_text(
     markdown: str,
     case_id: str,
     as_of: datetime,
+    language: str = "en",
 ) -> None:
     missing = [
         alternatives[0]
-        for alternatives in _required_pdf_groups(markdown, case_id, as_of)
+        for alternatives in _required_pdf_groups(
+            markdown, case_id, as_of, language
+        )
         if not any(
             _normalize_pdf_text(spelling) in normalized_text
             for spelling in alternatives
@@ -448,17 +486,21 @@ def _finalize_pdf(
     case_id: str,
     markdown_hash: str,
     version_id: str | None,
+    language: str = "en",
 ) -> tuple[bytes, int, str]:
     _, writer_class = _pypdf_classes()
     _, _, normalized_text = _inspect_pdf(payload)
     text_hash = hashlib.sha256(normalized_text.encode("utf-8")).hexdigest()
+    labels = _PDF_LANGUAGES.get(language)
+    if labels is None:
+        raise ValueError(f"unsupported report language: {language!r}")
     try:
         writer = writer_class(clone_from=io.BytesIO(payload))
         writer.add_metadata(
             {
                 "/Creator": "PRISM",
                 "/Producer": "PRISM",
-                "/Title": f"Evolution Report: {case_id}",
+                "/Title": labels["title"].format(case_id=case_id),
                 "/PRISMCaseID": case_id,
                 "/PRISMVersionID": version_id or "",
                 "/PRISMMarkdownHash": markdown_hash,
@@ -488,18 +530,21 @@ def _source_details(source: object) -> _SourceDetails:
             markdown_hash=hashlib.sha256(
                 source.markdown.encode("utf-8")
             ).hexdigest(),
+            language=getattr(source, "language", "en") or "en",
         )
 
     required = ("version_id", "case_id", "as_of", "markdown", "markdown_hash")
     if all(hasattr(source, name) for name in required):
         # ReportVersion is duck-typed so this adapter never imports the ledger
-        # and recreates the old circular dependency.
+        # and recreates the old circular dependency.  ``language`` is optional
+        # for the same reason: legacy rows default to the English gate.
         return _SourceDetails(
             version_id=getattr(source, "version_id"),
             case_id=getattr(source, "case_id"),
             as_of=getattr(source, "as_of"),
             markdown=getattr(source, "markdown"),
             markdown_hash=getattr(source, "markdown_hash"),
+            language=getattr(source, "language", "en") or "en",
         )
     raise TypeError("source must be a ReportDocument or ReportVersion")
 
@@ -598,7 +643,9 @@ class ReportPdfExporter:
         return self._renderer or EdgePdfRenderer()
 
     def _render(self, details: _SourceDetails) -> tuple[bytes, int, str]:
-        html_document = render_report_html(details.markdown, details.case_id)
+        html_document = render_report_html(
+            details.markdown, details.case_id, details.language
+        )
         with tempfile.TemporaryDirectory(prefix="prism-report-pdf-") as temporary:
             rendered_path = Path(temporary) / "report.pdf"
             self._renderer_for_export().render(html_document, rendered_path)
@@ -608,13 +655,18 @@ class ReportPdfExporter:
 
         _, _, normalized_text = _inspect_pdf(payload)
         _validate_pdf_text(
-            normalized_text, details.markdown, details.case_id, details.as_of
+            normalized_text,
+            details.markdown,
+            details.case_id,
+            details.as_of,
+            language=details.language,
         )
         return _finalize_pdf(
             payload,
             case_id=details.case_id,
             markdown_hash=details.markdown_hash,
             version_id=details.version_id,
+            language=details.language,
         )
 
     def _existing_result(
@@ -639,7 +691,11 @@ class ReportPdfExporter:
                 "overwrite"
             )
         _validate_pdf_text(
-            normalized_text, details.markdown, details.case_id, details.as_of
+            normalized_text,
+            details.markdown,
+            details.case_id,
+            details.as_of,
+            language=details.language,
         )
         return ReportPdfExportResult(
             path=target,

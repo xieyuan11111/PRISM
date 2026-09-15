@@ -13,7 +13,11 @@ from typing import Callable
 from prism.analyzer import EvolutionAnalysis
 from prism.config import PathConfig
 from prism.debate import DebateResult
-from prism.report.models import ReportDocument
+from prism.report.models import (
+    REPORT_LANGUAGE_EN,
+    REPORT_LANGUAGES,
+    ReportDocument,
+)
 from prism.report.pdf import ReportPdfExporter, ReportPdfExportResult
 from prism.store.service import DB_FILENAME
 
@@ -35,7 +39,8 @@ CREATE TABLE IF NOT EXISTS {TABLE} (
     debate_input_hash TEXT,
     markdown TEXT NOT NULL,
     parent_version_id TEXT,
-    trigger_type TEXT NOT NULL
+    trigger_type TEXT NOT NULL,
+    language TEXT NOT NULL DEFAULT '{REPORT_LANGUAGE_EN}'
 );
 CREATE INDEX IF NOT EXISTS {TABLE}_case_idx
     ON {TABLE} (case_id, created_at);
@@ -43,7 +48,8 @@ CREATE INDEX IF NOT EXISTS {TABLE}_case_idx
 
 _COLUMNS = (
     "version_id, case_id, as_of, created_at, input_hash, markdown_hash, "
-    "summary_origin, debate_input_hash, markdown, parent_version_id, trigger_type"
+    "summary_origin, debate_input_hash, markdown, parent_version_id, "
+    "trigger_type, language"
 )
 
 
@@ -119,6 +125,7 @@ class ReportVersion:
     markdown: str
     parent_version_id: str | None
     trigger: str
+    language: str = REPORT_LANGUAGE_EN
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -163,6 +170,9 @@ class ReportVersion:
         if self.trigger not in _TRIGGERS:
             allowed = ", ".join(sorted(_TRIGGERS))
             raise ValueError(f"trigger must be one of: {allowed}")
+        if self.language not in REPORT_LANGUAGES:
+            allowed = ", ".join(sorted(REPORT_LANGUAGES))
+            raise ValueError(f"language must be one of: {allowed}")
 
 
 class ReportVersionLedger:
@@ -188,15 +198,45 @@ class ReportVersionLedger:
         database.parent.mkdir(parents=True, exist_ok=True)
         self._connection = sqlite3.connect(str(database))
         self._connection.executescript(_DDL)
+        self._migrate_language_column()
         self._connection.commit()
         self._closed = False
+
+    def _migrate_language_column(self) -> None:
+        """Add the ``language`` column in place to pre-language databases.
+
+        Additive migration only: every legacy row is an English report and
+        reads back as ``language='en'`` (the column default), never
+        mislabelled as another language.  Both statements are fixed literals
+        — the table name and default are project constants, never external
+        input.
+        """
+        columns = {
+            row[0]
+            for row in self._connection.execute(
+                "SELECT name FROM pragma_table_info('report_versions')"
+            )
+        }
+        if "language" not in columns:
+            self._connection.execute(
+                "ALTER TABLE report_versions ADD COLUMN language "
+                "TEXT NOT NULL DEFAULT 'en'"
+            )
 
     def input_hash(
         self,
         analysis: EvolutionAnalysis,
         debate_result: DebateResult | None = None,
+        *,
+        language: str = REPORT_LANGUAGE_EN,
     ) -> str:
-        """Hash the exact structured report inputs, not their timestamps."""
+        """Hash the exact structured report inputs, not their timestamps.
+
+        The language participates in the digest so the same analysis yields
+        independent immutable versions per language.  English keeps the
+        legacy payload byte-identical, so input hashes saved before the
+        language capability existed still match.
+        """
 
         if not isinstance(analysis, EvolutionAnalysis):
             raise TypeError("analysis must be an EvolutionAnalysis")
@@ -204,15 +244,19 @@ class ReportVersionLedger:
             debate_result, DebateResult
         ):
             raise TypeError("debate_result must be a DebateResult")
-        return _digest(
-            {
-                "schema": _HASH_SCHEMA,
-                "analysis": asdict(analysis),
-                "debate": asdict(debate_result)
-                if debate_result is not None
-                else None,
-            }
-        )
+        if language not in REPORT_LANGUAGES:
+            allowed = ", ".join(sorted(REPORT_LANGUAGES))
+            raise ValueError(f"language must be one of: {allowed}")
+        payload: dict[str, object] = {
+            "schema": _HASH_SCHEMA,
+            "analysis": asdict(analysis),
+            "debate": asdict(debate_result)
+            if debate_result is not None
+            else None,
+        }
+        if language != REPORT_LANGUAGE_EN:
+            payload["language"] = language
+        return _digest(payload)
 
     def debate_input_hash(self, debate_result: DebateResult) -> str:
         if not isinstance(debate_result, DebateResult):
@@ -244,7 +288,9 @@ class ReportVersionLedger:
         if debate_result is not None and document.debate is not debate_result:
             raise ValueError("document must carry the supplied debate result")
 
-        digest = self.input_hash(analysis, debate_result)
+        digest = self.input_hash(
+            analysis, debate_result, language=document.language
+        )
         existing = self.find_by_input_hash(digest)
         if existing is not None:
             return existing
@@ -267,11 +313,12 @@ class ReportVersionLedger:
             markdown=document.markdown,
             parent_version_id=parent.version_id if parent is not None else None,
             trigger=trigger,
+            language=document.language,
         )
         try:
             self._connection.execute(
                 f"INSERT INTO {TABLE} ({_COLUMNS}) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     record.version_id,
                     record.case_id,
@@ -284,6 +331,7 @@ class ReportVersionLedger:
                     record.markdown,
                     record.parent_version_id,
                     record.trigger,
+                    record.language,
                 ),
             )
             self._connection.commit()
@@ -377,6 +425,7 @@ class ReportVersionLedger:
             markdown=row[8],
             parent_version_id=row[9],
             trigger=row[10],
+            language=row[11],
         )
 
 

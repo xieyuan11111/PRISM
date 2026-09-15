@@ -250,7 +250,7 @@ def test_report_version_export_is_idempotent_and_refuses_different_content(
 
 
 def test_report_service_and_ledger_delegate_to_pdf_exporter(tmp_path: Path) -> None:
-    executable = edge_executable()
+    edge_executable()
     paths = make_paths(tmp_path)
     document = make_document()
     analysis = make_analysis()
@@ -297,7 +297,7 @@ class DummyBus:
 
 
 def test_api_export_report_pdf_delegates_to_version_ledger(tmp_path: Path) -> None:
-    executable = edge_executable()
+    edge_executable()
     paths = make_paths(tmp_path)
     ledger = ReportVersionLedger(paths)
     try:
@@ -477,7 +477,7 @@ def test_validate_pdf_text_requires_cjk_text_when_markdown_has_cjk() -> None:
 def test_reopened_ledger_exports_the_saved_version_association(
     tmp_path: Path,
 ) -> None:
-    executable = edge_executable()
+    edge_executable()
     paths = make_paths(tmp_path)
     ledger = ReportVersionLedger(paths)
     try:
@@ -495,3 +495,141 @@ def test_reopened_ledger_exports_the_saved_version_association(
     assert result.markdown_hash == version.markdown_hash
     assert result.path == paths.output_dir / OUTPUT_RELATIVE
     assert result.path.is_file()
+
+
+# --- Chinese (zh-CN) report PDFs ------------------------------------------------
+
+
+ZH_CASE_ID = "case-pdf-zh"
+
+
+def make_zh_analysis() -> EvolutionAnalysis:
+    stage = TimelineStage(
+        episode_key="node-w30",
+        kind="evolution_node",
+        layer="fact",
+        summary="W30 全文证据已入图。",
+        valid_at=datetime(2026, 8, 20, tzinfo=UTC),
+        invalid_at=None,
+        reference_time=datetime(2026, 8, 20, tzinfo=UTC),
+        source_ids=("mat-w30",),
+        node_type="publication",
+    )
+    return EvolutionAnalysis(
+        case_id=ZH_CASE_ID,
+        as_of=AS_OF,
+        case_type="academic_discourse",
+        stages=(stage,),
+        turning_points=(),
+        change_reasons=(),
+        evidence_gaps=(),
+        open_questions=(),
+    )
+
+
+def make_zh_document() -> ReportDocument:
+    return asyncio.run(
+        ReportService().report(make_zh_analysis(), language="zh-CN")
+    )
+
+
+ZH_AS_OF_TEXT = "2026-09-01T00:00:00+00:00"
+
+
+def make_zh_markdown() -> str:
+    return (
+        f"# 演变报告：{ZH_CASE_ID}\n\n"
+        f"- 案例 ID: {ZH_CASE_ID}\n"
+        f"- 截至时间: {ZH_AS_OF_TEXT}\n\n"
+        "## 执行摘要\n\n"
+        "该案例记录了 W30 的机制证据。\n\n"
+        "## 时间线阶段\n\n"
+        "| 事件键 | 类型 | 层 |\n| --- | --- | --- |\n"
+        "| `node-w30` | evolution_node | fact |\n\n"
+        "## 引用与证据定位\n\n"
+        "- `mat-w30` — 引用它的 episode：`node-w30`\n"
+    )
+
+
+def test_render_report_html_localizes_title_and_lang_for_chinese() -> None:
+    rendered = render_report_html(make_zh_markdown(), ZH_CASE_ID, language="zh-CN")
+    assert '<html lang="zh-CN">' in rendered
+    assert f"<title>演变报告：{ZH_CASE_ID}</title>" in rendered
+
+    # The default stays the English document shape.
+    english = render_report_html(
+        "# Evolution Report: case-en\n", "case-en"
+    )
+    assert '<html lang="en">' in english
+    assert "<title>Evolution Report: case-en</title>" in english
+
+
+def test_validate_pdf_text_accepts_a_chinese_report() -> None:
+    from prism.report.pdf import _validate_pdf_text
+
+    markdown = make_zh_markdown()
+    pdf_text = (
+        f"演变报告：{ZH_CASE_ID} 案例 ID: {ZH_CASE_ID} "
+        f"截至时间: {ZH_AS_OF_TEXT} 执行摘要 时间线阶段 引用与证据定位 "
+        "该案例记录了 W30 的机制证据。"
+    )
+    _validate_pdf_text(
+        "".join(pdf_text.split()), markdown, ZH_CASE_ID, AS_OF, language="zh-CN"
+    )
+
+    # A Chinese document missing a required Chinese section fails closed.
+    truncated = pdf_text.replace("时间线阶段", "").replace("引用与证据定位", "")
+    with pytest.raises(ReportPdfValidationError):
+        _validate_pdf_text(
+            "".join(truncated.split()), markdown, ZH_CASE_ID, AS_OF, language="zh-CN"
+        )
+
+
+def test_validate_pdf_text_rejects_chinese_markdown_under_english_groups() -> None:
+    """Language is explicit: the English section gate must not silently pass
+    a Chinese report (the pre-localization failure mode)."""
+    from prism.report.pdf import _validate_pdf_text
+
+    markdown = make_zh_markdown()
+    with pytest.raises(ReportPdfValidationError):
+        _validate_pdf_text(
+            "".join(make_zh_markdown().split()),
+            markdown,
+            ZH_CASE_ID,
+            AS_OF,
+            language="en",
+        )
+
+
+def test_chinese_version_export_passes_readback_validation(tmp_path: Path) -> None:
+    """Acceptance: a saved zh-CN version exports to PDF whose read-back text
+    carries the Chinese title, Chinese sections and the W30 CJK body."""
+    executable = edge_executable()
+    paths = make_paths(tmp_path)
+    ledger = ReportVersionLedger(paths)
+    try:
+        analysis = make_zh_analysis()
+        document = make_zh_document()
+        version = ledger.save(document, analysis, trigger="initial")
+        assert version.language == "zh-CN"
+
+        exporter = ReportPdfExporter(paths, renderer=EdgePdfRenderer(executable))
+        result = exporter.export_version(version, "reports/case-pdf-zh.pdf")
+
+        page_count, text = read_pdf(result.path)
+        normalized = "".join(text.split())
+        assert page_count >= 1
+        for expected in (
+            f"演变报告：{ZH_CASE_ID}",
+            "截至时间",
+            "执行摘要",
+            "时间线阶段",
+            "引用与证据定位",
+            "W30全文证据已入图",
+        ):
+            assert "".join(expected.split()) in normalized
+
+        reader = PdfReader(result.path)
+        assert reader.metadata.get("/Title") == f"演变报告：{ZH_CASE_ID}"
+    finally:
+        ledger.close()

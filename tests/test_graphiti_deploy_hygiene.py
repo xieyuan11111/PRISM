@@ -163,7 +163,7 @@ def test_spike_plan_uses_relative_references_only():
     for marker in PERSONAL_MARKERS:
         assert marker not in text.lower(), f"plan doc: marker {marker!r}"
     for pattern in SECRET_PATTERNS:
-        assert not pattern.search(text), f"plan doc: secret pattern found"
+        assert not pattern.search(text), "plan doc: secret pattern found"
     # Repo references are relative (deploy/..., docs/..., src/..., tests/...).
     assert "deploy/graphiti-spike/" in text
     assert "docs/graphiti-spike-plan.md" in text

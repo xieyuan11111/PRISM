@@ -764,7 +764,7 @@ def test_fake_registry_records_the_graphiti_uuid_for_bodyless_restart_attributio
     first = make_backend(client, registry=registry)
     episode = make_episode()
     assert run(first.add_episode(episode)) is True
-    stored = next(iter(client.store.episodes.values()))
+    next(iter(client.store.episodes.values()))
 
     restarted = make_backend(client, registry=registry)
     assert restarted.graphiti_uuids == {}

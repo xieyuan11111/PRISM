@@ -321,7 +321,11 @@ def test_scholarly_client_routes_pmc_url_to_europepmc():
     )
     item = run(client.fetch(PMC_URL))
     assert item.pmcid == PMCID
-    assert europepmc.calls == [EUROPEPMC_PMCID_URL]
+    # The identifier lookup stays first; the open-access full-text endpoint
+    # is then attempted and its absence leaves the abstract-only item.
+    assert europepmc.calls[0] == EUROPEPMC_PMCID_URL
+    assert item.access_level == "abstract_only"
+    assert item.content is None
 
 
 def test_doi_in_url_still_takes_the_crossref_path_before_pubmed_routing():

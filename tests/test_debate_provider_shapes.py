@@ -260,7 +260,7 @@ def test_academic_discourse_default_profiles_are_used():
 
     from prism.debate import DebateService
 
-    service = DebateService(
+    DebateService(
         fixtures.CutoffAnalyzer("academic_discourse"), None, ledger=None
     )
     from prism.debate.service import _selected_profiles

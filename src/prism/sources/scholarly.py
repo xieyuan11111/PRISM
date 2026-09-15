@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timezone
 from html.parser import HTMLParser
 from typing import Protocol
@@ -408,6 +408,10 @@ class AcademicRecord:
     container_title: str | None = None
     pmid: str | None = None
     pmcid: str | None = None
+    # Open-access full text (Markdown converted from the publisher XML), set
+    # exactly when access_level is "fulltext".  Abstract/metadata-only records
+    # never carry a body, so a summary can never masquerade as full text.
+    body_markdown: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "title", _text(self.title, "title"))
@@ -438,14 +442,20 @@ class AcademicRecord:
             raise ValueError("abstract_only records require an abstract")
         if self.access_level == "metadata_only" and self.abstract is not None:
             raise ValueError("metadata_only records must not contain an abstract")
+        if self.access_level == "fulltext":
+            if self.body_markdown is None or not self.body_markdown.strip():
+                raise ValueError("fulltext records require body_markdown")
+        elif self.body_markdown is not None:
+            raise ValueError("only fulltext records may carry body_markdown")
 
     def to_source_item(self) -> SourceItem:
-        """Convert metadata to an honest source item (never full text).
+        """Convert the record to an honest source item.
 
         The bibliographic identity — ``authors``, ``container_title`` and the
         public identifiers (``doi``/``pmid``/``pmcid``) — is preserved so
-        ingestion can keep it in the corpus frontmatter; only the body stays
-        ``None``.
+        ingestion can keep it in the corpus frontmatter.  ``content`` carries
+        the converted full text only for genuinely open full-text records;
+        abstract/metadata records stay summary-only.
         """
         return SourceItem(
             title=self.title,
@@ -454,7 +464,7 @@ class AcademicRecord:
             link=self.link,
             published_at=self.published_at,
             summary=self.abstract,
-            content=None,
+            content=self.body_markdown,
             type="academic",
             access_level=self.access_level,
             retrieval_level=self.access_level,
@@ -988,6 +998,85 @@ def _xml_local_name(tag: str) -> str:
     return tag.rsplit("}", 1)[-1]
 
 
+# JATS elements that are article structure or display objects rather than
+# prose; their inner text (including captions) is never promoted to body.
+_JATS_SKIP_ELEMENTS = frozenset(
+    {"table-wrap", "fig", "graphic", "disp-formula", "ref-list", "label", "xref-ref"}
+)
+
+
+def _jats_paragraph(element: ElementTree.Element) -> str:
+    return " ".join("".join(element.itertext()).split())
+
+
+def _jats_walk(element: ElementTree.Element, out: list[str]) -> None:
+    for child in element:
+        name = _xml_local_name(child.tag)
+        if name in _JATS_SKIP_ELEMENTS:
+            continue
+        if name == "sec":
+            for node in child:
+                if _xml_local_name(node.tag) == "title":
+                    heading = " ".join("".join(node.itertext()).split())
+                    if heading:
+                        out.append(f"## {heading}")
+                elif _xml_local_name(node.tag) == "p":
+                    out.append(_jats_paragraph(node))
+                else:
+                    _jats_walk(node, out)
+        elif name == "p":
+            out.append(_jats_paragraph(child))
+        elif name == "title":
+            heading = _jats_paragraph(child)
+            if heading:
+                out.append(f"## {heading}")
+        else:
+            _jats_walk(child, out)
+
+
+def _jats_body_markdown(body: str, url: str) -> str:
+    """Convert open-access JATS full text to clean article Markdown.
+
+    The document is untrusted input: DOCTYPE/ENTITY declarations are refused
+    before parsing (external entities stay disabled), and only the article
+    body is converted — site navigation never appears because no HTML page is
+    fetched.  Title/date/author identity comes from the validated metadata
+    record, not from this markup.
+    """
+    if "<!DOCTYPE" in body.upper() or "<!ENTITY" in body.upper():
+        raise SourceFetchError(
+            FailureKind.PARSE, url, "Europe PMC XML declarations are not allowed"
+        )
+    try:
+        root = ElementTree.fromstring(body)
+    except ElementTree.ParseError as error:
+        raise SourceFetchError(
+            FailureKind.PARSE, url, "full-text response is not valid XML"
+        ) from error
+
+    body_element = None
+    for element in root.iter():
+        if _xml_local_name(element.tag) == "body":
+            body_element = element
+            break
+    blocks: list[str] = []
+    if body_element is not None:
+        _jats_walk(body_element, blocks)
+    paragraphs = [block for block in blocks if block.strip()]
+    if not paragraphs:
+        raise SourceFetchError(
+            FailureKind.PARSE, url, "full-text response contains no article body"
+        )
+    return "\n\n".join(paragraphs)
+
+
+def _europepmc_fulltext_url(pmcid: str) -> str:
+    return (
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/"
+        f"{quote(pmcid, safe='')}/fullTextXML"
+    )
+
+
 def _europepmc_xml(body: str, url: str) -> Mapping[str, object]:
     """Convert the public Europe PMC XML shape to the JSON-equivalent map."""
     if "<!DOCTYPE" in body.upper() or "<!ENTITY" in body.upper():
@@ -1135,6 +1224,38 @@ class EuropePmcClient(_ApiClient):
             pmcid=pmcid,
         )
 
+    async def fetch_fulltext(
+        self, value: str, *, retrieved_at: datetime
+    ) -> AcademicRecord:
+        """Resolve a PMID/PMCID and, when open-access full text exists,
+        return a ``fulltext`` record carrying the converted article body.
+
+        The bibliographic metadata stays authoritative exactly as in
+        :meth:`fetch` (validated identifier match, Europe PMC publication
+        date).  An unavailable full text — a ``404`` (no open-access copy)
+        or an endpoint transport failure — leaves the abstract/metadata
+        record standing instead of failing the resolution; a malformed body
+        (including DOCTYPE/ENTITY declarations) is a hard content failure
+        and raises.  Access controls are never bypassed.
+        """
+        record = await self.fetch(value, retrieved_at=retrieved_at)
+        if record.pmcid is None:
+            return record
+        url = _europepmc_fulltext_url(record.pmcid)
+        try:
+            response = await self._response(url)
+        except SourceFetchError as error:
+            if error.kind is FailureKind.PARSE:
+                raise
+            return record
+        body = _jats_body_markdown(response.body, url)
+        return replace(
+            record,
+            access_level="fulltext",
+            body_markdown=body,
+            abstract=record.abstract,
+        )
+
 
 def _merge_openalex_abstract(record: AcademicRecord, enriched: AcademicRecord) -> AcademicRecord:
     """Upgrade a Crossref ``metadata_only`` record with an OpenAlex abstract.
@@ -1234,8 +1355,7 @@ class ScholarlyMetadataClient:
                 FailureKind.PARSE,
                 _safe_error_url(value),
                 "no scholarly identifier found in URL",
-            )
-        # Crossref is the primary source and is queried at most once per DOI.
+            )        # Crossref is the primary source and is queried at most once per DOI.
         # OpenAlex is consulted at most once per DOI, and only for one of two
         # reasons: Crossref failed (fallback), or Crossref answered without an
         # abstract (enrichment).  A failed fallback re-raises the original
@@ -1269,7 +1389,38 @@ class ScholarlyMetadataClient:
             raise SourceFetchError(
                 FailureKind.PARSE, identifier, "Europe PMC client is not configured"
             )
+        # Prefer the reliable full-text/metadata API for PMCIDs when the
+        # configured client supports it; fetch_fulltext itself degrades to
+        # the metadata record when no open-access body is available.  Older
+        # fetch-only clients keep their exact previous behavior.
+        fulltext = getattr(self._europepmc, "fetch_fulltext", None)
+        if callable(fulltext):
+            try:
+                pmcid = normalize_pmcid(identifier)
+            except (TypeError, ValueError):
+                pmcid = None
+            if pmcid is not None:
+                return await fulltext(identifier, retrieved_at=retrieved_at)
         return await self._europepmc.fetch(identifier, retrieved_at=retrieved_at)
+
+    async def fetch_fulltext(self, value: str) -> SourceItem:
+        """Resolve one PMCID-bearing URL through the Europe PMC full-text API.
+
+        Only genuine PMC article URLs are accepted (never identifiers read
+        out of arbitrary pages).  The returned item — open-access body plus
+        authoritative metadata — flows through the same SourceIntake/Ingestion
+        boundary as every other source; a URL without a usable PMCID raises
+        rather than degrading to a page fetch.
+        """
+        retrieved_at = _aware(self._clock(), "clock result")
+        pmcid = extract_pmcid(value)
+        if pmcid is None:
+            raise SourceFetchError(
+                FailureKind.PARSE,
+                _safe_error_url(value),
+                "no PMCID found in URL for full-text resolution",
+            )
+        return (await self._fetch_pubmed(pmcid, retrieved_at)).to_source_item()
 
     async def fetch_by_title(
         self,

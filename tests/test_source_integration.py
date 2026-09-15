@@ -40,9 +40,10 @@ from prism.config import (
     SourceConfig,
 )
 from prism.extraction import ExtractionService
+from prism.events import EventBus
 from prism.ingestion import IngestionService
 from prism.llm import TransportResponse
-from prism.pipeline import PipelineRun, PipelineService
+from prism.pipeline import PipelineRun, PipelineService, StoreMaterialResolver
 from prism.runtime import OfflineExtractor, create_runtime
 from prism.sources import (
     FailureKind,
@@ -51,6 +52,7 @@ from prism.sources import (
     SourceItem,
     SourceService,
 )
+from prism.store import EvidenceStore
 
 
 NOW = datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc)
@@ -158,8 +160,18 @@ class StubIngestion:
 
 
 class StubStore:
+    """Records index calls; the fetch path indexes before announcing so the
+    event-driven pipeline can resolve the material (docs §12.4)."""
+
+    def __init__(self) -> None:
+        self.indexed: list[object] = []
+
     def index_file(self, path):
-        raise AssertionError("indexing belongs to the pipeline stage")
+        self.indexed.append(path)
+        return None
+
+    def get(self, source_id):
+        return None
 
     def search(self, criteria, *, limit, offset):
         return []
@@ -375,6 +387,110 @@ def test_fetch_source_page_item_uses_full_content(tmp_path: Path) -> None:
     assert pipeline.calls[0][0].material.content.startswith(
         "The ministry announced the new measures today."
     )
+
+
+def test_fetch_source_indexes_corpus_before_announcing_for_both_process_modes(
+    tmp_path: Path,
+) -> None:
+    """Regression (docs/case-driven-auto-research-loop.md §12.4).
+
+    A real ``prism fetch`` run ingested the corpus (material + raw files
+    existed) yet the automatic pipeline's event subscriber failed with
+    ``LookupError: material not found`` and the CLI exited 1: the fetch path
+    announced ``material.ingested`` before the corpus had ever been indexed
+    into the evidence store, so ``StoreMaterialResolver`` could not rebuild
+    the material from the event.  Both the processed and ``--no-process``
+    paths must leave the material resolvable to event subscribers, and a
+    genuine pipeline failure must still surface as a failure.
+    """
+    def scenario(process: bool, root: Path):
+        paths = PathConfig(
+            data_dir=root / "data",
+            raw_dir=root / "raw",
+            corpus_dir=root / "corpus",
+        ).resolve(root)
+        store = EvidenceStore(paths)
+        store.initialize()
+        bus = EventBus()
+        resolver = StoreMaterialResolver(store, paths)
+        resolved: list[object] = []
+
+        async def subscriber(event):
+            resolved.append(resolver(event))
+
+        bus.subscribe("material.ingested", subscriber)
+
+        async def run():
+            await bus.start()
+            try:
+                api = PrismAPI(
+                    IngestionService(paths),
+                    store,
+                    StubGraph(),
+                    bus,
+                    source_service=make_source_service(getter),
+                    pipeline_service=FakePipeline() if process else None,
+                    source_raw_dir=root / "raw",
+                )
+                report = await api.fetch_source(PAGE_URL, process=process)
+            finally:
+                await bus.stop()
+            return report
+
+        getter = FakeGetter({PAGE_URL: ok(PAGE_URL, PAGE_BODY)})
+        try:
+            report = asyncio.run(run())
+        finally:
+            store.close()
+        return report, resolved, bus.errors, store
+
+    for process in (True, False):
+        root = tmp_path / f"process-{process}"
+        report, resolved, errors, store = scenario(process, root)
+        (item,) = report.items
+        assert store.get(item.material_id) is not None
+        # The event-driven resolver rebuilds the announced material instead
+        # of raising "material not found" behind a successful ingest.
+        assert errors == ()
+        assert len(resolved) == 1
+        assert resolved[0].material.id == item.material_id
+        assert resolved[0].corpus_path == item.corpus_path
+
+
+def test_fetch_source_pipeline_failure_still_fails_the_fetch(tmp_path: Path) -> None:
+    """Indexing before announcing never turns a real pipeline failure into a
+    fake success: the failure still propagates from fetch_source."""
+    getter = FakeGetter({PAGE_URL: ok(PAGE_URL, PAGE_BODY)})
+    paths = PathConfig(
+        data_dir=tmp_path / "data",
+        raw_dir=tmp_path / "raw",
+        corpus_dir=tmp_path / "corpus",
+    ).resolve(tmp_path)
+    store = EvidenceStore(paths)
+    store.initialize()
+    bus = EventBus()
+    try:
+        async def run():
+            await bus.start()
+            try:
+                api = PrismAPI(
+                    IngestionService(paths),
+                    store,
+                    StubGraph(),
+                    bus,
+                    source_service=make_source_service(getter),
+                    pipeline_service=FakePipeline(explode=True),
+                    source_raw_dir=tmp_path / "raw",
+                )
+                await api.fetch_source(PAGE_URL, process=True)
+            finally:
+                await bus.stop()
+
+        with pytest.raises(RuntimeError, match="pipeline exploded"):
+            asyncio.run(run())
+        assert bus.errors == ()  # failed inline, not as a dispatch error
+    finally:
+        store.close()
 
 
 def test_fetch_source_process_false_ingests_without_pipeline(tmp_path: Path) -> None:

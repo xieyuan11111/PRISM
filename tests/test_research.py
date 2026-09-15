@@ -328,7 +328,7 @@ def test_query_is_frozen_and_normalizes_collections():
 
 
 def test_query_rejects_empty_query_reason_and_collections():
-    win = window()
+    window()
     with pytest.raises(ValueError, match="query"):
         query(text="   ")
     with pytest.raises(ValueError, match="reason"):

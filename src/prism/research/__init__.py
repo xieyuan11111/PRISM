@@ -23,6 +23,7 @@ from .models import (
     CONCEPT_TARGET_MAX,
     CONCEPT_TARGET_MIN,
     MAX_RESEARCH_CONCEPTS,
+    MAX_RESEARCH_QUERIES,
     ResearchConcept,
     ResearchPlan,
     ResearchWindow,
@@ -70,7 +71,15 @@ from .firecrawl_http import (
     FirecrawlJsonHttpClient,
     FirecrawlNoRedirectHandler,
 )
-from .planner import SOURCE_SELECTOR_ROLE, ResearchPlanError, ResearchPlanner
+from .planner import (
+    PLANNER_REQUEST_MAX_CONCEPTS,
+    PLANNER_REQUEST_MAX_QUERIES,
+    PLANNER_REQUEST_RETRY_CONCEPTS,
+    PLANNER_REQUEST_RETRY_QUERIES,
+    SOURCE_SELECTOR_ROLE,
+    ResearchPlanError,
+    ResearchPlanner,
+)
 from .provider import SearchProvider
 
 __all__ = [
@@ -90,6 +99,11 @@ __all__ = [
     "CONCEPT_TARGET_MAX",
     "CONCEPT_TARGET_MIN",
     "MAX_RESEARCH_CONCEPTS",
+    "MAX_RESEARCH_QUERIES",
+    "PLANNER_REQUEST_MAX_CONCEPTS",
+    "PLANNER_REQUEST_MAX_QUERIES",
+    "PLANNER_REQUEST_RETRY_CONCEPTS",
+    "PLANNER_REQUEST_RETRY_QUERIES",
     "PRIORITY_MAX",
     "PRIORITY_MIN",
     "RESEARCH_PHASES",

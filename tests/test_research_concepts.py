@@ -12,7 +12,6 @@ from prism.domain import Material
 from prism.research import (
     ResearchConcept,
     ResearchPlan,
-    ResearchPlanError,
     ResearchPlanner,
     ResearchWindow,
     SearchQuery,
@@ -172,7 +171,12 @@ def test_llm_concepts_are_parsed_and_queries_are_bound_to_them():
     assert plan.concepts[0].concept_id == "retention"
     assert plan.queries[0].concept_id == "retention"
     assert plan.queries[0].result_limit == 20
-    assert "every searchable concept" in router.calls[0][1].lower()
+    prompt = router.calls[0][1].lower()
+    # Single-completion output budget (not the plan-level 50/60 hard caps):
+    # the prompt must state exactly how much the model may return.
+    assert "at most 10 concepts" in prompt
+    assert "at most 15 queries" in prompt
+    assert "at most 50" not in prompt
 
 
 def test_old_llm_payload_without_concepts_still_loads_and_serializes():
