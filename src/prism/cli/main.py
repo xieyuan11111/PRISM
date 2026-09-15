@@ -80,7 +80,12 @@ class PrismAPIProtocol(Protocol):
     ) -> object: ...
 
     async def report_case(
-        self, case_id: str, as_of: datetime | None = None, use_llm: bool = True
+        self,
+        case_id: str,
+        as_of: datetime | None = None,
+        use_llm: bool = True,
+        *,
+        language: str = "en",
     ) -> object: ...
 
     async def save_report_version(
@@ -90,6 +95,8 @@ class PrismAPIProtocol(Protocol):
         use_llm: bool = True,
         debate_result: object | None = None,
         trigger: str = "initial",
+        *,
+        language: str = "en",
     ) -> object: ...
 
     async def report_versions(
@@ -113,7 +120,12 @@ class PrismAPIProtocol(Protocol):
     ) -> object: ...
 
     async def rebuild_report(
-        self, case_id: str, as_of: datetime | None = None, use_llm: bool = True
+        self,
+        case_id: str,
+        as_of: datetime | None = None,
+        use_llm: bool = True,
+        *,
+        language: str = "en",
     ) -> object: ...
 
     async def case_overviews(self, **filters: object) -> object: ...
@@ -549,6 +561,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Persist the rendered report as an immutable version.",
     )
+    report.add_argument(
+        "--lang",
+        choices=("en", "zh-CN"),
+        default="en",
+        help="Report language: en (default) or zh-CN (native Chinese template).",
+    )
     report.set_defaults(handler=handle_report)
 
     report_versions = commands.add_parser(
@@ -615,6 +633,12 @@ def build_parser() -> argparse.ArgumentParser:
     rebuild_report.add_argument("case_id", type=_nonempty, metavar="CASE_ID")
     rebuild_report.add_argument("--as-of", type=_aware_datetime, metavar="TIMESTAMP")
     rebuild_report.add_argument("--no-llm", action="store_true")
+    rebuild_report.add_argument(
+        "--lang",
+        choices=("en", "zh-CN"),
+        default="en",
+        help="Report language: en (default) or zh-CN (native Chinese template).",
+    )
     rebuild_report.set_defaults(handler=handle_rebuild_report)
 
     debate = commands.add_parser(
@@ -852,15 +876,29 @@ async def handle_bind_material(
 
 
 async def handle_report(args: argparse.Namespace, api: PrismAPIProtocol) -> object:
-    """Delegate a parsed report command to the injected facade."""
+    """Delegate a parsed report command to the injected facade.
+
+    ``language`` is forwarded only for the non-default language, so an
+    older injected facade keeps working unchanged for English reports.
+    """
+    language = {"en": None, "zh-CN": "zh-CN"}[args.lang]
     if args.save:
         return await _await_api_call(
             api.save_report_version(
-                args.case_id, args.as_of, use_llm=not args.no_llm, trigger="initial"
+                args.case_id,
+                args.as_of,
+                use_llm=not args.no_llm,
+                trigger="initial",
+                **({"language": language} if language is not None else {}),
             )
         )
     return await _await_api_call(
-        api.report_case(args.case_id, args.as_of, use_llm=not args.no_llm)
+        api.report_case(
+            args.case_id,
+            args.as_of,
+            use_llm=not args.no_llm,
+            **({"language": language} if language is not None else {}),
+        )
     )
 
 async def handle_cases(args: argparse.Namespace, api: PrismAPIProtocol) -> object:
@@ -934,9 +972,13 @@ async def handle_rebuild_report(
     args: argparse.Namespace, api: PrismAPIProtocol
 ) -> object:
     """Delegate an explicit report rebuild to the injected facade."""
+    language = {"en": None, "zh-CN": "zh-CN"}[args.lang]
     return await _await_api_call(
         api.rebuild_report(
-            args.case_id, args.as_of, use_llm=not args.no_llm
+            args.case_id,
+            args.as_of,
+            use_llm=not args.no_llm,
+            **({"language": language} if language is not None else {}),
         )
     )
 

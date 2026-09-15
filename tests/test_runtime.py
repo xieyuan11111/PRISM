@@ -16,7 +16,6 @@ from prism.sources import HttpResponse, ScholarlyMetadataClient
 from prism.events import Event
 from prism.graph import GraphEpisode
 from prism.runtime import (
-    OfflineGraphBackend,
     PrismRuntime,
     SQLiteOfflineGraphBackend,
     create_runtime,

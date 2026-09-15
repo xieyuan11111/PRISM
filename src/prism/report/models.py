@@ -26,6 +26,13 @@ SUMMARY_ORIGIN_LLM = "llm"
 SUMMARY_ORIGIN_FALLBACK = "fallback"
 SUMMARY_ORIGINS = frozenset({SUMMARY_ORIGIN_LLM, SUMMARY_ORIGIN_FALLBACK})
 
+# Report languages.  English stays the default (existing behavior and
+# versions are unchanged); Simplified Chinese is the explicit opt-in
+# rendered natively by ReportService and validated by the PDF exporter.
+REPORT_LANGUAGE_EN = "en"
+REPORT_LANGUAGE_ZH_CN = "zh-CN"
+REPORT_LANGUAGES = frozenset({REPORT_LANGUAGE_EN, REPORT_LANGUAGE_ZH_CN})
+
 
 def _require_text(name: str, value: str) -> None:
     if not isinstance(value, str) or not value.strip():
@@ -151,6 +158,7 @@ class ReportDocument:
     case_status: str | None = None
     invalidated_stages: tuple[TimelineStage, ...] = ()
     debate: DebateResult | None = None
+    language: str = REPORT_LANGUAGE_EN
     publication_node_count: int = field(init=False)
     substantive_node_count: int = field(init=False)
 
@@ -198,6 +206,9 @@ class ReportDocument:
         )
         if self.debate is not None and not isinstance(self.debate, DebateResult):
             raise TypeError("debate must be a DebateResult")
+        if self.language not in REPORT_LANGUAGES:
+            allowed = ", ".join(sorted(REPORT_LANGUAGES))
+            raise ValueError(f"language must be one of: {allowed}")
         publication_count = sum(
             1
             for stage in self.stages

@@ -24,7 +24,7 @@ from datetime import datetime, timezone
 from prism.analyzer import AnalyzerService
 from prism.api import PrismAPI
 from prism.cases import LegacyCaseLoader
-from prism.domain import Claim, EvolutionCase, EvolutionNode, Material, TemporalFact
+from prism.domain import Claim, EvolutionCase, Material, TemporalFact
 from prism.graph import GraphService
 from prism.report import ReportService
 

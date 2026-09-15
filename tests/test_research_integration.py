@@ -17,7 +17,6 @@ from prism.research import (
     ResearchExecutionReport,
     ResearchPlan,
     ResearchPlanner,
-    ResearchExecutor,
 )
 from prism.sources import SourceItem
 from prism.store import IndexEntry

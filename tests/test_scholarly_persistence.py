@@ -498,8 +498,11 @@ def test_fetch_source_default_process_skips_extraction_for_abstract_only(tmp_pat
     run = item.pipeline
     assert run is not None and run.status == "completed"
     assert [stage.name for stage in run.stages] == ["index", "extract", "graph"]
+    # The fetch path indexes the corpus before announcing/processing (docs
+    # §12.4), so the pipeline's own index stage is an idempotent re-index:
+    # "unchanged" instead of the first-write "indexed".
     assert [stage.status for stage in run.stages] == [
-        "indexed",
+        "unchanged",
         "skipped",
         "skipped",
     ]

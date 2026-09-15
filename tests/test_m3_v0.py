@@ -24,7 +24,6 @@ from prism.cli import (
     handle_cases,
     handle_report,
     handle_rebuild_report,
-    handle_report_version,
     handle_report_versions,
     main,
 )

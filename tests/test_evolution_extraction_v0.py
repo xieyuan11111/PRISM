@@ -14,7 +14,6 @@ from prism.config import PathConfig
 from prism.domain import Claim, EvidenceLocator, Material
 from prism.extraction import (
     ExtractionError,
-    ExtractionEvidenceMatch,
     ExtractionResult,
     ExtractionService,
 )

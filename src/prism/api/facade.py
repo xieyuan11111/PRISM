@@ -1367,6 +1367,23 @@ class PrismAPI:
         reported as fetched when it was not.
         """
         source = self._fetch_dependencies(process)
+        scholarly_item = await self._try_scholarly_fulltext(url, kind)
+        if scholarly_item is not None:
+            # Real-run finding (docs/case-driven-auto-research-loop.md
+            # §12.3): PMC article pages expose reliable open-access
+            # metadata/full text through the Europe PMC APIs, while the HTML
+            # page body is site navigation.  When the scholarly full-text
+            # intake answers, it replaces the page fetch; when it cannot,
+            # the ordinary whitelisted page fetch below still runs.
+            item_report = await self._intake_source_item(
+                scholarly_item, process=process
+            )
+            return SourceFetchReport(
+                url=scholarly_item.link or url,
+                fetched_at=scholarly_item.fetched_at,
+                items=(item_report,),
+                duplicate_keys=(),
+            )
         try:
             fetch_result = await source.fetch(url, kind=kind)
         except SourceFetchError:
@@ -1487,11 +1504,39 @@ class PrismAPI:
             )
         return self._source
 
+    async def _try_scholarly_fulltext(self, url: str, kind: str) -> SourceItem | None:
+        """Route PMC article URLs to the scholarly full-text intake.
+
+        Returns the resolved :class:`~prism.sources.SourceItem`, or ``None``
+        when this URL is not a PMC article (no PMCID), the caller asked for a
+        non-page payload kind, no capable scholarly client is configured, or
+        the scholarly resolution raised a classified fetch error — in every
+        ``None`` case the ordinary page fetch proceeds unchanged.
+        """
+        if kind not in ("auto", "page"):
+            return None
+        if self._scholarly is None or extract_pmcid(url) is None:
+            return None
+        fetcher = getattr(self._scholarly, "fetch_fulltext", None)
+        if not callable(fetcher):
+            return None
+        try:
+            item = await fetcher(url)
+        except SourceFetchError:
+            return None
+        return item if isinstance(item, SourceItem) else None
+
     async def _intake_source_item(
         self, item: SourceItem, *, process: bool
     ) -> SourceItemReport:
         spool_path = spool_source_item(item, self._source_raw_dir / SPOOL_DIRNAME)
         result = self._ingestion.ingest(spool_path, item.to_ingestion_metadata())
+        # Index before the pipeline run and before the announcement: the
+        # event-driven pipeline resolves the announced material id through
+        # the evidence store, so a successful ingest must never publish an
+        # event for a material the store cannot rebuild (real-run defect
+        # recorded in docs/case-driven-auto-research-loop.md §12.4).
+        index_result = self._store.index_file(result.corpus_path)
         run = await self._pipeline.run_material(result) if process else None
         event = Event(
             event_id=f"source-material-ingested-{uuid4()}",
@@ -1502,6 +1547,7 @@ class PrismAPI:
                 "corpus_path": str(result.corpus_path),
                 "spool_path": str(spool_path),
                 "url": item.link,
+                "index_status": getattr(index_result, "status", None),
                 "pipeline_status": getattr(run, "status", None),
             },
             correlation_id=result.material.id,
@@ -1705,6 +1751,8 @@ class PrismAPI:
         case_id: str,
         as_of: datetime | None = None,
         use_llm: bool = True,
+        *,
+        language: str = "en",
     ) -> ReportDocument:
         """Analyze one case, then render the analysis as a report document.
 
@@ -1716,13 +1764,24 @@ class PrismAPI:
         router-less ``ReportService`` so an explicitly disabled LLM is never
         contacted regardless of how the injected report service was wired;
         ``use_llm=True`` uses the injected service, whose router (if any) is
-        the only LLM path.
+        the only LLM path.  ``language`` (``"en"`` default, ``"zh-CN"``)
+        selects the native rendering language; identifiers, enums and quotes
+        are never translated and no validation is relaxed.
         """
 
         if self._analyzer is None:
             raise ValueError("analyzer_service is required for report_case()")
         analysis = await self._analyzer.analyze(case_id, as_of)
-        return await self._report_service_for(use_llm).report(analysis)
+        service = self._report_service_for(use_llm)
+        report = getattr(service, "report")
+        if language != "en" and not self._accepts_kwarg(report, "language"):
+            raise TypeError(
+                "report_service.report must accept language to render a "
+                "non-English report"
+            )
+        if self._accepts_kwarg(report, "language"):
+            return await report(analysis, language=language)
+        return await report(analysis)
 
     async def save_report_version(
         self,
@@ -1732,8 +1791,14 @@ class PrismAPI:
         use_llm: bool = True,
         debate_result: DebateResult | None = None,
         trigger: str = "initial",
+        language: str = "en",
     ) -> object:
-        """Render once and persist an immutable, idempotent report version."""
+        """Render once and persist an immutable, idempotent report version.
+
+        ``language`` participates in the version's ``input_hash`` and is
+        recorded on the saved version, so the same analysis yields one
+        independent immutable version per language.
+        """
 
         if self._analyzer is None:
             raise ValueError("analyzer_service is required for save_report_version()")
@@ -1742,21 +1807,49 @@ class PrismAPI:
                 "report_version_service is required for save_report_version()"
             )
         analysis = await self._analyzer.analyze(case_id, as_of)
-        digest = self._report_version_service.input_hash(analysis, debate_result)
-        existing = self._report_version_service.find_by_input_hash(digest)
+        version_service = self._report_version_service
+        if language != "en" and not self._accepts_kwarg(
+            version_service.input_hash, "language"
+        ):
+            raise TypeError(
+                "report_version_service.input_hash must accept language to "
+                "version non-English reports"
+            )
+        if self._accepts_kwarg(version_service.input_hash, "language"):
+            digest = version_service.input_hash(
+                analysis, debate_result, language=language
+            )
+        else:
+            digest = version_service.input_hash(analysis, debate_result)
+        existing = version_service.find_by_input_hash(digest)
         if existing is not None:
             return existing
 
         service = self._report_service_for(use_llm)
+        if language != "en" and not self._accepts_kwarg(service.report, "language"):
+            raise TypeError(
+                "report_service.report must accept language to render a "
+                "non-English report"
+            )
         if debate_result is None:
-            document = await service.report(analysis)
+            if self._accepts_kwarg(service.report, "language"):
+                document = await service.report(analysis, language=language)
+            else:
+                document = await service.report(analysis)
         else:
             if not self._accepts_kwarg(service.report, "debate_result"):
                 raise TypeError(
                     "report_service.report must accept debate_result"
                 )
-            document = await service.report(analysis, debate_result=debate_result)
-        return self._report_version_service.save(
+            if self._accepts_kwarg(service.report, "language"):
+                document = await service.report(
+                    analysis, debate_result=debate_result, language=language
+                )
+            else:
+                document = await service.report(
+                    analysis, debate_result=debate_result
+                )
+        return version_service.save(
             document, analysis, trigger=trigger, debate_result=debate_result
         )
 
@@ -1764,12 +1857,14 @@ class PrismAPI:
         self,
         case_id: str,
         as_of: datetime | None = None,
-        *, use_llm: bool = True,
+        *,
+        use_llm: bool = True,
+        language: str = "en",
     ) -> object:
         """Explicitly recompute and version a report from current evidence."""
 
         return await self.save_report_version(
-            case_id, as_of, use_llm=use_llm, trigger="rebuild"
+            case_id, as_of, use_llm=use_llm, trigger="rebuild", language=language
         )
 
     async def report_versions(

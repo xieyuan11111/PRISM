@@ -55,6 +55,11 @@ PRIORITY_MAX = 5
 CONCEPT_TARGET_MIN = 10
 CONCEPT_TARGET_MAX = 20
 MAX_RESEARCH_CONCEPTS = 50
+# A plan is executed query by query, so the query count needs the same kind
+# of deterministic ceiling the concept list already has (real-run finding:
+# unbounded "one query per concept per window" generation explodes on
+# review-sized materials).
+MAX_RESEARCH_QUERIES = 60
 
 _DOMAIN_SHAPE = re.compile(r"^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$")
 
@@ -337,6 +342,10 @@ class ResearchPlan:
 
         candidate_domains = {item.domain for item in candidates}
         queries = _typed_tuple("queries", self.queries, SearchQuery)
+        if len(queries) > MAX_RESEARCH_QUERIES:
+            raise ValueError(
+                f"queries must not contain more than {MAX_RESEARCH_QUERIES} items"
+            )
         seen: set[tuple[str, str]] = set()
         for item in queries:
             if item.window not in windows:

@@ -14,6 +14,9 @@ from .pdf import (
     render_report_html,
 )
 from .models import (
+    REPORT_LANGUAGES,
+    REPORT_LANGUAGE_EN,
+    REPORT_LANGUAGE_ZH_CN,
     SUMMARY_ORIGINS,
     SUMMARY_ORIGIN_FALLBACK,
     SUMMARY_ORIGIN_LLM,
@@ -28,6 +31,9 @@ __all__ = [
     "SUMMARY_ORIGINS",
     "SUMMARY_ORIGIN_FALLBACK",
     "SUMMARY_ORIGIN_LLM",
+    "REPORT_LANGUAGES",
+    "REPORT_LANGUAGE_EN",
+    "REPORT_LANGUAGE_ZH_CN",
     "ReportCitation",
     "ReportDocument",
     "ReportService",
