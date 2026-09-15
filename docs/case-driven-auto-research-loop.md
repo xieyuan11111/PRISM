@@ -612,3 +612,133 @@ watch 定时监测模式
 最终目标可以概括为：
 
 > **让 LLM 负责发现“还应该看什么”，让 PRISM 负责验证“看到了什么、能不能相信、是否应该入图，以及什么时候必须停”。**
+
+---
+
+## 12. 实测记录（2026-09-15，HN-AD 综述案例）
+
+本节记录按上述流程对“耐胁迫 HN-AD 菌株”案例做真实执行时观察到的事实，用于校正设计与后续实现。所有条目均来自真实命令输出，未做推测。
+
+### 12.1 planner 概念化输出会被截断，并退回无意义的 fallback
+
+```text
+现象：prism discover <综述材料>
+结果：origin=fallback
+warning：source_selector output rejected: completion is not valid JSON:
+        Unterminated string starting at: line 913 column 9 (char 31969)
+```
+
+原因：提示词要求“提取材料中**每一个**可搜索概念，并为每个概念生成查询”，而种子材料是约 80KB 的整篇综述，输出 JSON 必然超出模型输出上限而截断。
+
+后果：fallback 计划只产出 1 个概念（论文标题本身）与政策向模板查询（`proposal draft` / `implementation rollout` / `revision amendment update`），对学术案例无检索价值。
+
+改进方向：
+
+```text
+- 概念数量必须受上界约束（MAX_RESEARCH_CONCEPTS / CONCEPT_TARGET_* 已有常量）
+- 交给 planner 的材料应有界（题名 + 摘要 + 结构化抽取结果），而不是整篇正文
+- 输出被截断时应记录为“计划失败但可重试”，而不是静默当作正常 fallback
+```
+
+### 12.2 通用查询精度极低，字段级查询才可用
+
+```text
+模糊自然语言概念 → Europe PMC 全文检索：返回珊瑚微生物、土壤、水产等无关综述
+（相关命中率接近 0）
+
+改为 TITLE_ABS: 字段精确查询后：
+  低温、耐盐、固定化、群体感应、基因组等方向均返回高度相关原始研究
+```
+
+改进方向：概念到查询的生成必须产出**字段级、术语级**查询（如 `TITLE_ABS:"heterotrophic nitrification" AND TITLE_ABS:"low temperature"`），并在计划中记录每个概念的命中质量。
+
+### 12.3 HTML 页面抓取不适合作学术证据来源
+
+```text
+prism fetch https://pmc.ncbi.nlm.nih.gov/articles/PMC5331289/ --kind page
+→ 抓到约 37KB 文本，但被站点导航污染：
+   "Skip to main content" / "Official websites use .gov" / "Search NCBI" ...
+→ 有效长段落仅 1 段
+→ published_at 被写成抓取时间（2017 年论文记为 2026-09-15）
+→ type 误判为 news
+```
+
+改进方向：
+
+```text
+- 学术来源优先使用 Europe PMC fullTextXML（JATS 元数据，题名/作者/日期准确）
+- 页面提取器需要正文区优先抽取与元数据日期解析，否则时间语义会被污染
+```
+
+### 12.4 prism fetch 摄入成功却返回失败
+
+```text
+材料已成功入库（mat_1b0a29ba7220ee01ced68da5，corpus 已生成）
+但自动管线订阅者报错：
+  LookupError: material not found: mat_1b0a29ba7220ee01ced68da5
+→ CLI 以退出码 1 结束
+```
+
+这是真实的运行时缺陷：源摄入路径发布 `material.ingested` 后，自动管线无法解析该材料。需要修复 resolver 的材料查找（与索引写入时序相关）。
+
+### 12.5 候选级引文缺失是真实失败模式，门禁行为正确
+
+```text
+PMC9488085（群体感应调控 HN-AD）
+→ 27 个节点候选全部被拒：
+   nodes[i].evidence must not be empty
+   LLM 自动仲裁：Gapped candidate lacks required evidence;
+                no safe revision possible without inventing quote/source/time.
+```
+
+模型确实有机会产出候选，但未附引文；确定性门禁与仲裁器拒绝凭空补造。**这是期望行为，不是故障。** 可考虑的改进是候选级“仅补引文”重试，仍拿不到就保持拒绝。
+
+### 12.6 摘要级材料不会被当成证据
+
+HA2 / ND7 / TAC-1 三份仅摘要材料被正确标记 `metadata_only`，产出 0 候选、未进入图谱；只有可读取全文的原始研究才产出候选。该边界在真实运行中成立。
+
+### 12.7 跨进程图谱持久化在真实案例上有效
+
+```text
+prism merge-case stress-tolerant-hnad-strains-2026
+→ 10 份材料、23 节点、23 事实、13 主张、1 冲突
+→ 写入 added_keys=0 / skipped_keys=71（幂等）
+
+新进程 prism timeline
+→ 69 条 episode（1 evolution_case、10 material_provenance、
+  23 evolution_node、21 temporal_fact、13 claim、1 temporal_relation）
+→ 覆盖 2017–2024 的不同胁迫方向
+```
+
+### 12.8 中文报告链路当前不可交付
+
+```text
+core 分支：20 个测试失败
+  既有英文断言与新默认 zh-CN 冲突
+  新实现自身也有 bug（legacy 库回读、prompt 语言、CLI 转发）
+PDF 侧：章节名校验（Executive Summary / Timeline Stages / Citations）
+        尚未本地化，中文报告无法通过 PDF 回读验证
+```
+
+结论与建议：
+
+```text
+- 默认报告语言保持 en（不破坏既有行为与测试）
+- 中文以 --lang zh-CN 显式选择
+- 中文 PDF 必须等 PDF 侧章节名与元数据本地化完成后再开放
+```
+
+### 12.9 本轮流程的实际形态
+
+由于多轮自动循环尚未实现，本轮是**按文档流程手工执行**：
+
+```text
+我（作为 LLM 角色）完成概念化与候选发现
+→ 用 Europe PMC 检索 API 取得字段级候选
+→ 用 fullTextXML 取得干净正文并转成 PRISM 标准 Markdown
+→ 由 PRISM 完成权威摄入、LLM 抽取、证据校验、案例累计、图谱写入
+→ 新进程读回时间线
+→ 生成不可变报告版本与 PDF
+```
+
+这条路径验证了文档第 5 章“从搜索结果到图谱的确定性链路”是可用的；也说明真正缺失的是**把上述手工步骤编排成受预算与停止条件约束的自动循环**。
