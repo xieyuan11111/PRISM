@@ -742,3 +742,38 @@ PDF 侧：章节名校验（Executive Summary / Timeline Stages / Citations）
 ```
 
 这条路径验证了文档第 5 章“从搜索结果到图谱的确定性链路”是可用的；也说明真正缺失的是**把上述手工步骤编排成受预算与停止条件约束的自动循环**。
+
+### 12.10 修复状态（2026-09-16）
+
+针对 §12 各项的修复已实现并逐项做过真实核验：
+
+| 项 | 状态 | 核验证据 |
+|---|---|---|
+| §12.1 planner 截断 | 已修复 | `prism discover <综述>` 现返回 `origin=llm`、`warnings=[]`；概念被限为 5 个（单次请求预算 10 概念 / 15 查询，与全局 50/60 解耦）；截断时以半预算有界重试一次，仍失败才 fallback 并保留 `retryable` 告警 |
+| §12.2 查询精度 | 已修复 | 生成的 7 条查询全部为字段级，例如 `TITLE_ABS:"HN-AD" AND TITLE_ABS:"salinity" AND TITLE_ABS:"ammonia"`；提示词显式要求术语级查询而非自然语言句子 |
+| §12.3 学术来源抓取 | 已修复 | 学术 URL 走 scholarly 适配器：正文 38 段、0 段站点导航；`published_at` 取权威元数据（如 2019-01-28），`type=academic`、`doi`、`authors`、`retrieval_level=fulltext` 齐全 |
+| §12.4 fetch 报错 | 已修复 | `prism fetch <pmc-url>` 与 `fetch --process` 均返回退出码 0；`--process` 路径 `pipeline.status=completed`（`index→extract→graph`，未绑定案例时 graph 如实 skipped） |
+| §12.8 中文报告 | 已修复 | `--lang {en,zh-CN}`，**默认仍为 en**（不破坏既有行为）；`zh-CN` 输出中文模板（演变报告 / 案例 ID / 执行摘要 / 关键发现），原文引用与 `case_id/source_id/episode_key/trigger` 保持原样；报告语言进入版本 input hash，旧库 additive 迁移 |
+| §12.5 无引文候选 | 保持拒绝（正确行为） | 未放宽门禁；可选改进（候选级“仅补引文”重试）仍未实现 |
+| §12.6 摘要级材料 | 保持排除（正确行为） | `metadata_only` 仍不产出候选、不进图谱 |
+
+本轮验证规模：
+
+```text
+研究/报告相关：172 passed
+来源/CLI/API/pipeline：219 passed
+ruff check / compileall / git diff --check：全部通过
+```
+
+仍未解决：
+
+```text
+1. 摄入层不接受 material_type 作为 type 的别名。历史上用该键写入的材料
+   （综述、W30）在库中 type 记录为 "unknown"，因此 planner 的
+   “按 material.type 判定学术” 对它们不生效；LLM 计划路径已不受影响，
+   但 fallback 仍会退回政策模板。修法二选一：
+   a) 摄入元数据接受 material_type 别名；
+   b) planner 在 type 为 unknown 时补充其他学术信号（doi/pmcid/material_role）。
+2. 多轮自动循环（预算、停止条件、ResearchRun 持久化、research-case 命令）
+   仍未实现——这正是本文档描述的、尚未编码的部分。
+```

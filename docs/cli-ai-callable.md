@@ -72,7 +72,7 @@ success / empty / partial / failed / unknown 是五种状态，不得混淆：
 | `process` | 同步跑完整管线 | 30–180s+ | ✅（幂等） |
 | `merge-case` | 账本重建案例 | <60s | ✅ |
 | `bind-material` | 绑定材料到案例 | <60s | ✅ |
-| `report` | 渲染报告 JSON | <60s | ✅ |
+| `report` | 渲染报告 JSON（`--lang en\|zh-CN`） | <60s | ✅ |
 | `report-versions` | 列报告版本 | <10s | ✅ |
 | `report-version` | 读报告版本 | <10s | ✅ |
 | `report-pdf` | 导出 PDF | 10–60s | ✅（同输入同路径幂等） |
@@ -176,6 +176,32 @@ prism report-version VERSION_ID --pdf reports/exports/out.pdf   # 直接导 PDF
 ```
 
 `CASE_ID` 为可选位置参数。`report-versions` 返回数组（含 `version_id/case_id/as_of/created_at/trigger/summary_origin/input_hash/markdown_hash/parent_version_id`）；`report-version` 额外含完整 `markdown` 正文。
+
+### 3.4b 报告语言 `--lang`
+
+```bash
+prism report CASE_ID [--as-of ISO8601] [--lang en|zh-CN] [--save]
+prism rebuild-report CASE_ID [--lang en|zh-CN]
+```
+
+```text
+默认 en：保持既有英文行为，调用方无需改动
+zh-CN：原生中文模板（演变报告 / 案例 ID / 执行摘要 / 时间线阶段 /
+       关键转折点 / 证据缺口 / 待解问题 / 引用与证据定位）
+不翻译：case_id、source_id、episode_key、trigger 枚举、原文引用
+```
+
+```json
+{
+  "version_id": "rv_...",
+  "case_id": "stress-tolerant-hnad-strains-2026",
+  "language": "zh-CN",
+  "summary_origin": "fallback",
+  "markdown": "# 演变报告：stress-tolerant-hnad-strains-2026\n\n- 案例 ID: ...\n"
+}
+```
+
+报告语言计入版本 `input_hash`：同一分析的中文与英文版本相互独立、均不可变，重复渲染同语言同输入则幂等复用。
 
 ```json
 [

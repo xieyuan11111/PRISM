@@ -17,14 +17,42 @@ WebUI 汉化不改变报告正文。
 ## 目标 API
 
 ```text
-默认语言：zh-CN
-可选：en
+默认语言：en（保持既有英文行为与测试不变）
+可选：zh-CN（原生中文模板）
 
-prism report CASE_ID [--lang zh-CN|en] [--save]
-prism rebuild-report CASE_ID [--lang zh-CN|en]
+prism report CASE_ID [--lang en|zh-CN] [--save]
+prism rebuild-report CASE_ID [--lang en|zh-CN]
 ```
 
-`PrismAPI.report_case/save_report_version/rebuild_report` 新增 keyword-only `language: str = "zh-CN"`。
+`PrismAPI.report_case/save_report_version/rebuild_report` 新增 keyword-only `language: str = "en"`。
+
+> **实现时的修正**：本文档初稿曾把默认语言写成 `zh-CN`。实际实现改为默认 `en`、
+> 中文显式 `--lang zh-CN`，原因是把默认改成中文会改变既有英文命令行为并破坏
+> 既有英文断言；CLI 契约要求既有命令行为不变。中文能力通过显式选择交付。
+
+## 交付状态（2026-09-16）
+
+已实现并经真实核验：
+
+```text
+--lang {en,zh-CN}        报告与 rebuild-report 均支持，默认 en
+中文 fallback 模板        演变报告 / 案例 ID / 案例类型 / 截至时间 / 执行摘要 /
+                         时间线阶段 / 已失效事实 / 修订与冲突关系 / 关键转折点 /
+                         变化原因 / 证据缺口 / 待解问题 / 引用与证据定位
+LLM 摘要语言指令           summarize_report 提示词按目标语言输出
+版本语言语义              language 进入 ReportVersion 与 input_hash；
+                         中英版本独立、均不可变；旧库 additive 迁移
+PDF                      中文标题与章节校验、CJK 回读，英文路径保持兼容
+不翻译                   原文 quote、case_id/source_id/episode_key/trigger 枚举
+```
+
+真实核验命令与结果：
+
+```text
+prism report stress-tolerant-hnad-strains-2026 --as-of ... --lang zh-CN --no-llm
+→ 输出以「# 演变报告：...」「## 执行摘要」「关键发现」开头，
+  论文原文摘要与 ID 保持英文原样
+```
 
 ## 硬约束
 
