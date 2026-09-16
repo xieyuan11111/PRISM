@@ -11,6 +11,7 @@ from prism.ingestion import (
     parse_frontmatter,
     stable_material_id,
 )
+from prism.store import EvidenceStore
 
 
 NOW = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
@@ -209,3 +210,83 @@ def test_pdfplumber_missing_dependency_has_actionable_error(tmp_path, monkeypatc
 
     with pytest.raises(RuntimeError, match=r"optional dependency.*pdfplumber"):
         PdfPlumberExtractor().extract(source)
+
+
+# --- material_type alias of type (docs/case-driven-auto-research-loop.md §12.10)
+
+
+def alias_metadata_without_type():
+    values = metadata()
+    del values["type"]
+    return values
+
+
+def test_material_type_alias_is_accepted_and_stored_under_type(tmp_path):
+    source = tmp_path / "review.md"
+    source.write_text("# A review\n\nScholarly body.", encoding="utf-8")
+    service = IngestionService(make_paths(tmp_path), clock=lambda: NOW)
+
+    result = service.ingest(
+        source, {**alias_metadata_without_type(), "material_type": "academic_review"}
+    )
+
+    assert result.material.type == "academic_review"
+    frontmatter, _ = parse_frontmatter(result.corpus_path.read_text(encoding="utf-8"))
+    assert frontmatter["type"] == "academic_review"
+    assert "material_type" not in frontmatter
+
+
+def test_material_type_alias_value_reaches_the_index(tmp_path):
+    source = tmp_path / "review.md"
+    source.write_text("# A review\n\nScholarly body.", encoding="utf-8")
+    service = IngestionService(make_paths(tmp_path), clock=lambda: NOW)
+
+    result = service.ingest(
+        source, {**alias_metadata_without_type(), "material_type": "academic_review"}
+    )
+
+    store = EvidenceStore(make_paths(tmp_path))
+    store.initialize()
+    try:
+        store.index_file(result.corpus_path)
+        entry = store.get(result.material.id)
+        assert entry is not None
+        assert entry.type == "academic_review"
+    finally:
+        store.close()
+
+
+def test_type_and_material_type_that_agree_are_accepted(tmp_path):
+    source = tmp_path / "input.md"
+    source.write_text("body", encoding="utf-8")
+    service = IngestionService(make_paths(tmp_path), clock=lambda: NOW)
+
+    result = service.ingest(source, {**metadata(), "material_type": "  Policy "})
+
+    # Same value modulo case/whitespace: accepted, canonical key stored verbatim.
+    assert result.material.type == "policy"
+
+
+def test_conflicting_type_and_material_type_raise(tmp_path):
+    source = tmp_path / "review.md"
+    source.write_text("body", encoding="utf-8")
+    service = IngestionService(make_paths(tmp_path), clock=lambda: NOW)
+
+    with pytest.raises(ValueError, match="material_type"):
+        service.ingest(
+            source, {**metadata(), "material_type": "academic_review"}
+        )
+    assert not (tmp_path / "corpus").exists()
+    assert not (tmp_path / "raw").exists()
+
+
+def test_missing_type_still_yields_unknown(tmp_path):
+    source = tmp_path / "input.md"
+    source.write_text("body", encoding="utf-8")
+    service = IngestionService(make_paths(tmp_path), clock=lambda: NOW)
+
+    result = service.ingest(source, alias_metadata_without_type())
+
+    assert result.material.type == "unknown"
+    frontmatter, _ = parse_frontmatter(result.corpus_path.read_text(encoding="utf-8"))
+    assert frontmatter["type"] == "unknown"

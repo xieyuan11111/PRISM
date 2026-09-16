@@ -404,6 +404,80 @@ def test_policy_fallback_keeps_the_policy_template():
     assert "proposal" in phases and "implementation" in phases
 
 
+# --- B: unknown type + scholarly identifiers is academic (docs §12.10) -------
+
+
+def assert_academic_fallback(plan):
+    assert plan.origin == "fallback"
+    phases = tuple(window.phase for window in plan.windows)
+    for banned in ("proposal", "implementation", "revision"):
+        assert banned not in phases
+    assert "publication" in phases
+    assert phases[-1] == "current"
+    assert plan.queries
+    for query in plan.queries:
+        lowered = query.query.lower()
+        for junk in ("proposal draft", "implementation rollout", "revision amendment"):
+            assert junk not in lowered
+        assert set(query.source_types) <= {"academic_paper", "academic_discussion"}
+
+
+def test_unknown_type_with_doi_org_url_takes_academic_fallback():
+    # The real HN-AD review (mat_394b3e4d9e6c0ef9d3ec8cea): stored as type
+    # "unknown" through the legacy material_type alias, url is a DOI link.
+    material = make_material(
+        type="unknown",
+        url="https://doi.org/10.1016/j.biortech.2025.133768",
+    )
+    plan = asyncio.run(make_planner().plan(material))
+    assert_academic_fallback(plan)
+
+
+def test_unknown_type_with_doi_host_variants_and_identifier_fields():
+    cases = [
+        {"url": "https://dx.doi.org/10.1016/j.biortech.2025.133768"},
+        {"doi": "10.1016/j.biortech.2025.133768"},
+        {"pmid": "35208689"},
+    ]
+    for overrides in cases:
+        material = make_material(type="unknown", **overrides)
+        plan = asyncio.run(make_planner().plan(material))
+        phases = tuple(window.phase for window in plan.windows)
+        assert "proposal" not in phases and "implementation" not in phases, overrides
+
+
+def test_unknown_type_with_pmcid_takes_academic_fallback():
+    # The real W30 material (mat_84ac2fc4b99d91996754ec8c): PMC8879992 /
+    # PMID 35208689, stored as type "unknown".
+    material = make_material(type="unknown", pmcid="PMC8879992", pmid="35208689")
+    plan = asyncio.run(make_planner().plan(material))
+    assert_academic_fallback(plan)
+
+
+def test_unknown_type_with_plain_news_url_keeps_policy_template():
+    material = make_material(
+        type="unknown", url="https://news.example.com/2026/03/rollout-story"
+    )
+    plan = asyncio.run(make_planner().plan(material))
+
+    phases = tuple(window.phase for window in plan.windows)
+    assert "proposal" in phases and "implementation" in phases
+    assert any("implementation rollout" in query.query.lower() for query in plan.queries)
+
+
+def test_explicit_news_or_policy_type_with_doi_is_never_academic():
+    for material_type in ("news", "policy"):
+        material = make_material(
+            type=material_type,
+            doi="10.1016/j.biortech.2025.133768",
+            pmcid="PMC8879992",
+            url="https://doi.org/10.1016/j.biortech.2025.133768",
+        )
+        plan = asyncio.run(make_planner().plan(material))
+        phases = tuple(window.phase for window in plan.windows)
+        assert "proposal" in phases and "implementation" in phases, material_type
+
+
 # --- A: deterministic caps on fallback concepts and queries ------------------
 
 

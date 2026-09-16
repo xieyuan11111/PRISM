@@ -21,6 +21,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Protocol
+from urllib.parse import urlsplit
 
 from prism.config import PrismConfig
 from prism.domain import Material
@@ -79,12 +80,29 @@ _ACADEMIC_MATERIAL_TYPES = frozenset(
      "paper", "preprint", "review"}
 )
 
+# Material types the non-scholarly intake records explicitly; they are never
+# reclassified as academic by identifier signals, even when a doi is present.
+_EXPLICITLY_NON_ACADEMIC_TYPES = frozenset({"news", "policy"})
+
+# Authoritative scholarly hosts: a material whose URL points at one of these
+# carries a DOI, which is as good as a doi field for the fallback decision.
+_DOI_URL_HOSTS = frozenset({"doi.org", "dx.doi.org"})
+
+
 _ACADEMIC_QUERY_TYPES: dict[str, tuple[str, ...]] = {
     "publication": ("academic_paper",),
     "interpretation": ("academic_paper", "academic_discussion"),
     "debate": ("academic_paper", "academic_discussion"),
     "current": ("academic_paper", "academic_discussion"),
 }
+
+
+def _has_scholarly_identifier(material: Material) -> bool:
+    """Whether the material carries an authoritative scholarly identifier."""
+    if material.doi or material.pmid or material.pmcid:
+        return True
+    host = (urlsplit(material.url or "").hostname or "").strip().lower().rstrip(".")
+    return host in _DOI_URL_HOSTS
 
 _FENCED_JSON = re.compile(
     r"\A```json[ \t]*\r?\n(?P<body>.*)\r?\n```[ \t]*\Z",
@@ -871,15 +889,25 @@ class ResearchPlanner:
         materials typed ``academic_review`` / ``academic_article`` are
         academic even when extraction produced no case (real-run finding:
         case_type alone missed them and fell into the policy template,
-        which has no retrieval value).  The policy template is only used
-        when neither signal is academic.
+        which has no retrieval value).  A type the intake does not
+        recognize (``unknown``, empty, anything outside both sets) still
+        counts as academic when the material carries an authoritative
+        scholarly identifier — a doi, pmid, pmcid, or a doi.org URL —
+        because materials ingested through the legacy ``material_type``
+        alias were stored as ``unknown`` (docs §12.10).  An explicitly
+        non-academic type is never reclassified by those signals.  The
+        policy template is only used when no academic signal applies.
         """
         if case_type == "academic_discourse":
             return True
         material_type = material.type.strip().lower()
-        return material_type in _ACADEMIC_MATERIAL_TYPES or material_type.startswith(
+        if material_type in _ACADEMIC_MATERIAL_TYPES or material_type.startswith(
             "academic"
-        )
+        ):
+            return True
+        if material_type in _EXPLICITLY_NON_ACADEMIC_TYPES:
+            return False
+        return _has_scholarly_identifier(material)
 
     # -- shared helpers ----------------------------------------------------
 
