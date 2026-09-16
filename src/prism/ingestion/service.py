@@ -121,6 +121,27 @@ def _normalize_content(text: str) -> str:
     return _normalize_line_endings(text).rstrip()
 
 
+def _resolve_material_type(merged: dict[str, Any]) -> str:
+    """Resolve the material type, accepting ``material_type`` as an alias.
+
+    ``type`` stays the only stored key — the alias never reaches the corpus
+    frontmatter or the index.  When both keys are present they must agree
+    modulo case and surrounding whitespace; a real conflict is an input
+    error, never a silent pick.  The stored value is the provided one,
+    unmodified; with neither key present the type is ``unknown``.
+    """
+    type_value = merged.get("type")
+    alias_value = merged.get("material_type")
+    if type_value and alias_value:
+        if str(type_value).strip().lower() != str(alias_value).strip().lower():
+            raise ValueError(
+                "metadata.type and metadata.material_type conflict: "
+                f"{type_value!r} != {alias_value!r}"
+            )
+        return str(type_value)
+    return str(type_value or alias_value or "unknown")
+
+
 def _safe_filename(title: str, fallback: str) -> str:
     value = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff._-]+", "_", title.strip())
     value = value.strip("._")[:100]
@@ -228,6 +249,7 @@ class IngestionService:
             raise ValueError(f"unsupported input format: {suffix or '<none>'}")
         if not content.strip():
             raise ValueError("extracted content must not be empty")
+        material_type = _resolve_material_type(merged)
 
         title = merged.get("title")
         if not isinstance(title, str) or not title.strip():
@@ -260,7 +282,7 @@ class IngestionService:
             source=source,
             published_at=published_at,
             fetched_at=fetched_at,
-            type=str(merged.get("type") or "unknown"),
+            type=material_type,
             content=content,
             original_format=original_format,
             ocr=used_ocr,
