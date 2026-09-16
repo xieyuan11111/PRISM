@@ -765,15 +765,29 @@ PDF 侧：章节名校验（Executive Summary / Timeline Stages / Citations）
 ruff check / compileall / git diff --check：全部通过
 ```
 
+仍未解决：见 §12.11，第一项已修复；第二项（多轮自动循环）仍开放。
+
+### 12.11 第二轮修复（2026-09-16 下午）
+
+| 项 | 状态 | 核验证据 |
+|---|---|---|
+| 摄入层忽略 `material_type` 别名 | 已修复 | 摄入元数据现接受 `material_type` 作为 `type` 的别名；`type` 仍是唯一落盘键，别名不进入 frontmatter 或索引；两键同时存在且不一致时报错，而非静默择一。真实服务端到端核验：仅别名 → `academic_review`（Material / frontmatter / 索引三处一致）；两键等价（大小写与空白容错）→ 取规范键值；冲突 → `ValueError`；两键皆无 → `unknown` |
+| planner 对 type 不可用的学术材料误判 | 已修复 | `type` 为空、`unknown` 或未识别时，若材料带权威学术标识（`doi`、`pmid`、`pmcid`，或 url 主机为 `doi.org` / `dx.doi.org`）即判为学术；显式 `news` / `policy` 即使带 doi 也不重分类。以真实索引库副本核验：综述（mat_394b3e4d9e6c0ef9d3ec8cea）与 W30（mat_84ac2fc4b99d91996754ec8c）均转为学术 fallback（`origin=fallback`，阶段 publication/interpretation/debate[/current]，政策模板查询 0 条），真实索引库未被改动 |
+
+说明：§12.10 表格中"LLM 计划路径已不受影响"的判断仍然成立，而 fallback 路径现已一并修正，
+因此历史材料的 `type: "unknown"` 不必改写磁盘数据即可走学术路径。
+
+本轮验证规模：
+
+```text
+完整套件：1891 passed, 5 skipped
+相关回归（ingestion/sources/research/api/cli）：248 passed
+ruff check / compileall / git diff --check：全部通过
+```
+
 仍未解决：
 
 ```text
-1. 摄入层不接受 material_type 作为 type 的别名。历史上用该键写入的材料
-   （综述、W30）在库中 type 记录为 "unknown"，因此 planner 的
-   “按 material.type 判定学术” 对它们不生效；LLM 计划路径已不受影响，
-   但 fallback 仍会退回政策模板。修法二选一：
-   a) 摄入元数据接受 material_type 别名；
-   b) planner 在 type 为 unknown 时补充其他学术信号（doi/pmcid/material_role）。
-2. 多轮自动循环（预算、停止条件、ResearchRun 持久化、research-case 命令）
-   仍未实现——这正是本文档描述的、尚未编码的部分。
+多轮自动循环（预算、停止条件、ResearchRun 持久化、research-case 命令）
+仍未实现——这正是本文档描述的、尚未编码的部分。
 ```
