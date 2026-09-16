@@ -791,3 +791,24 @@ ruff check / compileall / git diff --check：全部通过
 多轮自动循环（预算、停止条件、ResearchRun 持久化、research-case 命令）
 仍未实现——这正是本文档描述的、尚未编码的部分。
 ```
+
+### 12.12 关于该能力的两次早期尝试（2026-09-16 判定作废）
+
+清理 worktree 时发现，`feat/case-research-loop-core` / `-cli` 两个 worktree 中曾存在一份
+**从未提交**的实现：
+
+```text
+src/prism/research/orchestrator.py        917 行
+tests/test_research_orchestrator.py       24.6 KB
+停止条件与 fatal kind 词表齐全（STOP_NO_NEW_QUERIES / STOP_MAX_ROUNDS /
+STOP_CYCLE / STOP_FATAL / 预算 / ResearchRun / CaseEvidenceMonitor …），
+不是半成品。
+```
+
+用户明确判定作废。2026-09-16 已连 worktree 与分支一并删除，git 历史中不留痕。
+因此**本文档描述的多轮自动循环至今没有实现代码**，§1–§11 的流程仍然只是设计。
+
+若日后重启这个方向，注意一个方向性冲突：把编排循环做成 `src/prism/` 里的
+Python 包装层，与"CLI 为一等界面、可被 AI 非交互编排调用"的产品方向相悖——
+多轮循环更适合由**调用方**（agent）驱动 CLI 来完成，而不是固化进 PRISM 内部。
+这份被作废的实现走的正是前一条路。
