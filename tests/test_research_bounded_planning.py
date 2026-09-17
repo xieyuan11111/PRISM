@@ -478,6 +478,148 @@ def test_explicit_news_or_policy_type_with_doi_is_never_academic():
         assert "proposal" in phases and "implementation" in phases, material_type
 
 
+# --- C: prompt/validator contract agreement + bounded mechanical repair ------
+# Real run 2026-09-16 (mat_394b3e4d9e6c0ef9d3ec8cea, case
+# stress-tolerant-hnad-strains-2026): roughly one in three identical
+# `prism discover` calls discarded a good LLM plan over two mechanical
+# violations the prompt never pinned down — a query result_limit that did not
+# equal its concept's target_results, and (after the smaller-budget retry) a
+# query phase that matched no declared window.  The prompt must state both
+# rules exactly, and the planner must repair exactly these two violations
+# deterministically (logged, evidence gates untouched) before falling back.
+
+
+def test_prompt_states_the_exact_result_limit_and_phase_contracts():
+    router = FakeRouter("{}")
+    asyncio.run(make_planner(router).plan(make_material()))
+    prompt = router.calls[0][1].lower()
+    # Rule (a1): every query's result_limit must echo, verbatim, the
+    # target_results of the concept its concept_id references.
+    assert "result_limit must be exactly the target_results" in prompt
+    # Rule (a2): a query phase must be exactly one of the phases the model
+    # itself declared in windows — never an undeclared phase.
+    assert "exactly one of the declared window phases" in prompt
+
+
+def result_limit_repair_payload():
+    """Concept c0 targets 15 results; its query echoes 17 (the real-run drift)."""
+    payload = llm_payload(2, 1)
+    payload["concepts"][0]["target_results"] = 15
+    payload["queries"][0]["result_limit"] = 17
+    return payload
+
+
+def test_result_limit_mismatch_is_clamped_to_the_concept_target_with_warning():
+    router = FakeRouter(json.dumps(result_limit_repair_payload()))
+    plan = asyncio.run(make_planner(router).plan(make_material()))
+
+    assert plan.origin == "llm"
+    query = next(item for item in plan.queries if item.concept_id == "c0")
+    assert query.result_limit == 15
+    joined = "\n".join(plan.warnings)
+    assert "repaired queries[0]" in joined
+    assert "result_limit" in joined
+    assert "17" in joined and "15" in joined
+    # The untouched query keeps its contract-compliant limit silently.
+    untouched = next(item for item in plan.queries if item.concept_id == "c1")
+    assert untouched.result_limit == 10
+    assert "queries[1]" not in joined
+
+
+def test_query_bound_to_an_unknown_concept_is_rejected_not_the_plan():
+    payload = llm_payload(2, 1)
+    ghost = dict(payload["queries"][0])
+    ghost["query"] = '"ghost concept" query'
+    ghost["concept_id"] = "c-ghost"
+    ghost["result_limit"] = 12
+    payload["queries"].append(ghost)
+    router = FakeRouter(json.dumps(payload))
+    plan = asyncio.run(make_planner(router).plan(make_material()))
+
+    assert plan.origin == "llm"
+    assert {item.concept_id for item in plan.queries} == {"c0", "c1"}
+    joined = "\n".join(plan.warnings)
+    assert "c-ghost" in joined
+    assert "repaired queries[2]" in joined
+
+
+def test_query_without_concept_binding_is_rejected_when_concepts_are_declared():
+    payload = llm_payload(2, 1)
+    del payload["queries"][1]["concept_id"]
+    router = FakeRouter(json.dumps(payload))
+    plan = asyncio.run(make_planner(router).plan(make_material()))
+
+    assert plan.origin == "llm"
+    assert {item.concept_id for item in plan.queries} == {"c0"}
+    # The orphaned concept is dropped too — with its own audit line.
+    assert {concept.concept_id for concept in plan.concepts} == {"c0"}
+    joined = "\n".join(plan.warnings)
+    assert "repaired queries[1]" in joined
+
+
+def test_query_with_undeclared_phase_is_reassigned_when_one_window_exists():
+    # The real retry failure: the model drifted to a phase it never declared.
+    payload = llm_payload(2, 1)
+    payload["queries"][1]["phase"] = "consensus"
+    router = FakeRouter(json.dumps(payload))
+    plan = asyncio.run(make_planner(router).plan(make_material()))
+
+    assert plan.origin == "llm"
+    drifted = next(item for item in plan.queries if item.concept_id == "c1")
+    assert drifted.window.phase == "current"
+    joined = "\n".join(plan.warnings)
+    assert "repaired queries[1]" in joined
+    assert "consensus" in joined
+
+
+def test_query_with_undeclared_phase_is_dropped_when_reassignment_is_ambiguous():
+    payload = llm_payload(2, 1)
+    payload["windows"].append(
+        {
+            "phase": "implementation",
+            "start_at": "2026-07-01T00:00:00Z",
+            "end_at": "2026-07-30T00:00:00Z",
+            "focus": "rollout reports",
+        }
+    )
+    payload["queries"][1]["phase"] = "open_question"
+    router = FakeRouter(json.dumps(payload))
+    plan = asyncio.run(make_planner(router).plan(make_material()))
+
+    assert plan.origin == "llm"
+    assert {item.concept_id for item in plan.queries} == {"c0"}
+    assert {concept.concept_id for concept in plan.concepts} == {"c0"}
+    joined = "\n".join(plan.warnings)
+    assert "repaired queries[1]" in joined
+    assert "open_question" in joined
+
+
+def test_repair_never_touches_the_evidence_gates():
+    # Whitelist/candidate binding, quote/time/shape rules are evidence gates:
+    # a violation there must still reject the plan — repair is for the two
+    # mechanical violations only.
+    payload = result_limit_repair_payload()
+    payload["queries"][0]["source_domains"] = ["off-whitelist.example"]
+    router = FakeRouter(json.dumps(payload))
+    plan = asyncio.run(make_planner(router).plan(make_material()))
+
+    assert plan.origin == "fallback"
+    joined = "\n".join(plan.warnings)
+    assert "off-whitelist.example" in joined
+
+
+def test_payload_unusable_after_repair_still_falls_back():
+    payload = llm_payload(1, 1)
+    payload["queries"][0]["concept_id"] = "c-ghost"
+    router = FakeRouter(json.dumps(payload))
+    plan = asyncio.run(make_planner(router).plan(make_material()))
+
+    assert plan.origin == "fallback"
+    joined = "\n".join(plan.warnings)
+    assert "source_selector output rejected" in joined
+    assert "at least one query" in joined
+
+
 # --- A: deterministic caps on fallback concepts and queries ------------------
 
 

@@ -413,7 +413,10 @@ class ResearchPlanner:
             "total. Keep every description, alias, and reason short so the "
             "whole JSON object fits in this single completion. Each "
             "target_results and result_limit must be an integer from 10 "
-            "through 20; bind every concept query by concept_id. For legacy "
+            "through 20; bind every concept query by concept_id. Copy each "
+            "concept's target_results integer verbatim: every query's "
+            "result_limit must be exactly the target_results of the concept "
+            "its concept_id references — never a different value. For legacy "
             "clients, concepts and query concept_id/result_limit may be "
             "omitted.\n"
             "Prefer field-level, term-level queries over natural-language "
@@ -428,8 +431,10 @@ class ResearchPlanner:
             f"this whitelist: {whitelist}. Never invent domains or URLs. start_at "
             "and end_at are timezone-aware ISO 8601 strings with start_at earlier "
             "than end_at and end_at no later than the discovery horizon. Window "
-            "phases must be unique and every query phase must match a declared "
-            "window. Every query source domain must also appear as a candidate. "
+            "phases must be unique and every query's phase must be exactly one "
+            "of the declared window phases — copy the phase string verbatim "
+            "from a window you declared, never a phase you did not declare. "
+            "Every query source domain must also appear as a candidate. "
             "query, focus, and reason must be non-empty strings.\n"
             f"MATERIAL ID: {material.id}\n"
             f"CASE NAME: {case_name}\n"
@@ -514,7 +519,7 @@ class ResearchPlanner:
         candidates = self._parse_candidates(payload["candidates"])
         if not candidates:
             raise ResearchPlanError("plan requires at least one source candidate")
-        queries = self._parse_queries(
+        queries, repair_warnings = self._parse_queries(
             payload["queries"],
             windows_by_phase={item.phase: item for item in windows},
             candidate_domains={item.domain for item in candidates},
@@ -528,14 +533,6 @@ class ResearchPlanner:
             max_concepts=max_concepts,
             max_queries=max_queries,
         )
-        if concepts:
-            query_concepts = {item.concept_id for item in queries}
-            missing = {item.concept_id for item in concepts} - query_concepts
-            if missing:
-                raise ResearchPlanError(
-                    "every declared concept must have at least one query: "
-                    + ", ".join(sorted(missing))
-                )
         return self._construct(
             "plan",
             ResearchPlan,
@@ -550,7 +547,7 @@ class ResearchPlanner:
             windows=windows,
             candidates=candidates,
             queries=queries,
-            warnings=budget_warnings,
+            warnings=repair_warnings + budget_warnings,
             concepts=concepts,
         )
 
@@ -707,8 +704,29 @@ class ResearchPlanner:
         windows_by_phase: dict[str, ResearchWindow],
         candidate_domains: set[str],
         concepts_by_id: dict[str, ResearchConcept],
-    ) -> tuple[SearchQuery, ...]:
+    ) -> tuple[tuple[SearchQuery, ...], tuple[str, ...]]:
+        """Parse the query array, repairing the two mechanical contract
+        violations the source_selector prompt is now explicit about.
+
+        Repair is deterministic and bounded to exactly:
+
+        * ``result_limit`` that differs from the referenced concept's
+          ``target_results`` — clamped to that target;
+        * a ``phase`` matching no declared window — reassigned to the only
+          declared window when exactly one exists, otherwise dropped;
+        * a query whose (possibly implicit) ``concept_id`` does not
+          reference a declared concept — that query is rejected, never the
+          whole plan, and concepts orphaned by the drops are dropped in turn
+          by :meth:`_enforce_request_budget`, each with its own warning.
+
+        Duplicate ``(window, query)`` pairs that a reassignment could create
+        are collapsed deterministically (first wins).  Repair never invents
+        concepts, windows, or evidence, and never touches the evidence gates:
+        whitelist, candidate binding, and structural shape violations still
+        reject the plan exactly as before.
+        """
         queries: list[SearchQuery] = []
+        repairs: list[str] = []
         for index, item in enumerate(self._array("queries", value)):
             path = f"queries[{index}]"
             obj = self._object(path, item)
@@ -718,11 +736,11 @@ class ResearchPlanner:
                 required={"query", "phase", "source_domains", "source_types", "reason"},
                 optional={"concept_id", "result_limit"},
             )
-            phase = obj["phase"]
-            if not isinstance(phase, str) or phase not in windows_by_phase:
-                raise ResearchPlanError(
-                    f"{path}.phase must match a declared window phase"
-                )
+            window = self._repaired_window(
+                path, obj["phase"], windows_by_phase, repairs
+            )
+            if window is None:
+                continue
             domains = self._text_array(f"{path}.source_domains", obj["source_domains"])
             for domain in domains:
                 normalized = domain.strip().lower().rstrip(".")
@@ -736,30 +754,106 @@ class ResearchPlanner:
                         f"{path} references domain {normalized!r} that is not a "
                         "declared candidate"
                     )
+            concept_id, result_limit = self._repaired_concept_binding(
+                path, obj, concepts_by_id, repairs
+            )
+            if result_limit is None:
+                continue
             queries.append(
                 self._construct(
                     path,
                     SearchQuery,
                     query=obj["query"],
-                    window=windows_by_phase[phase],
+                    window=window,
                     source_types=self._text_array(
                         f"{path}.source_types", obj["source_types"]
                     ),
                     source_domains=domains,
                     reason=obj["reason"],
-                    concept_id=obj.get("concept_id"),
-                    result_limit=(
-                        obj["result_limit"]
-                        if "result_limit" in obj
-                        else (
-                            concepts_by_id[obj["concept_id"]].target_results
-                            if obj.get("concept_id") in concepts_by_id
-                            else 10
-                        )
-                    ),
+                    concept_id=concept_id,
+                    result_limit=result_limit,
                 )
             )
-        return tuple(queries)
+        deduped: list[SearchQuery] = []
+        seen: set[tuple[str, str]] = set()
+        for item in queries:
+            key = (item.window.phase, item.query)
+            if key in seen:
+                repairs.append(
+                    f"repaired queries: dropped the duplicate (window, query) "
+                    f"pair for {item.query!r} created by repair"
+                )
+                continue
+            seen.add(key)
+            deduped.append(item)
+        return tuple(deduped), tuple(repairs)
+
+    @staticmethod
+    def _repaired_window(
+        path: str,
+        phase: object,
+        windows_by_phase: dict[str, ResearchWindow],
+        repairs: list[str],
+    ) -> ResearchWindow | None:
+        """Return the query's window, reassigning or dropping on a phase drift.
+
+        A phase matching no declared window is repaired deterministically:
+        when exactly one window is declared the query is reassigned to it;
+        with several windows the mapping would be a guess, so the query is
+        dropped.  Either way the repair is logged.
+        """
+        if isinstance(phase, str) and phase in windows_by_phase:
+            return windows_by_phase[phase]
+        if len(windows_by_phase) == 1:
+            only_phase, only_window = next(iter(windows_by_phase.items()))
+            repairs.append(
+                f"repaired {path}: phase {phase!r} matches no declared window; "
+                f"reassigned to the only declared window {only_phase!r}"
+            )
+            return only_window
+        repairs.append(
+            f"repaired {path}: dropped because phase {phase!r} matches no "
+            "declared window"
+        )
+        return None
+
+    @staticmethod
+    def _repaired_concept_binding(
+        path: str,
+        obj: dict[str, Any],
+        concepts_by_id: dict[str, ResearchConcept],
+        repairs: list[str],
+    ) -> tuple[str | None, int | None]:
+        """Resolve the (concept_id, result_limit) pair, clamping the limit.
+
+        When concepts are declared, a query must reference one of them: an
+        invalid or missing concept rejects the query (logged), never the
+        plan, and ``result_limit`` is forced to the concept's
+        ``target_results`` whenever the completion disagreed.  A missing
+        ``result_limit`` stays the documented legacy path and inherits the
+        concept target silently.  Without declared concepts the legacy
+        behavior is unchanged.
+        """
+        concept_id = obj.get("concept_id")
+        if not concepts_by_id:
+            return concept_id, (
+                obj["result_limit"] if "result_limit" in obj else 10
+            )
+        bound = concept_id.strip() if isinstance(concept_id, str) else None
+        concept = concepts_by_id.get(bound) if bound is not None else None
+        if concept is None:
+            repairs.append(
+                f"repaired {path}: dropped because concept_id {concept_id!r} "
+                "does not reference a declared concept"
+            )
+            return None, None
+        if "result_limit" in obj and obj["result_limit"] != concept.target_results:
+            repairs.append(
+                f"repaired {path}: result_limit {obj['result_limit']!r} clamped "
+                f"to the concept {concept.concept_id} target_results "
+                f"({concept.target_results})"
+            )
+        return concept.concept_id, concept.target_results
 
     # -- deterministic fallback -------------------------------------------
 

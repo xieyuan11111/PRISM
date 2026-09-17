@@ -36,14 +36,17 @@ from .executor import (
     CANDIDATE_INVALID_LEAD,
     CANDIDATE_NO_CONTENT,
     CANDIDATE_NO_LINK,
+    CANDIDATE_UNRESOLVED_LEAD,
     DEFAULT_SEARCH_RETRIES,
     CandidateFailure,
     CandidateSuccess,
     QueryExecution,
     ResearchExecutionReport,
     ResearchExecutor,
+    ScholarlyLeadResolver,
     SourceIntake,
 )
+from .leads import scholarly_api_identifier
 from .firecrawl import (
     DEFAULT_BASE_URL,
     FIRECRAWL_API_KEY_ENV,
@@ -88,6 +91,7 @@ __all__ = [
     "CANDIDATE_INVALID_LEAD",
     "CANDIDATE_NO_CONTENT",
     "CANDIDATE_NO_LINK",
+    "CANDIDATE_UNRESOLVED_LEAD",
     "DEFAULT_BASE_URL",
     "DEFAULT_MAX_RESPONSE_BYTES",
     "DEFAULT_SEARCH_RETRIES",
@@ -140,6 +144,8 @@ __all__ = [
     "ResearchWindow",
     "SearchProvider",
     "SearchQuery",
+    "ScholarlyLeadResolver",
     "SourceCandidate",
     "SourceIntake",
+    "scholarly_api_identifier",
 ]

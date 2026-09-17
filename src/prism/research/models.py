@@ -10,6 +10,8 @@ the only component that owns a :class:`~prism.config.PrismConfig`.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from dataclasses import dataclass
 from datetime import datetime
@@ -392,3 +394,69 @@ class ResearchPlan:
         object.__setattr__(self, "queries", queries)
         object.__setattr__(self, "warnings", _text_tuple("warnings", self.warnings))
         object.__setattr__(self, "concepts", concepts)
+
+    def fingerprint(self) -> str:
+        """Return the stable sha256 fingerprint of the whole plan.
+
+        The plan is serialized to canonical JSON (members in their normalized
+        order, sorted keys, UTC-agnostic ISO timestamps), so two plans with
+        identical content produce identical fingerprints regardless of
+        construction order, and any change to any member — including
+        ``planned_at`` or the warnings — changes the fingerprint.
+        """
+        payload = {
+            "source_id": self.source_id,
+            "anchor_at": self.anchor_at.isoformat(),
+            "frontier_at": self.frontier_at.isoformat(),
+            "planned_at": self.planned_at.isoformat(),
+            "origin": self.origin,
+            "case_tags": list(self.case_tags),
+            "core_claims": list(self.core_claims),
+            "evidence_boundaries": list(self.evidence_boundaries),
+            "windows": [
+                {
+                    "phase": window.phase,
+                    "start_at": window.start_at.isoformat(),
+                    "end_at": window.end_at.isoformat(),
+                    "focus": window.focus,
+                }
+                for window in self.windows
+            ],
+            "candidates": [
+                {
+                    "domain": candidate.domain,
+                    "source_types": list(candidate.source_types),
+                    "priority": candidate.priority,
+                    "reason": candidate.reason,
+                }
+                for candidate in self.candidates
+            ],
+            "concepts": [
+                {
+                    "concept_id": concept.concept_id,
+                    "label": concept.label,
+                    "description": concept.description,
+                    "aliases": list(concept.aliases),
+                    "source_ids": list(concept.source_ids),
+                    "target_results": concept.target_results,
+                }
+                for concept in self.concepts
+            ],
+            "queries": [
+                {
+                    "query": query.query,
+                    "phase": query.window.phase,
+                    "concept_id": query.concept_id,
+                    "result_limit": query.result_limit,
+                    "source_types": list(query.source_types),
+                    "source_domains": list(query.source_domains),
+                    "reason": query.reason,
+                }
+                for query in self.queries
+            ],
+            "warnings": list(self.warnings),
+        }
+        canonical = json.dumps(
+            payload, sort_keys=True, ensure_ascii=False, separators=(",", ":")
+        )
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()

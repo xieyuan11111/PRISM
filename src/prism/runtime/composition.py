@@ -704,7 +704,10 @@ async def create_runtime(
     )
     if effective_provider is not None:
         research_executor = ResearchExecutor(
-            effective_provider, api, search_timeout=research_timeout
+            effective_provider,
+            api,
+            search_timeout=research_timeout,
+            scholarly=scholarly_metadata_client,
         )
         api._research_executor = research_executor
     return PrismRuntime(

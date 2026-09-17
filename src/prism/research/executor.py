@@ -17,12 +17,19 @@ and no background tasks are created: every await is sequential.
 Outcome accounting is exhaustive and classified.  Per query the executor
 records successes (candidate URL plus the verbatim intake report and its
 material ids) and :class:`CandidateFailure` entries — leads without a usable
-link, leads whose host falls outside the query's ``source_domains``, intake
+link, leads whose host falls outside the query's ``source_domains``, scholarly
+API endpoints that could not be resolved to a canonical article, intake
 failures classified by ``FailureKind`` value or exception class name, and
 intakes that returned no collectible items (a URL with no real body is never
-dressed up as evidence).  URLs are deduplicated by normalized link across
-queries, one authoritative fetch attempt per URL per execution, and skips are
-recorded per query for audit.  A single failing candidate or provider never
+dressed up as evidence).  A discovery lead that *is* a scholarly API endpoint
+(a Europe PMC REST search or fullTextXML URL) is resolved to the canonical
+article URL through the injected
+:class:`ScholarlyLeadResolver` — the authoritative Europe PMC / PMC path — or
+dropped with an ``unresolved_lead`` audit record; the API URL itself is never
+handed to the fetcher as if it were an article.  URLs are deduplicated by
+normalized link across queries, one authoritative fetch attempt per URL per
+execution, and skips are recorded per query for audit.  A single failing
+candidate or provider never
 aborts the plan; the resulting :class:`ResearchExecutionReport` preserves the
 plan's ``source_id``, ``case_tags``, and planning time so every intake report
 stays traceable back to the query, window, and reason that produced it.
@@ -40,7 +47,14 @@ from urllib.parse import urlsplit
 from prism.api.fetching import SourceFetchReport, SourceItemReport
 from prism.sources import SourceFetchError, SourceItem, normalize_url
 
-from .models import ResearchPlan, ResearchWindow, SearchQuery
+from .leads import scholarly_api_identifier
+from .models import (
+    PLAN_ORIGINS,
+    PLAN_ORIGIN_FALLBACK,
+    ResearchPlan,
+    ResearchWindow,
+    SearchQuery,
+)
 from .provider import SearchProvider
 
 CANDIDATE_NO_LINK = "no_link"
@@ -48,6 +62,10 @@ CANDIDATE_INVALID_LEAD = "invalid_lead"
 CANDIDATE_INVALID_INTAKE = "invalid_intake"
 CANDIDATE_DOMAIN_OUT_OF_SCOPE = "domain_out_of_scope"
 CANDIDATE_NO_CONTENT = "no_content"
+# A scholarly *API* endpoint lead (e.g. a Europe PMC REST search URL) that
+# could not be resolved to the canonical article URL: dropped for audit, and
+# never handed to the fetcher as if it were an article.
+CANDIDATE_UNRESOLVED_LEAD = "unresolved_lead"
 
 DEFAULT_MAX_CANDIDATES_PER_QUERY = 3
 DEFAULT_SEARCH_TIMEOUT = 10.0
@@ -151,6 +169,22 @@ class SourceIntake(Protocol):
     ) -> SourceFetchReport: ...
 
 
+@runtime_checkable
+class ScholarlyLeadResolver(Protocol):
+    """Resolution seam for scholarly API discovery leads.
+
+    Satisfied structurally by
+    :class:`prism.sources.ScholarlyMetadataClient`: ``fetch`` takes an
+    explicit ``PMID:``/``PMCID:`` literal and returns a record-like object
+    (a :class:`~prism.sources.SourceItem`) whose ``link`` is the canonical
+    article URL — the DOI landing page, PMC article page, or PubMed record —
+    resolved through the authoritative scholarly path (Europe PMC / PMC).
+    Access controls are never bypassed; the adapter uses public APIs only.
+    """
+
+    async def fetch(self, value: str) -> object: ...
+
+
 @dataclass(frozen=True, slots=True)
 class CandidateFailure:
     """One classified rejection or fetch failure for a discovery lead.
@@ -250,7 +284,11 @@ class ResearchExecutionReport:
     Preserves the plan's identity (``source_id``, ``case_tags``,
     ``planned_at``) alongside the per-query executions, so each candidate
     URL and intake report remains traceable to the query, window, and reason
-    that surfaced it.
+    that surfaced it.  The plan provenance fields (``plan_origin``,
+    ``plan_warnings``, ``plan_query_count``, ``plan_fingerprint``) carry the
+    planning side into the artifact: a run executed on a degraded fallback
+    plan stays visible in the result instead of masquerading as a good
+    LLM-plan run (real-run finding 2026-09-16).
     """
 
     source_id: str
@@ -259,6 +297,10 @@ class ResearchExecutionReport:
     executed_at: datetime
     process: bool
     query_executions: tuple[QueryExecution, ...] = ()
+    plan_origin: str = PLAN_ORIGIN_FALLBACK
+    plan_warnings: tuple[str, ...] = ()
+    plan_query_count: int = 0
+    plan_fingerprint: str = ""
 
     def __post_init__(self) -> None:
         _require_text("source_id", self.source_id)
@@ -275,6 +317,22 @@ class ResearchExecutionReport:
                 raise TypeError(
                     "query_executions must contain only QueryExecution objects"
                 )
+        if self.plan_origin not in PLAN_ORIGINS:
+            raise ValueError(
+                f"plan_origin must be one of: {', '.join(sorted(PLAN_ORIGINS))}"
+            )
+        object.__setattr__(
+            self, "plan_warnings", _text_tuple("plan_warnings", self.plan_warnings)
+        )
+        if (
+            isinstance(self.plan_query_count, bool)
+            or not isinstance(self.plan_query_count, int)
+        ):
+            raise TypeError("plan_query_count must be an integer")
+        if self.plan_query_count < 0:
+            raise ValueError("plan_query_count must not be negative")
+        if not isinstance(self.plan_fingerprint, str):
+            raise TypeError("plan_fingerprint must be a string")
 
     @property
     def material_ids(self) -> tuple[str, ...]:
@@ -311,12 +369,17 @@ class ResearchExecutor:
         search_timeout: float = DEFAULT_SEARCH_TIMEOUT,
         search_retries: int = DEFAULT_SEARCH_RETRIES,
         kind: str = DEFAULT_INTAKE_KIND,
+        scholarly: ScholarlyLeadResolver | None = None,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         if not callable(getattr(provider, "search", None)):
             raise TypeError("provider must provide search()")
         if not callable(getattr(intake, "fetch_source", None)):
             raise TypeError("intake must provide fetch_source()")
+        if scholarly is not None and not callable(
+            getattr(scholarly, "fetch", None)
+        ):
+            raise TypeError("scholarly must provide fetch()")
         if (
             isinstance(max_candidates_per_query, bool)
             or not isinstance(max_candidates_per_query, int)
@@ -338,6 +401,7 @@ class ResearchExecutor:
             raise TypeError("clock must be callable")
         self._provider = provider
         self._intake = intake
+        self._scholarly = scholarly
         self._max_candidates = max_candidates_per_query
         self._search_timeout = float(search_timeout)
         self._search_retries = search_retries
@@ -379,6 +443,10 @@ class ResearchExecutor:
             executed_at=executed_at,
             process=process,
             query_executions=tuple(executions),
+            plan_origin=plan.origin,
+            plan_warnings=plan.warnings,
+            plan_query_count=len(plan.queries),
+            plan_fingerprint=plan.fingerprint(),
         )
 
     async def _execute_query(
@@ -463,16 +531,57 @@ class ResearchExecutor:
                         )
                     )
                     continue
+                # A scholarly API endpoint (e.g. a Europe PMC REST search URL)
+                # is metadata plumbing, not an article: resolve it to the
+                # canonical article URL or drop it for audit.  Without a
+                # configured resolver the drop is a pure local
+                # classification and costs no candidate budget.
+                identifier = scholarly_api_identifier(link)
+                if identifier is not None and self._scholarly is None:
+                    failures.append(
+                        CandidateFailure(
+                            url=_safe_url(normalized),
+                            kind=CANDIDATE_UNRESOLVED_LEAD,
+                            detail=(
+                                f"discovery lead is the scholarly API endpoint "
+                                f"for {identifier}; no scholarly adapter is "
+                                "configured to resolve it to the canonical "
+                                "article URL, and an API endpoint is never "
+                                "fetched as an article"
+                            ),
+                        )
+                    )
+                    continue
                 if normalized in seen:
                     duplicates.append(_safe_url(normalized))
                     continue
                 seen.add(normalized)
+                collect_url = normalized
+                if identifier is not None:
+                    resolution = await self._resolve_scholarly(
+                        normalized, identifier
+                    )
+                    if isinstance(resolution, CandidateFailure):
+                        failures.append(resolution)
+                        # A failed resolution consumed the candidate slot,
+                        # exactly like a failed intake fetch would.
+                        attempted += 1
+                        if query.concept_id in concept_budgets:
+                            concept_attempted[query.concept_id] = (
+                                concept_attempted.get(query.concept_id, 0) + 1
+                            )
+                        continue
+                    collect_url = resolution
+                    if collect_url in seen:
+                        duplicates.append(_safe_url(collect_url))
+                        continue
+                    seen.add(collect_url)
                 attempted += 1
                 if query.concept_id in concept_budgets:
                     concept_attempted[query.concept_id] = (
                         concept_attempted.get(query.concept_id, 0) + 1
                     )
-                success = await self._collect(normalized, process=process)
+                success = await self._collect(collect_url, process=process)
                 if isinstance(success, CandidateSuccess):
                     successes.append(success)
                 else:
@@ -490,6 +599,52 @@ class ResearchExecutor:
             duplicates=tuple(duplicates),
             provider_error=provider_error,
         )
+
+    async def _resolve_scholarly(
+        self, lead_url: str, identifier: str
+    ) -> str | CandidateFailure:
+        """Resolve one scholarly API endpoint lead to its canonical article URL.
+
+        The identifier literal (``PMID:...`` / ``PMCID:...``) is resolved
+        through the injected scholarly adapter — the authoritative Europe
+        PMC / PMC path — and the canonical article link (DOI landing page,
+        PMC article page, or PubMed record) is returned normalized.  Any
+        resolution failure becomes an auditable ``unresolved_lead`` failure
+        record; the API endpoint itself is never returned as a fetch target.
+        """
+        try:
+            resolved = await self._scholarly.fetch(identifier)
+        except SourceFetchError as error:
+            return CandidateFailure(
+                url=_safe_url(lead_url),
+                kind=CANDIDATE_UNRESOLVED_LEAD,
+                detail=(
+                    f"scholarly API lead for {identifier} could not be "
+                    f"resolved to the canonical article "
+                    f"({error.kind.value}): {_safe_error_detail(error)}"
+                ),
+            )
+        except Exception as error:
+            return CandidateFailure(
+                url=_safe_url(lead_url),
+                kind=CANDIDATE_UNRESOLVED_LEAD,
+                detail=(
+                    f"scholarly API lead for {identifier} could not be "
+                    f"resolved: {type(error).__name__}: "
+                    f"{_safe_error_detail(error)}"
+                ),
+            )
+        link = getattr(resolved, "link", None)
+        if not isinstance(link, str) or not link.strip():
+            return CandidateFailure(
+                url=_safe_url(lead_url),
+                kind=CANDIDATE_UNRESOLVED_LEAD,
+                detail=(
+                    f"scholarly API lead for {identifier} resolved to a "
+                    "record without a canonical link"
+                ),
+            )
+        return normalize_url(link)
 
     async def _collect(
         self, url: str, *, process: bool
@@ -549,6 +704,7 @@ __all__ = [
     "CANDIDATE_INVALID_LEAD",
     "CANDIDATE_NO_CONTENT",
     "CANDIDATE_NO_LINK",
+    "CANDIDATE_UNRESOLVED_LEAD",
     "DEFAULT_INTAKE_KIND",
     "DEFAULT_MAX_CANDIDATES_PER_QUERY",
     "DEFAULT_SEARCH_RETRIES",
@@ -558,5 +714,6 @@ __all__ = [
     "QueryExecution",
     "ResearchExecutionReport",
     "ResearchExecutor",
+    "ScholarlyLeadResolver",
     "SourceIntake",
 ]

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import Counter
 from dataclasses import replace
 from datetime import datetime, timezone
 import hashlib
@@ -195,10 +196,19 @@ def test_edge_export_validates_content_metadata_and_paths(tmp_path: Path) -> Non
         "Debate Interpretation",
         "Timeline Stages",
         "Citations",
-        "政策已发布，时间线包含中文文本。",
         "中文代码",
     ):
         assert "".join(expected.split()) in normalized_text
+    # The timeline table now keeps every column inside the printable page
+    # (the no-shrink fix), so its CJK summary cell legitimately wraps and
+    # pypdf interleaves the wrapped lines with neighbouring cells.  The
+    # guarantee that matters is character-complete, extractable CJK: every
+    # character of the summary must reach the text layer, and the exporter's
+    # own read-back validation (which gates the longest Han run) passed when
+    # the export succeeded above.
+    summary = "政策已发布，时间线包含中文文本。"
+    for character, needed in Counter(summary).items():
+        assert normalized_text.count(character) >= needed, character
 
     payload = result.path.read_bytes()
     reader = PdfReader(result.path)
@@ -633,3 +643,78 @@ def test_chinese_version_export_passes_readback_validation(tmp_path: Path) -> No
         assert reader.metadata.get("/Title") == f"演变报告：{ZH_CASE_ID}"
     finally:
         ledger.close()
+
+
+def test_wide_uuid_table_does_not_shrink_the_declared_font_sizes(tmp_path: Path) -> None:
+    """Regression for the 2026-09-16 global ~67% PDF shrink (real export
+    hnad-zh-20260916.pdf rendered every body char at 6.7pt instead of the
+    declared 10pt).  The trigger was a 12-column table whose unbreakable UUID
+    cells exceeded the printable width, so Chromium's print-to-pdf scaled the
+    whole document down to fit.  The stylesheet must keep every table, code
+    span, pre block, and image inside the page width so the declared sizes
+    render as declared."""
+    pdfplumber = pytest.importorskip("pdfplumber")
+    from prism.report.pdf import (
+        PDF_BODY_FONT_PT,
+        PDF_TABLE_FONT_PT,
+        render_report_html,
+    )
+
+    executable = edge_executable()
+    columns = (
+        "事件键", "类型", "层", "发生时间", "生效自", "生效至",
+        "观察时间", "证据角色", "引用来源", "来源属性", "摘要", "来源材料",
+    )
+    header = "| " + " | ".join(columns) + " |"
+    separator = "| " + " | ".join(["---"] * len(columns)) + " |"
+    rows = []
+    for index in range(3):
+        cells = (
+            f"c5570b3a-bbea-52e7-886d-fefe3fe3988{index}",
+            "事实", "事实层", "2026-08-30", "2026-08-30", "至今",
+            "2026-09-01", "直接证据",
+            f"mat_394b3e4d9e6c0ef9d3ec8ce{index}",
+            "fulltext_academic_primary_source_record",
+            "摘要文本在宽表格单元格里持续换行也必须保持声明字号。" * 2,
+            f"710f7a28-9cd8-7125-b501-3cfd0000000{index}",
+        )
+        rows.append("| " + " | ".join(cells) + " |")
+    body_paragraphs = "\n\n".join(
+        f"第{index}段：政策与学术证据在时间线上持续演化，"
+        "正文文本必须始终以样式表声明的字号渲染，不得整页缩放。"
+        for index in range(40)
+    )
+    markdown = (
+        f"# Evolution Report: {CASE_ID}\n\n"
+        "- As of: 2026-09-01T00:00:00+00:00\n\n"
+        "## Executive Summary\n\n"
+        + body_paragraphs
+        + "\n\n## Timeline Stages\n\n"
+        + "\n".join([header, separator, *rows])
+        + "\n\n## Citations\n\n- mat-0000\n"
+    )
+
+    html_document = render_report_html(markdown, CASE_ID, "en")
+    output = tmp_path / "wide-table.pdf"
+    EdgePdfRenderer(executable).render(html_document, output)
+
+    with pdfplumber.open(output) as pdf:
+        sizes = [
+            round(char["size"], 1)
+            for page in pdf.pages
+            for char in page.chars
+        ]
+    assert sizes, "PDF must contain extractable positioned characters"
+    dominant = Counter(sizes).most_common(1)[0][0]
+    # The whole-document shrink manifested as the dominant size collapsing to
+    # ~0.67x the declared body size; assert against the declared constant.
+    assert abs(dominant - PDF_BODY_FONT_PT) <= 0.05, (
+        f"dominant font size {dominant}pt != declared body {PDF_BODY_FONT_PT}pt; "
+        "the document was globally scaled"
+    )
+    # Nothing may render below the smallest declared size (the table's): a
+    # partial shrink of any element class fails here too.
+    smallest = min(sizes)
+    assert smallest >= PDF_TABLE_FONT_PT - 0.05, (
+        f"smallest font size {smallest}pt < declared table {PDF_TABLE_FONT_PT}pt"
+    )

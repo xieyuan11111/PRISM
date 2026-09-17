@@ -57,41 +57,67 @@ _AS_OF_LINE = re.compile(
     r"^[-*]\s+(?:As of|截至时间):\s*(\S+)\s*$", re.MULTILINE
 )
 _PDF_INSTALL_HINT = "install with 'pip install -e \".[pdf]\"'"
-_PDF_CSS = """\
-:root { color-scheme: light; }
-body {
+# Declared rendered sizes (pt).  The stylesheet is generated from these
+# constants, and the regression test asserts the produced PDF against them:
+# a wide table with unbreakable tokens (real run 2026-09-16: UUIDs inside a
+# 12-column table) used to make Chromium's print-to-pdf scale the whole
+# document to ~67%, rendering the declared 10pt body at 6.7pt.
+PDF_BODY_FONT_PT = 10.0
+PDF_TABLE_FONT_PT = 8.5
+PDF_CODE_FONT_PT = 8.5
+PDF_H1_FONT_PT = 20.0
+PDF_H2_FONT_PT = 14.0
+PDF_H3_FONT_PT = 11.5
+_PDF_CSS = f"""\
+:root {{ color-scheme: light; }}
+body {{
   font-family: "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC",
     "Noto Sans CJK", "Source Han Sans SC", sans-serif;
-  font-size: 10pt;
+  font-size: {PDF_BODY_FONT_PT}pt;
   line-height: 1.45;
   color: #111;
   margin: 0;
-}
-main { padding: 18mm 16mm; }
-h1, h2, h3 { line-height: 1.25; break-after: avoid; }
-h1 { font-size: 20pt; }
-h2 { font-size: 14pt; margin-top: 1.2em; }
-h3 { font-size: 11.5pt; }
-table {
+}}
+main {{ padding: 18mm 16mm; overflow-x: hidden; }}
+h1, h2, h3 {{ line-height: 1.25; break-after: avoid; }}
+h1 {{ font-size: {PDF_H1_FONT_PT}pt; }}
+h2 {{ font-size: {PDF_H2_FONT_PT}pt; margin-top: 1.2em; }}
+h3 {{ font-size: {PDF_H3_FONT_PT}pt; }}
+table {{
   border-collapse: collapse;
   width: 100%;
   margin: 0.75em 0;
-  font-size: 8.5pt;
-}
-th, td { border: 0.5pt solid #666; padding: 3pt 4pt; text-align: left; }
-th { background: #eee; }
-code, pre {
+  font-size: {PDF_TABLE_FONT_PT}pt;
+  /* A table's min-content width must never exceed the printable page:
+     fixed layout plus per-cell wrapping keeps Chromium's print-to-pdf
+     from scaling the whole document down to fit an unbreakable token
+     (real run 2026-09-16: UUIDs inside a 12-column table shrank every
+     page to ~67%, rendering the declared 10pt body at 6.7pt). */
+  table-layout: fixed;
+}}
+th, td {{
+  border: 0.5pt solid #666;
+  padding: 3pt 4pt;
+  text-align: left;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}}
+th {{ background: #eee; }}
+code, pre {{
   font-family: Consolas, "Courier New", "Noto Sans Mono CJK SC", monospace;
-}
-code { font-size: 8.5pt; }
-pre {
+}}
+code {{ font-size: {PDF_CODE_FONT_PT}pt; }}
+code, a {{ overflow-wrap: anywhere; word-break: break-all; }}
+pre {{
   border: 0.5pt solid #999;
   margin: 0.75em 0;
   padding: 4pt;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-}
-blockquote { border-left: 2pt solid #999; margin-left: 0; padding-left: 6pt; }
+  max-width: 100%;
+}}
+img {{ max-width: 100%; }}
+blockquote {{ border-left: 2pt solid #999; margin-left: 0; padding-left: 6pt; }}
 """
 
 
