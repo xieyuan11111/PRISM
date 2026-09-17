@@ -1644,7 +1644,14 @@ class PrismAPI:
                 raise ValueError(
                     "source_service or research_intake is required for execute_research()"
                 )
-            executor = ResearchExecutor(self._search_provider, intake)
+            executor = ResearchExecutor(
+                self._search_provider,
+                intake,
+                # Scholarly API discovery leads (Europe PMC REST URLs) are
+                # resolved to the canonical article through the injected
+                # scholarly adapter instead of being fetched as articles.
+                scholarly=self._scholarly,
+            )
         return await executor.execute(plan, process=process)
 
     async def build_timeline(self, case_id: str, as_of: datetime) -> GraphTimeline:

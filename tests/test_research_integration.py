@@ -220,3 +220,38 @@ def test_cli_discover_and_research_delegate_to_public_api():
         ("plan", "material-1"),
         ("execute", api.plan, False),
     ]
+
+
+def test_cli_research_output_exposes_plan_provenance():
+    """The `prism research` artifact must show plan provenance (2026-09-16).
+
+    A run on a degraded fallback plan was indistinguishable from a good
+    LLM-plan run because the CLI printed only
+    {case_tags, executed_at, planned_at, process, query_executions,
+    source_id}.  The artifact now carries the plan's origin, warnings, query
+    count, and stable fingerprint.
+    """
+    material = make_material()
+    config = PrismConfig(sources=SourceConfig(("example.gov",)))
+    planner = ResearchPlanner(config, clock=lambda: NOW)
+    api = PrismAPI(
+        FakeIngestion(), FakeStore(material), FakeGraph(), FakeEvents(),
+        research_planner=planner,
+        search_provider=FakeProvider(),
+        research_intake=FakeIntake(),
+    )
+    plan = run(api.plan_research_by_id(material.id))
+    stdout, stderr = StringIO(), StringIO()
+
+    status = run(
+        main(["research", "material-1", "--no-process"], api=api, stdout=stdout, stderr=stderr)
+    )
+
+    assert status == 0
+    artifact = json.loads(stdout.getvalue())
+    assert artifact["source_id"] == material.id
+    assert artifact["plan_origin"] == plan.origin
+    assert artifact["plan_warnings"] == list(plan.warnings)
+    assert artifact["plan_query_count"] == len(plan.queries)
+    assert artifact["plan_fingerprint"] == plan.fingerprint()
+    assert artifact["plan_fingerprint"] != ""

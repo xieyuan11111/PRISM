@@ -16,6 +16,8 @@ dependencies = []
 dev = [
     "pytest>=8.0",
     "ruff==0.15.10",
+    # Font-size read-back for the PDF no-shrink regression test.
+    "pdfplumber>=0.11",
 ]
 
 # PDF export is optional: Markdown is the source of truth and the adapter

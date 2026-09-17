@@ -631,15 +631,30 @@ def test_query_domain_missing_from_candidates_is_rejected():
     _fallback_after_bad_payload(mutate)
 
 
-def test_unknown_phase_and_dangling_query_phase_are_rejected():
-    def mutate_phase(payload):
+def test_invalid_window_phase_is_rejected_and_dangling_query_phase_is_repaired():
+    def mutate_window_phase(payload):
         payload["windows"][0]["phase"] = "hibernation"
 
+    # A window phase outside the declared vocabulary is structural: rejected.
+    _fallback_after_bad_payload(mutate_window_phase)
+
+    # A query phase matching no declared window is a mechanical contract
+    # violation the planner now repairs deterministically (real run
+    # 2026-09-16): with two declared windows the mapping is ambiguous, so the
+    # query is dropped with an audit warning while the plan itself survives.
     def mutate_dangling(payload):
         payload["queries"][0]["phase"] = "revision"
 
-    _fallback_after_bad_payload(mutate_phase)
-    _fallback_after_bad_payload(mutate_dangling)
+    payload = llm_payload()
+    mutate_dangling(payload)
+    router = FakeRouter(payload)
+    planner = ResearchPlanner(make_config(), router=router, clock=fixed_clock())
+    plan = asyncio.run(planner.plan(make_material()))
+    assert plan.origin == PLAN_ORIGIN_LLM
+    assert len(plan.queries) == 1
+    joined = "\n".join(plan.warnings)
+    assert "repaired queries[0]" in joined
+    assert "revision" in joined
 
 
 def test_reverse_window_and_future_window_are_rejected():

@@ -2,7 +2,7 @@
 
 import asyncio
 from dataclasses import FrozenInstanceError
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urlsplit
 
 import pytest
@@ -792,3 +792,86 @@ def test_process_false_is_forwarded_and_recorded(tmp_path):
     assert report.process is False
     assert all(c[2] is False for c in intake.calls)
     assert report.query_executions[0].successes
+
+
+# --------------------------------------------------------------------------
+# Plan provenance (real run 2026-09-16): `prism research` must expose the
+# plan's origin, warnings, query count and a stable fingerprint so a run on a
+# degraded fallback plan is distinguishable from a good LLM-plan run.
+# --------------------------------------------------------------------------
+
+
+def test_plan_fingerprint_is_stable_and_discriminating():
+    plan = make_plan()
+    assert plan.fingerprint() == make_plan().fingerprint()
+
+    changed_query = make_plan(
+        queries=(query(text="a different retrieval question"),)
+    )
+    assert changed_query.fingerprint() != plan.fingerprint()
+
+    later = make_plan(planned_at=PLANNED + timedelta(hours=1))
+    assert later.fingerprint() != plan.fingerprint()
+
+    warned = make_plan(warnings=("source_selector output rejected: x",))
+    assert warned.fingerprint() != plan.fingerprint()
+
+
+def test_execution_report_carries_plan_provenance(tmp_path):
+    plan = make_plan(
+        origin=PLAN_ORIGIN_FALLBACK,
+        warnings=(
+            "llm research plan unavailable; deterministic fallback plan "
+            "generated (retryable)",
+        ),
+    )
+    provider = FakeProvider(
+        {
+            "gov policy record": (lead(GOV_POLICY),),
+            "news policy coverage": (lead(NEWS_STORY),),
+        }
+    )
+    intake = FakeIntake(
+        {
+            GOV_POLICY: intake_report(GOV_POLICY, tmp_path),
+            NEWS_STORY: intake_report(NEWS_STORY, tmp_path, "mat-0002"),
+        }
+    )
+    executor = make_executor(provider, intake)
+
+    report = asyncio.run(executor.execute(plan))
+
+    assert report.plan_origin == "fallback"
+    assert report.plan_warnings == plan.warnings
+    assert report.plan_query_count == len(plan.queries)
+    assert report.plan_fingerprint == plan.fingerprint()
+
+
+def test_execution_report_provenance_fields_are_validated():
+    from dataclasses import fields
+
+    names = {field.name for field in fields(ResearchExecutionReport)}
+    assert {
+        "plan_origin",
+        "plan_warnings",
+        "plan_query_count",
+        "plan_fingerprint",
+    } <= names
+    with pytest.raises(ValueError, match="plan_origin"):
+        ResearchExecutionReport(
+            source_id="m",
+            case_tags=(),
+            planned_at=PLANNED,
+            executed_at=EXECUTED,
+            process=True,
+            plan_origin="hallucinated",
+        )
+    with pytest.raises(ValueError, match="plan_query_count"):
+        ResearchExecutionReport(
+            source_id="m",
+            case_tags=(),
+            planned_at=PLANNED,
+            executed_at=EXECUTED,
+            process=True,
+            plan_query_count=-1,
+        )
